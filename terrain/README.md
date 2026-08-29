@@ -4,7 +4,7 @@ A 25 × 15 m patch of the **Everest South Col route**, between Camp II and
 Camp III, for the fixed-rope / ascender task. Real geographic location and
 macro slope; synthetic sub-30 m detail (there is no other option — see below).
 
-![route](../docs/terrain/viewA_route.png)
+![route](../img/terrain/viewA_route.png)
 
 ## Where it is
 
@@ -18,7 +18,7 @@ macro slope; synthetic sub-30 m detail (there is no other option — see below).
 | downhill aspect | 292° WNW, into the Western Cwm |
 | patch | 25 × 15 m, 20.14 m vertical gain, 5 cm sampling |
 
-![context](../docs/terrain/context_patch.png)
+![context](../img/terrain/context_patch.png)
 
 ## Quick start
 
@@ -93,7 +93,7 @@ Sketchfab mesh people reach for has 20–37 m triangles — the same order.
 Conservative by construction: adding the roughness moves the planar slope from
 38.91° to 39.08°, **+0.17°**.
 
-![patch](../docs/terrain/patch_preview.png)
+![patch](../img/terrain/patch_preview.png)
 
 ## Rope route
 
@@ -137,7 +137,7 @@ edge, so it cannot be registered. Cropping it, via `crop_mesh_ladder.py`:
 
 It is good for a **visual backdrop at 250–1000 m** and useless at robot scale.
 
-![crop](../docs/terrain/sketchfab_crop_1000m.png)
+![crop](../img/terrain/sketchfab_crop_1000m.png)
 
 ## Known gotchas
 
