@@ -2,7 +2,7 @@
 
 | Path | What |
 |---|---|
-| `himalaya_3m/` | 3 m x 3 m test pad USD (snow / ice / 10° / 40° / wall) + builder + Isaac Lab cfg |
+| `himalaya_3m/` | 10 m x 10 m test pad USD (snow / ice / 10° / 40° / wall) + builder + Isaac Lab cfg |
 | `himalaya_scene.py` | **Isaac Sim API script** that assembles pad + `robots/g1_unitree.usd` + lights + physics |
 
 ```bash

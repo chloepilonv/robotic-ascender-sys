@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""3 m x 3 m Himalaya test pad for Isaac Sim / Isaac Lab (Z-up, metres, origin = pad centre).
+"""10 m x 10 m Himalaya test pad for Isaac Sim / Isaac Lab (Z-up, metres, origin = pad centre).
 
-Layout (top view, +X = "north"):
+Layout (top view, +X = "north"), features ~2.5 m from the centre, 5x5 m clear snow in the middle:
       +Y
-   ┌─────────┬─────────┐
-   │ 10° slope│  ICE    │   ice: 1x1 m, mu=0.10
-   │  (snow)  │ 1x1 m   │   slopes: 1 m run each, packed snow
-   ├─────────┼─────────┤   wall: 1 m long, 1 m high rock face
-   │ 40° slope│  WALL   │   rest: packed snow, mu=0.50, few-mm fractal bumps
-   └─────────┴─────────┘  -Y
-  -X                    +X
-Centre (0,0) is left clear for the robot spawn.
+   ┌───────────┬───────────┐
+   │ 10° slope │   ICE     │   ice: 1x1 m at (2.5, 2.5), mu=0.10
+   │ 2x2 m     │  1x1 m    │   10° slope: 2 m run x 2 m wide at (-2.5, 2.5), rises toward -X
+   ├───────────┼───────────┤   40° slope: 1.5 m run x 2 m wide at (-2.5, -2.5)
+   │ 40° slope │   WALL    │   wall: rock face at x=3, 2 m long, 1 m high, y in [-3.5, -1.5]
+   │ 2 m wide  │  2 m long │   rest: packed snow, mu=0.50, few-mm fractal bumps
+   └───────────┴───────────┘  -Y
+  -X                        +X
 
 Usage: python build_terrain.py [--out himalaya_3m.usd]   (deps: usd-core numpy)
 """
@@ -19,7 +19,7 @@ import numpy as np
 from pxr import Usd, UsdGeom, UsdPhysics, UsdShade, Gf, Sdf, Vt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SIZE = 3.0
+SIZE = 10.0
 # name: (rgb, roughness, static mu, dynamic mu, restitution)
 MATERIALS = {
     "packed_snow": ((0.92, 0.94, 0.97), 0.9, 0.50, 0.45, 0.0),
@@ -95,16 +95,17 @@ def build(out):
     mats = {k: material(stage, root, k) for k in MATERIALS}
     h = SIZE / 2
 
-    # 1) packed snow ground, 3x3 m, +/-4 mm fractal bumps (n=121 -> 2.5 cm cells)
-    noise = fractal_noise(121, seed=7) * 0.004
-    xs = np.linspace(-h, h, 121)
-    ground = grid_mesh(stage, root.AppendChild("packed_snow"), -h, h, -h, h, 121,
-                       lambda X, Y: noise[np.searchsorted(xs, X.ravel()).clip(0, 120).reshape(X.shape),
-                                          np.searchsorted(xs, Y.ravel()).clip(0, 120).reshape(Y.shape)])
+    # 1) packed snow ground, 10x10 m, +/-4 mm fractal bumps (n=201 -> 5 cm cells)
+    N = 201
+    noise = fractal_noise(N, seed=7) * 0.004
+    xs = np.linspace(-h, h, N)
+    ground = grid_mesh(stage, root.AppendChild("packed_snow"), -h, h, -h, h, N,
+                       lambda X, Y: noise[np.searchsorted(xs, X.ravel()).clip(0, N - 1).reshape(X.shape),
+                                          np.searchsorted(xs, Y.ravel()).clip(0, N - 1).reshape(Y.shape)])
     collide(ground.GetPrim()); bind(ground.GetPrim(), mats["packed_snow"])
 
     # 2) ice patch 1x1 m, NE quadrant, 1 cm slab sitting on the snow (flat, glossy)
-    ice = box(stage, root.AppendChild("ice"), (0.75, 0.75, 0.005), (1.0, 1.0, 0.01))
+    ice = box(stage, root.AppendChild("ice"), (2.5, 2.5, 0.005), (1.0, 1.0, 0.01))
     collide(ice.GetPrim()); bind(ice.GetPrim(), mats["ice"])
 
     # 3) 10 deg slope, NW quadrant: 1 m run along +X (rising towards -X edge), 1 m wide. Wedge = rotated box
@@ -117,11 +118,11 @@ def build(out):
         c = np.array([cx, cy, rise / 2]) - n * thick / 2
         w = box(stage, root.AppendChild(name), tuple(c), (L, width, thick), rot_y_deg=deg)  # +Y rot tilts +X end down
         collide(w.GetPrim()); bind(w.GetPrim(), mats["packed_snow"]); return w
-    wedge("slope_10deg", SLOPE_10, -0.75, 0.75)
-    wedge("slope_40deg", SLOPE_40, -0.75, -0.75)
+    wedge("slope_10deg", SLOPE_10, -2.5, 2.5, run=2.0, width=2.0)   # rises 0.35 m over 2 m
+    wedge("slope_40deg", SLOPE_40, -2.5, -2.5, run=1.5, width=2.0)  # rises 1.26 m over 1.5 m
 
     # 4) rock wall, SE quadrant: 1 m long (along Y), 0.15 m thick, 1 m high, face at x=1.0
-    wall = box(stage, root.AppendChild("wall"), (1.075, -0.75, 0.5), (0.15, 1.0, 1.0))
+    wall = box(stage, root.AppendChild("wall"), (3.075, -2.5, 0.5), (0.15, 2.0, 1.0))
     collide(wall.GetPrim()); bind(wall.GetPrim(), mats["rock"])
 
     # spawn marker (no collision) so the robot start is obvious in the viewport

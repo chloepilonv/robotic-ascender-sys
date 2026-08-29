@@ -20,15 +20,15 @@ ap.add_argument("--frames", type=int, default=0, help="step N frames then exit (
 ap.add_argument("--save", default="", help="also save the assembled stage to this .usd")
 ap.add_argument("--assets", default=os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
                 help="assets/ root (defaults to this file's parent)")
-args = ap.parse_args()
+args, _unknown = ap.parse_known_args()
 
 from isaacsim import SimulationApp  # noqa: E402
 if args.stream:
     # Boot the official streaming experience (isaacsim.exp.full.streaming) so the web viewer connects as usual.
     isaac_path = os.environ.get("ISAAC_PATH", "/isaac-sim")
-    # headless=False keeps the editor UI (menus, stage, property panels) in the stream; --no-window still means no X window.
+    # hide_ui=False keeps the editor UI (menus, stage, property panels) in the stream; --no-window = no X window.
     simulation_app = SimulationApp(
-        {"headless": False, "extra_args": [
+        {"headless": False, "hide_ui": False, "extra_args": [
             f"--/exts/omni.kit.livestream.app/primaryStream/publicIp={args.public_ip}",
             f"--/exts/omni.kit.livestream.app/primaryStream/signalPort={args.signal_port}",
             f"--/exts/omni.kit.livestream.app/primaryStream/streamPort={args.stream_port}",
