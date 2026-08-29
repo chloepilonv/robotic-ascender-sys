@@ -18,6 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RAW, OUT, TEXDIR = os.path.join(HERE, "climbing_tool_raw.usdz"), os.path.join(HERE, "ascender.usd"), os.path.join(HERE, "textures")
 HEIGHT_M = 0.195          # full tool height (Petzl Ascension) -> sets the scale
 CUT_Z = 0.65              # model-space (1 m tall) cut: keep z > CUT_Z  (cam head)
+SPUR_Z_MAX, SPUR_X0, SPUR_SLOPE = 0.74, 0.06, 0.5   # slanted cut removing the loop arm (model space)
 MASS_KG = 0.110           # cam head + body only (full tool = 165 g)
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -36,7 +37,12 @@ center = np.array([(pts[:, 0].min() + pts[:, 0].max()) / 2, (pts[:, 1].min() + p
 scale = HEIGHT_M / (pts[:, 2].max() - pts[:, 2].min())
 P = (pts - center) * scale
 
-keep = np.all(pts[tri][:, :, 2] > CUT_Z, axis=1)          # faces fully above the cut
+# keep faces fully above the horizontal cut AND outside the slanted cut that removes the handle-loop arm
+# (the arm runs from the body's lower-right corner down to x~0.23 at z=0.6; slope tuned on the x-z section)
+def spur(v):  # True for vertices on the loop arm
+    return (v[:, 2] < SPUR_Z_MAX) & (v[:, 0] > SPUR_X0 + (v[:, 2] - CUT_Z) * SPUR_SLOPE)
+V = pts[tri]
+keep = np.all(V[:, :, 2] > CUT_Z, axis=1) & ~np.any(spur(V.reshape(-1, 3)).reshape(-1, 3), axis=1)
 tri_k, uv_k = tri[keep], st_uv[keep]
 used = np.unique(tri_k); remap = -np.ones(len(P), dtype=np.int64); remap[used] = np.arange(len(used))
 Pk, Fk = P[used], remap[tri_k]

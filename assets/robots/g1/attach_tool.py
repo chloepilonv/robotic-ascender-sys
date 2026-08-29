@@ -46,6 +46,18 @@ col.CreatePointsAttr(src_col.GetPointsAttr().Get()); col.CreateFaceVertexCountsA
 col.CreateFaceVertexIndicesAttr(src_col.GetFaceVertexIndicesAttr().Get()); col.CreatePurposeAttr("guide"); col.CreateVisibilityAttr("invisible")
 UsdPhysics.CollisionAPI.Apply(col.GetPrim()); UsdPhysics.MeshCollisionAPI.Apply(col.GetPrim()).CreateApproximationAttr("convexHull")
 
+# mounting flange: dark cylinder from the wrist link to the cam head so the tool reads as a bolted-on end-effector
+fl_mat = UsdShade.Material.Define(stage, "/G1/Looks/flange_black")
+fsh = UsdShade.Shader.Define(stage, "/G1/Looks/flange_black/Shader"); fsh.CreateIdAttr("UsdPreviewSurface")
+fsh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.12, 0.12, 0.12))
+fsh.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.5); fsh.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.6)
+fl_mat.CreateSurfaceOutput().ConnectToSource(fsh.ConnectableAPI(), "surface")
+FLANGE_X0, FLANGE_X1, FLANGE_R = 0.040, TOOL_POS[0] + 0.012, 0.026   # overlaps wrist mesh (ends 0.047) and the head
+fl = UsdGeom.Cylinder.Define(stage, tp.GetPath().GetParentPath().AppendChild("tool_flange"))
+fl.CreateRadiusAttr(FLANGE_R); fl.CreateHeightAttr(FLANGE_X1 - FLANGE_X0); fl.CreateAxisAttr("X")
+UsdGeom.Xformable(fl.GetPrim()).AddTranslateOp().Set(Gf.Vec3d((FLANGE_X0 + FLANGE_X1) / 2, 0, 0))
+UsdShade.MaterialBindingAPI.Apply(fl.GetPrim()).Bind(fl_mat)
+
 # fold tool mass into the link (parallel-axis on the diagonal inertia is small at 165 g; keep principal axes)
 mass = UsdPhysics.MassAPI(link)
 m0, c0 = mass.GetMassAttr().Get(), Gf.Vec3d(mass.GetCenterOfMassAttr().Get())

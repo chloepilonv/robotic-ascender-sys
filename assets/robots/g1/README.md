@@ -55,7 +55,7 @@ G1_HIMALAYA_CFG = ArticulationCfg(
 **references** `assets/ascender/ascender.usd` (textured, so keep the `assets/` tree together), convex collision baked into
 `right_wrist_yaw_link`, +0.165 kg folded into the link mass, so the articulation is unchanged (29 DoF)
 and the Isaac Lab cfg works as-is. The end-effector frame is `/G1/right_wrist_yaw_link/tool_ascender` (origin = tool base, +Z = along tool to the cam head).
-Tune `TOOL_POS` / `TOOL_ROT` in `attach_tool.py`. Scene: `himalaya_scene.py --robot g1_unitree_ascender`.
+A black mounting flange (`tool_flange`, cylinder r=26 mm) bridges the wrist link and the cam head. Tune `TOOL_POS` / `_R` / `FLANGE_*` in `attach_tool.py`. Scene: `himalaya_scene.py --robot g1_unitree_ascender`.
 
 ### Policy note — wrist offset
 The ascender is fixed to `right_wrist_yaw_link`, so its pose is entirely set by the 3 wrist joints
