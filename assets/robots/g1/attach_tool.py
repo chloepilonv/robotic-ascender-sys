@@ -16,12 +16,12 @@ LINK = "/G1/right_wrist_yaw_link"
 # Mount: ascender UPRIGHT like on a fixed rope - cam head centred on the wrist joint, handle hanging below
 # (wrist frame: X = forearm, Z = up when the arm is horizontal).
 # Basis mapping (Gf is row-vector convention: rows = images of tool X, Y, Z in the wrist frame):
-#   tool X (width)        -> wrist -X
-#   tool Y (thickness)    -> wrist -Y   (cam plate faces sideways)
+#   tool X (width)        -> wrist +X
+#   tool Y (thickness)    -> wrist +Y   (cam plate faces sideways)
 #   tool Z (handle->head) -> wrist +Z   (head up, handle down)
-_R = Gf.Matrix3d(-1, 0, 0,   0, -1, 0,   0, 0, 1)
+_R = Gf.Matrix3d(1, 0, 0,   0, 1, 0,   0, 0, 1)
 HEAD_Z = (0.12, 0.195)                       # cam head span along the tool axis
-TOOL_POS = Gf.Vec3d(0.06, 0.0, -(HEAD_Z[0] + HEAD_Z[1]) / 2)   # head centred on the joint, just past the wrist mesh (x=0.047)
+TOOL_POS = Gf.Vec3d(0.08, 0.0, -(HEAD_Z[0] + HEAD_Z[1]) / 2)   # head on the joint, 2 cm clear of the wrist mesh (ends x=0.047)
 _qd = _R.ExtractRotation().GetQuat(); TOOL_ROT = Gf.Quatf(_qd.GetReal(), *_qd.GetImaginary())
 HAND_X_MIN = 0.08  # the rubber-hand paddle lives at x 0.087..0.132 in the wrist frame; wrist link mesh ends at 0.047
 
