@@ -55,7 +55,8 @@ GEAR_PRIMS = [
     ("left_knee_link",  "cyl", (0.0, 0.0, -0.20), (0.049, 0.008), BOOT_TRIM),
     ("right_knee_link", "cyl", (0.0, 0.0, -0.20), (0.049, 0.008), BOOT_TRIM),
     # hood behind the head (torso local frame; head sits ~0.30-0.45 up)
-    ("torso_link", "sphere", (-0.075, 0.0, 0.40), (0.082,), JACKET_BLUE),
+    # hood: sits behind the head (head spans x -0.06..0.075, z 0.28..0.49 in torso frame) — must not cover the face
+    ("torso_link", "sphere", (-0.125, 0.0, 0.41), (0.07,), JACKET_BLUE),
 ]
 
 def q_mj2gf(q):  # mujoco wxyz -> Gf.Quatf
@@ -190,6 +191,8 @@ def build(xml, out, gear=True):
             v = np.concatenate([lv for lv, _ in link_verts])
             f = np.concatenate([lf + sum(len(x[0]) for x in link_verts[:i]) for i, (_, lf) in enumerate(link_verts)])
             hv, hf = inflated_hull(v, f, off)
+            if name == "torso_link":
+                hv[:, 2] = np.minimum(hv[:, 2], 0.30)  # collar stops below the head
             gearscope = UsdGeom.Scope.Define(stage, bpath.AppendChild("gear"))
             write_mesh(stage, gearscope.GetPath().AppendChild(gname), hv, hf, color2mat[color])
         if gear:
