@@ -23,3 +23,4 @@ app/harness/scene_assets/
 .venv-mjlab/
 logs/
 assets/robots/g1/_menagerie
+# Generated reference model (tools/fetch_reference_model.py)
