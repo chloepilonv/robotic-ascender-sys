@@ -87,4 +87,10 @@ mass.GetDiagonalInertiaAttr().Set(Gf.Vec3f(*map(float, I0)))
 link.SetCustomDataByKey("tool", "ascender")
 
 stage.GetRootLayer().Save()
+# the MAIN robot file carries the gripper: g1_unitree.usd -> reference to g1_unitree_ascender.usd
+MAIN = os.path.join(HERE, "..", "g1_unitree.usd")
+if os.path.exists(MAIN): os.remove(MAIN)
+main = Usd.Stage.CreateNew(MAIN); UsdGeom.SetStageUpAxis(main, UsdGeom.Tokens.z); UsdGeom.SetStageMetersPerUnit(main, 1.0)
+mp = main.DefinePrim("/G1"); mp.GetReferences().AddReference("./g1_unitree_ascender.usd"); main.SetDefaultPrim(mp); main.GetRootLayer().Save()
+print(f"wrote {MAIN} (references g1_unitree_ascender.usd)")
 print(f"wrote {OUT} (references g1/g1_himalaya.usd); {LINK} mass {m0:.3f} -> {m0 + mt:.3f} kg")

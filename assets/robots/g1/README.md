@@ -1,6 +1,7 @@
 # Unitree G1 — Himalaya edition (Isaac Sim USD)
 
-**Shared file: `assets/robots/g1_unitree.usd`** (identical copy of `assets/robots/g1/g1_himalaya.usd`, kept in sync by `build_g1_usd.py`).
+**Main robot: `assets/robots/g1_unitree.usd`** = dressed G1 **with the ascender end-effector** (references `g1_unitree_ascender.usd`).
+`assets/robots/g1_unitree_bare.usd` = same robot with both rubber hands (references `g1/g1_himalaya.usd`). All three are thin reference stages; keep the `assets/` tree together.
 
 `g1_himalaya.usd` = the 29-DoF Unitree G1 from
 [mujoco_menagerie/unitree_g1](https://github.com/google-deepmind/mujoco_menagerie/tree/main/unitree_g1)

@@ -18,7 +18,7 @@ ap.add_argument("--signal-port", default=os.environ.get("ISAACSIM_SIGNAL_PORT", 
 ap.add_argument("--stream-port", default=os.environ.get("ISAACSIM_STREAM_PORT", "47998"))
 ap.add_argument("--frames", type=int, default=0, help="step N frames then exit (0 = run until closed)")
 ap.add_argument("--save", default="", help="also save the assembled stage to this .usd")
-ap.add_argument("--robot", default="g1_unitree", choices=["g1_unitree", "g1_unitree_ascender"],
+ap.add_argument("--robot", default="g1_unitree", choices=["g1_unitree", "g1_unitree_ascender", "g1_unitree_bare"],
                 help="which robots/<name>.usd to spawn")
 ap.add_argument("--assets", default=os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
                 help="assets/ root (defaults to this file's parent)")
