@@ -18,7 +18,7 @@ Gear lives under `/G1/<link>/gear/*`, is **visual only** (no collision, no mass)
 | hinge joints (29) | `RevoluteJoint` (limits in deg) + `DriveAPI angular` (kp=500, kv from MJCF), `physxJoint:armature/jointFriction` |
 | visual meshes | `Mesh` under `<link>/visuals`, metal/black `UsdPreviewSurface` |
 | collision meshes | `Mesh` under `<link>/collisions`, convex hull, purpose=guide |
-| foot spheres | `Sphere` colliders with friction 0.6 |
+| foot spheres | `Sphere` colliders, friction `BOOT_FRICTION` = 0.8 (stock 0.6; `--no-gear` keeps 0.6). **Changing it alters slip dynamics → retrain/re-eval the policy.** |
 | freejoint | floating base: `ArticulationRootAPI` on `/G1`, no fixed joint |
 
 Joint prim names == MJCF joint names (`left_hip_pitch_joint`, …) → Isaac Lab `joint_names_expr` regexes from the stock G1 cfg work unchanged.

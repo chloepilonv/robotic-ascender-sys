@@ -34,6 +34,7 @@ def fetch_menagerie():
 JACKET_BLUE = (0.05, 0.25, 0.85)
 BOOT_YELLOW = (0.95, 0.80, 0.05)
 BOOT_TRIM   = (0.10, 0.10, 0.10)
+BOOT_FRICTION = 0.8  # stock menagerie = 0.6. Keep moderate: higher grip changes slip dynamics -> retrain the policy.
 GEAR = {
     "torso_link":              (JACKET_BLUE, 0.020, "jacket_body"),
     "left_shoulder_roll_link": (JACKET_BLUE, 0.014, "jacket_sleeve"),
@@ -172,8 +173,8 @@ def build(xml, out, gear=True):
                 if is_col:
                     UsdPhysics.CollisionAPI.Apply(s.GetPrim()); s.CreatePurposeAttr("guide")
                     pm = UsdPhysics.MaterialAPI.Apply(s.GetPrim())
-                    pm.CreateStaticFrictionAttr(float(model.geom_friction[g][0]))
-                    pm.CreateDynamicFrictionAttr(float(model.geom_friction[g][0]))
+                    mu = BOOT_FRICTION if gear else float(model.geom_friction[g][0])
+                    pm.CreateStaticFrictionAttr(mu); pm.CreateDynamicFrictionAttr(mu)
             elif gtype == mujoco.mjtGeom.mjGEOM_CYLINDER:
                 c = UsdGeom.Cylinder.Define(stage, gpath)
                 c.CreateRadiusAttr(float(model.geom_size[g][0]))
