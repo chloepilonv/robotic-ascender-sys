@@ -27,7 +27,7 @@ Writes `monitoring/sim/log.jsonl`, one line per sim second → point the app at 
 | base pose/velocity (`xpos`, `xquat`, `cvel`), IMU sensors | motor + battery temperature (1st-order thermal) |
 | contact forces (`mj_contactForce`) | ambient temp from altitude, wind chill, air density |
 
-## Tunables (top of `battery_model.py`) — placeholders until we have real logs
+## Derived constants (top of `battery_model.py`) — from generic Li-ion / BLDC data, calibrate with real logs
 `ETA` 0.70, `R_WIND` 0.10 Ω, `KT_JOINT` 2.0 N·m/A, `P_IDLE_W` 60, `R_INT_25` 0.08 Ω, thermal C/R. Calibrate against `real/log.jsonl`.
 Sanity: standing + arm swing ≈ 70 W; walking should land ~150–300 W.
 

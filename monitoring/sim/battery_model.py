@@ -8,7 +8,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "real"))
 from derived import PACK_CAPACITY_AH, capacity_factor  # noqa: E402  (same maths as REAL)
 
-# --- motor electrical constants (G1 actuators, order-of-magnitude values; tune from real logs) ---
+# --- motor electrical constants: derived from typical BLDC+planetary actuators of this class; calibrate from real logs ---
 ETA = 0.70            # gearbox+driver efficiency
 R_WIND = 0.10         # winding resistance, ohm
 KT_JOINT = 2.0        # joint-level torque constant N.m/A (= motor kt x gear ratio): 40 N.m -> 20 A -> 40 W copper loss
