@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Create g1_unitree_ascender.usd: the dressed G1 holding the ascender in its right hand.
+"""Create g1_unitree_ascender.usd: the dressed G1 with the ascender AS its right end-effector.
 
-The tool is baked into `right_wrist_yaw_link` (visual + convex collision), its mass/CoM folded into the link's
-MassAPI. No extra body/joint -> same 29-DoF articulation, Isaac Lab cfgs unchanged.
-Grip: handle vertical in front of the palm (wrist +Z = up, cam head up), like on a fixed rope.
+The rubber hand is removed; the ascender is bolted to `right_wrist_yaw_link` where the hand was, handle along
+the forearm (+X), cam head pointing outward. Visual + convex collision are baked into the link, its mass/CoM
+folded into the link's MassAPI. No extra body/joint -> same 29-DoF articulation, Isaac Lab cfgs unchanged.
 """
 import os, numpy as np
 from pxr import Usd, UsdGeom, UsdPhysics, UsdShade, Gf, Sdf, Vt
@@ -13,16 +13,23 @@ SRC = os.path.join(HERE, "g1_himalaya.usd")
 TOOL = os.path.join(HERE, "..", "..", "ascender", "ascender.usd")
 OUT = os.path.join(HERE, "..", "g1_unitree_ascender.usd")
 LINK = "/G1/right_wrist_yaw_link"
-# tool origin (bottom of handle) in wrist_yaw frame: just in front of the rubber-hand paddle (x 0.087..0.132),
-# handle spanning the palm height (z -0.07..0.05), head above.
-TOOL_POS = Gf.Vec3d(0.145, 0.012, -0.075)
-TOOL_ROT = Gf.Quatf(1, 0, 0, 0)  # tool Z (handle) = wrist Z; tool X (width) = wrist X
+# tool origin (bottom of handle) at the end of the wrist link (its mesh ends at x=0.047); tool Z (handle -> cam head)
+# rotated onto wrist +X (forearm axis): rotate 90 deg about Y. Tool width (X) -> wrist -Z, thickness (Y) -> wrist Y.
+TOOL_POS = Gf.Vec3d(0.05, 0.0, 0.0)
+TOOL_ROT = Gf.Quatf(0.7071068, 0.0, 0.7071068, 0.0)
+HAND_X_MIN = 0.08  # the rubber-hand paddle lives at x 0.087..0.132 in the wrist frame; wrist link mesh ends at 0.047
 
 tool = Usd.Stage.Open(TOOL)
 stage = Usd.Stage.Open(SRC)
 link = stage.GetPrimAtPath(LINK)
+for child in list(stage.GetPrimAtPath(LINK + "/visuals").GetChildren()):  # drop the rubber hand: the tool replaces it
+    if child.IsA(UsdGeom.Mesh):
+        off = UsdGeom.Xformable(child).GetLocalTransformation().ExtractTranslation()
+        if min(pt[0] for pt in UsdGeom.Mesh(child).GetPointsAttr().Get()) + off[0] > HAND_X_MIN:
+            stage.RemovePrim(child.GetPath())
 tp = UsdGeom.Xform.Define(stage, LINK + "/tool_ascender")
 xf = UsdGeom.Xformable(tp.GetPrim()); xf.AddTranslateOp().Set(TOOL_POS); xf.AddOrientOp().Set(TOOL_ROT)
+TOOL_ROT_D = Gf.Quatd(TOOL_ROT.GetReal(), *TOOL_ROT.GetImaginary())
 
 mat = UsdShade.Material.Define(stage, "/G1/Looks/ascender_alu")
 sh = UsdShade.Shader.Define(stage, "/G1/Looks/ascender_alu/Shader"); sh.CreateIdAttr("UsdPreviewSurface")
@@ -47,7 +54,7 @@ for name, collision in [("visual", False), ("collision", True)]:
 mass = UsdPhysics.MassAPI(link)
 m0, c0 = mass.GetMassAttr().Get(), Gf.Vec3d(mass.GetCenterOfMassAttr().Get())
 mt = UsdPhysics.MassAPI(tool.GetPrimAtPath("/Ascender")).GetMassAttr().Get()
-ct = Gf.Vec3d(UsdPhysics.MassAPI(tool.GetPrimAtPath("/Ascender")).GetCenterOfMassAttr().Get()) + TOOL_POS
+ct = TOOL_ROT_D.Transform(Gf.Vec3d(UsdPhysics.MassAPI(tool.GetPrimAtPath("/Ascender")).GetCenterOfMassAttr().Get())) + TOOL_POS
 c = (c0 * m0 + ct * mt) / (m0 + mt)
 mass.GetMassAttr().Set(float(m0 + mt)); mass.GetCenterOfMassAttr().Set(Gf.Vec3f(c))
 I0 = np.array(mass.GetDiagonalInertiaAttr().Get()); r = np.array(ct - c); I0 += mt * (r.dot(r) - r * r)
