@@ -24,5 +24,4 @@ All prims have `CollisionAPI`; materials carry both `UsdPreviewSurface` (look) a
 Rebuild: `python build_terrain.py` (usd-core + numpy). Isaac Lab: `himalaya_3m_cfg.HIMALAYA_3M_TERRAIN_CFG`.
 
 ## Full scene
-`assets/himalaya_scene.usd` = terrain + `g1_unitree.usd` (spawn at origin, facing -X toward the slopes) + physics scene + dome/sun lights.
-Open directly in Isaac Sim and press Play.
+`assets/environments/himalaya_scene.py` builds the scene with the Isaac Sim API (terrain + G1 + lights + physics) — see `assets/environments/README.md`.

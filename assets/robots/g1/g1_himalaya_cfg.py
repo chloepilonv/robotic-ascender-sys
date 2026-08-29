@@ -1,7 +1,7 @@
-"""Isaac Lab configs for the Himalaya G1 (assets/g1/g1_himalaya.usd).
+"""Isaac Lab configs for the Himalaya G1 (assets/robots/g1/g1_himalaya.usd).
 
 Usage in an env cfg:
-    from assets.g1.g1_himalaya_cfg import G1_HIMALAYA_CFG, G1_SENSORS
+    from assets.robots.g1.g1_himalaya_cfg import G1_HIMALAYA_CFG, G1_SENSORS
     robot = G1_HIMALAYA_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
     imu_pelvis = G1_SENSORS["imu_pelvis"]; contact = G1_SENSORS["contact_feet"]; ...
 """

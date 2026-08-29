@@ -1,4 +1,4 @@
-"""Isaac Lab TerrainImporterCfg for the 3 m Himalaya pad (assets/terrain/himalaya_3m.usd)."""
+"""Isaac Lab TerrainImporterCfg for the 3 m Himalaya pad (assets/environments/himalaya_3m/himalaya_3m.usd)."""
 import os
 from isaaclab.terrains import TerrainImporterCfg
 
