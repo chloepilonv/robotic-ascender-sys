@@ -90,3 +90,52 @@ def view_for(obs_dim: int):
 
 # Command ranges the policy was trained over. Clamp before feeding.
 CMD_LIMITS = np.array([[-1.0, 1.0], [-0.5, 0.5], [-1.0, 1.0]], dtype=np.float32)
+
+
+# ---------------------------------------------------------------------------
+# Unitree SDK facts. VERIFIED against unitree_sdk2_python (unitree_hg IDL and
+# example/g1/low_level/g1_low_level_example.py), not assumed.
+#
+# The SDK's G1JointIndex enum matches JOINT_NAMES above one-for-one, so there
+# is NO permutation between playground order and SDK motor order.
+#
+# LowCmd_.motor_cmd has 35 slots but the G1 has 29 joints -- never size a loop
+# off len(motor_cmd).
+MOTOR_CMD_SLOTS = 35
+MOTOR_MODE_ENABLE = 1     # MotorCmd_.mode: 1 = enable, 0 = disable
+MODE_PR = 0               # series control for ankle pitch/roll -- what we want
+MODE_AB = 1               # parallel control for ankle A/B
+
+# LowCmd_.mode_machine MUST be copied from the incoming LowState_.mode_machine
+# before publishing, or commands are rejected. See session/02, session/04.
+
+# PD gains the policy was TRAINED with, read from the playground model
+# (actuator_gainprm and dof_damping). Use THESE on hardware, not the SDK
+# example's -- the policy learned against this closed-loop response, and every
+# joint differs from the example, ankle_roll and the wrists by 20x.
+TRAIN_KP = np.array([
+    75.0, 75.0, 75.0, 75.0, 20.0, 2.0,       # left leg
+    75.0, 75.0, 75.0, 75.0, 20.0, 2.0,       # right leg
+    75.0, 75.0, 75.0,                        # waist
+    75.0, 75.0, 75.0, 75.0, 2.0, 2.0, 2.0,   # left arm
+    75.0, 75.0, 75.0, 75.0, 2.0, 2.0, 2.0,   # right arm
+], dtype=np.float32)
+TRAIN_KD = np.array([
+    2.0, 2.0, 2.0, 2.0, 1.0, 0.2,
+    2.0, 2.0, 2.0, 2.0, 1.0, 0.2,
+    2.0, 2.0, 2.0,
+    2.0, 2.0, 2.0, 2.0, 0.2, 0.2, 0.2,
+    2.0, 2.0, 2.0, 2.0, 0.2, 0.2, 0.2,
+], dtype=np.float32)
+assert TRAIN_KP.shape == TRAIN_KD.shape == (N_JOINTS,)
+
+# For comparison only -- the gains in Unitree's own low-level example.
+SDK_EXAMPLE_KP = np.array([
+    60, 60, 60, 100, 40, 40, 60, 60, 60, 100, 40, 40, 60, 40, 40,
+    40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40], dtype=np.float32)
+
+# WAIST LOCK WARNING: the SDK example annotates WaistRoll (13) and WaistPitch
+# (14) as "INVALID for g1 23dof/29dof with waist locked". The policy commands
+# all 29 joints and its default pose carries waist_pitch = 0.073 rad. Confirm
+# on the actual robot whether the waist is unlocked before running the policy.
+WAIST_ROLL_IDX, WAIST_PITCH_IDX = 13, 14
