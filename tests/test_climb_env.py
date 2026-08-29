@@ -145,4 +145,67 @@ s_end = float(state.data.qpos[env._slide_qposadr])
 assert s_end >= peak - 0.005, "ratchet lost the high point"
 print(f"slide-up OK: {s0:.4f} -> peak {peak:.4f}, held at {s_end:.4f}")
 
+
+# =========================================================================
+# Himalaya terrain mode (teammate's 3 m pad: snow/ice/rock, 10/40 deg
+# wedges; rope up the 40 deg wedge).
+# =========================================================================
+
+# --- H1. terrain port + materials ----------------------------------------
+env_h = registry.load("G1ClimbAscenderHimalaya")
+assert env_h._config.climb_config.terrain == "himalaya"
+m_h = env_h.mj_model
+for name in ("ice", "wall", "slope_10deg", "slope_40deg", "rope_geom"):
+  m_h.geom(name)
+for pair, mu in (
+    ("left_foot_floor", 0.5),   # packed snow
+    ("left_foot_slope_40deg", 0.5),
+    ("left_foot_ice", 0.1),     # ice
+    ("left_foot_wall", 0.8),    # rock
+):
+  got = m_h.pair_friction[m_h.pair(pair).id][:2]
+  assert np.allclose(got, mu), (pair, got, mu)
+print("terrain port OK: snow 0.5 / ice 0.1 / rock 0.8 on explicit pairs")
+
+# --- H2. geometry: wedges rise toward -X, rope parallel to the 40 deg ramp
+d_h = mujoco.MjData(m_h)
+d_h.qpos[:] = m_h.key("knees_bent").qpos
+mujoco.mj_forward(m_h, d_h)
+th40 = math.radians(40)
+n40 = d_h.geom_xmat[m_h.geom("slope_40deg").id].reshape(3, 3)[:, 2]
+assert np.allclose(n40, [math.sin(th40), 0, math.cos(th40)], atol=1e-6), n40
+axis_h = np.asarray(env_h._slope_axis)
+assert abs(float(axis_h @ n40)) < 1e-6, "rope not parallel to the ramp"
+# Ramp top face: rises from x=-0.25 (z=0) to x=-1.25 (z=0.84).
+c40 = d_h.geom_xpos[m_h.geom("slope_40deg").id]
+top_c = c40 + n40 * 0.15
+uphill = np.array([-math.cos(th40), 0, math.sin(th40)])
+lo_edge = top_c - uphill * (0.5 / math.cos(th40))
+hi_edge = top_c + uphill * (0.5 / math.cos(th40))
+assert abs(lo_edge[0] + 0.25) < 1e-3 and lo_edge[2] < 0.02, lo_edge
+assert abs(hi_edge[0] + 1.25) < 1e-3 and abs(hi_edge[2] - 0.84) < 1e-3, hi_edge
+print(f"ramp OK: base {np.round(lo_edge,3)} -> top {np.round(hi_edge,3)}")
+
+# --- H3. spawn: upright on snow at the ramp base, facing -X --------------
+pelvis = np.asarray(d_h.qpos[0:3])
+assert abs(pelvis[2] - 0.755) < 1e-6, pelvis  # keyframe height, upright
+palm_h = d_h.site_xpos[m_h.site("right_palm").id]
+carrier_h = d_h.site_xpos[m_h.site("carrier_site").id]
+assert np.linalg.norm(carrier_h - palm_h) < 1e-6
+print(f"spawn OK: pelvis {np.round(pelvis,3)}, palm on carrier")
+
+# --- H4. obs + 5 s zero-action sag on the himalaya pad -------------------
+state_h = jax.jit(env_h.reset)(jax.random.PRNGKey(0))
+assert np.asarray(state_h.obs["state"]).shape == (103,)
+prev_h = float(state_h.data.qpos[env_h._slide_qposadr])
+for i in range(250):
+  state_h = jax.jit(env_h.step)(state_h, jp.zeros(env_h.action_size))
+  q = np.asarray(state_h.data.qpos)
+  assert not np.isnan(q).any(), f"NaN at step {i}"
+  s = float(q[env_h._slide_qposadr])
+  assert s >= prev_h - 1e-9, f"ascender slipped at {i}: {prev_h} -> {s}"
+  prev_h = s
+  assert float(env_h.hand_line_error(state_h.data)) < 0.05
+print(f"himalaya sag OK: slide {prev_h:.4f} (monotone), hand on line, no NaN")
+
 print("ALL CLIMB SMOKE TESTS PASSED")

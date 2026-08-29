@@ -47,18 +47,30 @@ from ml_collections import config_dict
 from mujoco import mjx
 from mujoco_playground._src import locomotion
 from mujoco_playground._src import mjx_env
+from mujoco_playground._src.locomotion.g1 import base as g1_base
 from mujoco_playground._src.locomotion.g1 import g1_constants as consts
 from mujoco_playground._src.locomotion.g1 import joystick as g1_joystick
 
 _ROBOT_NQ = 36  # freejoint (7) + 29 actuated joints, upstream G1.
 _ROBOT_NV = 35
 
+# Terrain surface materials, ported from the teammate's Himalaya pad
+# (assets/terrain on feat/add-himalaya-terrain-3m; USD materials:
+# packed snow 0.50/0.45, ice 0.10/0.08, rock 0.80/0.75).
+_MU_SNOW = 0.50
+_MU_ICE = 0.10
+_MU_ROCK = 0.80
+
 
 def default_config() -> config_dict.ConfigDict:
   """Upstream G1 joystick config plus `climb_config`."""
   cfg = g1_joystick.default_config()
   cfg.climb_config = config_dict.create(
-      slope_deg=30.0,  # slope angle, degrees above horizontal.
+      # Terrain mode: "slope" (single tilted plane) or "himalaya" (the
+      # 3 m multi-material test pad from the terrain PR, rope up the
+      # 40 deg snow wedge).
+      terrain="slope",
+      slope_deg=30.0,  # slope angle (slope mode), degrees.
       # Fixed-line geometry (m).
       rope_radius=0.02,  # visual cylinder radius.
       rope_length=15.0,  # cylinder length upslope from the grip start.
@@ -71,12 +83,14 @@ def default_config() -> config_dict.ConfigDict:
       # Equality (grip) solver parameters; verified stable on MJX.
       grip_solref=(0.004, 1.0),
       grip_solimp=(0.95, 0.99, 0.001, 0.5, 2.0),
-      # Foot friction on the slope surface.
+      # Foot traction (effective friction of the foot-floor contact,
+      # set on the explicit pair so it actually applies).
       foot_friction=0.8,
   )
-  # Extra constraint rows: 3 (connect equality) + 1 (slide frictionloss)
-  # + margin.
-  cfg.njmax = 29 * 2 + 8 * 4 + 8
+  # Extra constraint rows: connect equality + slide frictionloss +
+  # terrain contacts (himalaya mode: feet can touch floor, wedges,
+  # ice, and wall in one solve) + margin.
+  cfg.njmax = 29 * 2 + 8 * 4 + 40
   return cfg
 
 
@@ -93,6 +107,24 @@ def _rewrite_mesh_paths(spec: mujoco.MjSpec) -> None:
       cand = real_dir / os.path.basename(mesh.file)
       if cand.exists():
         mesh.file = cand.as_posix()
+
+
+def _load_scene_spec(task: str) -> mujoco.MjSpec:
+  """Load the upstream G1 scene spec with vendored mesh paths."""
+  spec = mujoco.MjSpec.from_file(consts.task_to_xml(task).as_posix())
+  _rewrite_mesh_paths(spec)
+  return spec
+
+
+def _set_foot_traction(spec: mujoco.MjSpec, mu: float) -> None:
+  """Set the effective foot-floor friction.
+
+  The upstream scene declares explicit `<pair>` contacts for
+  foot<->floor, which override geom-level friction, so the pair (not
+  the foot geoms) must be edited.
+  """
+  for name in ("left_foot_floor", "right_foot_floor"):
+    spec.pair(name).friction = np.array([mu, mu, 0.005, 1e-4, 1e-4])
 
 
 class G1ClimbAscender(g1_joystick.Joystick):
@@ -129,40 +161,199 @@ class G1ClimbAscender(g1_joystick.Joystick):
 
   def _build_model(self) -> None:
     cc = self._config.climb_config
+    terrain = str(cc.terrain)
+    if terrain == "slope":
+      spec, axis = self._build_slope_spec()
+    elif terrain == "himalaya":
+      spec, axis = self._build_himalaya_spec()
+    else:
+      raise ValueError(
+          f"climb_config.terrain must be 'slope' or 'himalaya', got {terrain!r}"
+      )
+
+    self._finish_model(spec, axis)
+
+  def _build_slope_spec(self) -> tuple[mujoco.MjSpec, np.ndarray]:
+    """Single tilted plane rising toward +x; rope parallel to it."""
+    cc = self._config.climb_config
     slope = math.radians(float(cc.slope_deg))
     # Uphill direction in the world xz-plane (floor rises toward +x).
     axis = np.array([math.cos(slope), 0.0, math.sin(slope)])
 
-    spec = mujoco.MjSpec.from_file(consts.task_to_xml(self._task).as_posix())
-    _rewrite_mesh_paths(spec)
-
-    # Tilt the floor about +y so the surface rises toward +x (uphill +x).
+    spec = _load_scene_spec(self._task)
     floor = spec.geom("floor")
     if floor.type != mujoco.mjtGeom.mjGEOM_PLANE:
       raise ValueError(f"expected a plane floor, got {floor.type}")
+    # Tilt about +y so the surface rises toward +x (uphill +x).
     floor.quat = (
         math.cos(slope / 2),
         0.0,
         -math.sin(slope / 2),
         0.0,
     )
-    # Tangential foot friction on the incline (upstream feet are
-    # condim=1, frictionless normals).
-    for g in spec.geoms:
-      if g.name in ("left_foot", "right_foot"):
-        g.condim = 3
-        g.friction = (float(cc.foot_friction), 0.005, 0.0001)
+    _set_foot_traction(spec, float(cc.foot_friction))
+    return spec, axis
 
-    # Right-palm world position in the rest pose, on the tilted slope.
+  def _build_himalaya_spec(self) -> tuple[mujoco.MjSpec, np.ndarray]:
+    """Port of the teammate's 3 m Himalaya test pad (terrain PR).
+
+    Mirrors assets/terrain/build_terrain.py geometry and USD materials:
+    packed-snow floor (mu 0.5), 1 m ice slab (mu 0.1) in the NE
+    quadrant, 10 deg / 40 deg snow wedges rising toward -X in the W
+    quadrants, and a rock wall (mu 0.8) at x=1.0 in the SE quadrant.
+    The robot spawns at the centre facing -X (up the wedges) and the
+    fixed line runs up the 40 deg wedge surface.
+
+    Contact sensors for the wedges are spliced into the sensor.xml
+    include content (the MjSpec Python binding cannot express
+    <contact geom1 geom2> directly); terrain geoms, pairs, and the
+    ascender are then added via the spec API.
+    """
+    cc = self._config.climb_config
+    wedge_deg = 40.0
+    th = math.radians(wedge_deg)
+    # Uphill direction on the 40 deg wedge: rises toward -X.
+    axis = np.array([-math.cos(th), 0.0, math.sin(th)])
+
+    # --- scene spec with extra foot<->wedge contact sensors -----------
+    from etils import epath  # noqa: PLC0415
+
+    scene = epath.Path(consts.task_to_xml(self._task)).read_text()
+    assets = g1_base.get_assets()
+    extra_sensors = "".join(
+        f'<contact name="{foot}_wedge_found" geom1="{foot}"'
+        f' geom2="slope_{wedge_deg:.0f}deg" reduce="mindist" num="1"'
+        f' data="found"/>\n'
+        for foot in ("left_foot", "right_foot")
+    )
+    include = {}
+    for name in ("g1_mjx_feetonly.xml", "sensor.xml"):
+      content = assets[name]
+      if name == "sensor.xml":
+        text = content.decode() if isinstance(content, bytes) else content
+        content = text.replace("</sensor>", extra_sensors + "</sensor>").encode()
+      include[name] = content
+    mesh_assets = {k: v for k, v in assets.items() if not k.endswith(".xml")}
+    spec = mujoco.MjSpec.from_string(scene, include=include, assets=mesh_assets)
+
+    # --- snow floor ----------------------------------------------------
+    # Reuse the scene floor geom as packed snow: drop the checker
+    # material, snow-white rgba, snow friction on the foot pairs.
+    floor = spec.geom("floor")
+    floor.material = ""
+    floor.rgba = (0.92, 0.94, 0.97, 1.0)
+    _set_foot_traction(spec, _MU_SNOW)
+
+    wb = spec.worldbody
+
+    def add_box(name, center, size, quat, rgba):
+      return wb.add_geom(
+          name=name,
+          type=mujoco.mjtGeom.mjGEOM_BOX,
+          size=size,
+          pos=center,
+          quat=quat,
+          rgba=rgba,
+          contype=0,
+          conaffinity=0,
+      )
+
+    def wedge(deg, cx, cy, mu):
+      """Box whose TOP face is the ramp: 1 m run rising toward -X."""
+      th_ = math.radians(deg)
+      rise = math.tan(th_)  # run = 1.0 m
+      length = 1.0 / math.cos(th_)
+      thick = 0.3
+      # Top-face centre at (cx, cy, rise/2); box centre sunk thick/2
+      # along the face normal so the box reaches below the floor.
+      n = np.array([math.sin(th_), 0.0, math.cos(th_)])  # tilts toward +X
+      center = np.array([cx, cy, rise / 2]) - n * thick / 2
+      # Rotate about +y so the top-face normal tilts toward +X and the
+      # surface rises toward -X (in-plane uphill = (-cos, 0, sin)).
+      quat = (math.cos(th_ / 2), 0.0, math.sin(th_ / 2), 0.0)
+      name = f"slope_{deg:.0f}deg"
+      add_box(
+          name, tuple(center), (length / 2, 0.5, thick / 2), quat,
+          (0.92, 0.94, 0.97, 1.0),
+      )
+      for foot in ("left_foot", "right_foot"):
+        spec.add_pair(
+            name=f"{foot}_{name}",
+            geomname1=foot,
+            geomname2=name,
+            condim=3,
+            friction=np.array([mu, mu, 0.005, 1e-4, 1e-4]),
+        )
+      return name
+
+    # 10 deg (NW) and 40 deg (SW) snow wedges; 1x1 m ice slab (NE);
+    # rock wall (SE): 1 m long, face at x=1.0.
+    wedge(10.0, -0.75, 0.75, _MU_SNOW)
+    wedge_name = wedge(40.0, -0.75, -0.75, _MU_SNOW)
+    add_box(
+        "ice", (0.75, 0.75, 0.005), (0.5, 0.5, 0.005),
+        (1.0, 0.0, 0.0, 0.0), (0.75, 0.88, 1.0, 1.0),
+    )
+    add_box(
+        "wall", (1.075, -0.75, 0.5), (0.075, 0.5, 0.5),
+        (1.0, 0.0, 0.0, 0.0), (0.35, 0.33, 0.31, 1.0),
+    )
+    # Foot contacts on ice and wall (explicit pairs set their friction).
+    for foot in ("left_foot", "right_foot"):
+      spec.add_pair(
+          name=f"{foot}_ice", geomname1=foot, geomname2="ice", condim=3,
+          friction=np.array([_MU_ICE, _MU_ICE, 0.005, 1e-4, 1e-4]),
+      )
+      spec.add_pair(
+          name=f"{foot}_wall", geomname1=foot, geomname2="wall", condim=3,
+          friction=np.array([_MU_ROCK, _MU_ROCK, 0.005, 1e-4, 1e-4]),
+      )
+
+    # Robot spawns upright on the flat snow at the 40 deg wedge base,
+    # facing uphill (-X). The fixed line passes through the rest palm
+    # and runs up parallel to the ramp surface, ~waist height above it;
+    # as the robot climbs the wedge the hand rides up the line.
+    # Spawn pose is applied to the keyframes in _finish_model.
+    self._spawn_yaw = math.pi  # face -X (uphill on the wedges)
+    self._spawn_pos = np.array([-0.05, -0.75, 0.755])
+    self._wedge_name = wedge_name
+    return spec, axis
+
+  def _finish_model(self, spec: mujoco.MjSpec, axis: np.ndarray) -> None:
+    """Add the fixed line + ascender, compile, refresh derived fields."""
+    cc = self._config.climb_config
+
+    # Right-palm world position in the rest pose on this terrain. In
+    # himalaya mode the rest pose is translated to the wedge base and
+    # rotated to face uphill (-X); the keyframe stays upright.
     base_model = spec.compile()
     base_data = mujoco.MjData(base_model)
     kf = next(k for k in spec.keys if k.name == "knees_bent")
     base_data.qpos[:] = kf.qpos
+    yaw = getattr(self, "_spawn_yaw", 0.0)
+    spawn_pos = getattr(self, "_spawn_pos", None)
+    if yaw:
+      q = base_data.qpos[3:7].copy()
+      rot = np.array([
+          math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2)
+      ])
+      w1, x1, y1, z1 = rot
+      w2, x2, y2, z2 = q
+      base_data.qpos[3:7] = (
+          w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+          w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+          w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+          w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+      )
+    if spawn_pos is not None:
+      # Keep the keyframe's z: place the root at spawn_pos with the
+      # keyframe pelvis height (feet just above the ramp surface).
+      base_data.qpos[0:3] = spawn_pos
     mujoco.mj_forward(base_model, base_data)
     palm0 = base_data.site_xpos[base_model.site("right_palm").id].copy()
 
     # Fixed line through the rest palm (optionally nudged sideways).
-    # Parallel to the slope surface by construction (axis lies in-plane).
+    # Parallel to the climb surface by construction (axis in-plane).
     line_pt = palm0 + np.array([0.0, float(cc.line_offset_y), 0.0])
 
     wb = spec.worldbody
@@ -219,9 +410,27 @@ class G1ClimbAscender(g1_joystick.Joystick):
     eq.solref = tuple(float(v) for v in cc.grip_solref)
     eq.solimp = tuple(float(v) for v in cc.grip_solimp)
 
-    # Keyframes gain the slide coordinate (0 = carrier at line_pt).
+    # Keyframes gain the slide coordinate (0 = carrier at line_pt) and
+    # the spawn orientation/position (robot stands at the wedge base
+    # facing uphill in himalaya mode).
+    yawq = np.array([
+        math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2)
+    ])
     for k in spec.keys:
-      k.qpos = np.concatenate([np.asarray(k.qpos), [0.0]])
+      qpos = np.asarray(k.qpos, dtype=float).copy()
+      if yaw:
+        q = qpos[3:7]
+        w1, x1, y1, z1 = yawq
+        w2, x2, y2, z2 = q
+        qpos[3:7] = (
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        )
+      if spawn_pos is not None:
+        qpos[0:3] = spawn_pos
+      k.qpos = np.concatenate([qpos, [0.0]])
 
     self._mj_model = spec.compile()
     self._mj_model.opt.timestep = self.sim_dt
@@ -260,6 +469,11 @@ class G1ClimbAscender(g1_joystick.Joystick):
     self._carrier_site_id = self._mj_model.site("carrier_site").id
     self._line_pt = jp.array(line_pt)
     self._slope_axis = jp.array(axis)
+    # Support contact sensors: floor (+ climb wedge in himalaya mode).
+    self._feet_support_sensors = (
+        list(self._feet_floor_found_sensor)
+        + getattr(self, "_feet_extra_found_sensor", [])
+    )
 
   # ------------------------------------------------------------------
   # MJX stepping with the ascender ratchet.
@@ -283,6 +497,19 @@ class G1ClimbAscender(g1_joystick.Joystick):
       return data.replace(qpos=qpos, qvel=qvel), None
 
     return jax.lax.scan(single_step, data, (), self._n_substeps)[0]
+
+
+  def _feet_contact(self, data: mjx.Data) -> jax.Array:
+    """Per-foot support contact (floor OR climb wedge), shape (2,)."""
+    raw = jp.array([
+        data.sensordata[self._mj_model.sensor_adr[sensorid]] > 0
+        for sensorid in self._feet_support_sensors
+    ])
+    if raw.shape[0] == 2:
+      return raw
+    # Sensors alternate [lf_floor, rf_floor, lf_wedge, rf_wedge, ...].
+    n_surfaces = raw.shape[0] // 2
+    return jp.any(raw.reshape(n_surfaces, 2), axis=0)
 
   # ------------------------------------------------------------------
   # Env API.
@@ -344,10 +571,7 @@ class G1ClimbAscender(g1_joystick.Joystick):
       metrics[f"reward/{k}"] = jp.zeros(())
     metrics["swing_peak"] = jp.zeros(())
 
-    contact = jp.array([
-        data.sensordata[self._mj_model.sensor_adr[sensorid]] > 0
-        for sensorid in self._feet_floor_found_sensor
-    ])
+    contact = self._feet_contact(data)
     obs = self._get_obs(data, info, contact)
     reward, done = jp.zeros(2)
     return mjx_env.State(data, obs, reward, done, metrics, info)
@@ -360,10 +584,7 @@ class G1ClimbAscender(g1_joystick.Joystick):
     data = self._step_physics(state.data, motor_targets)
     state_info = {**state.info, "motor_targets": motor_targets}
 
-    contact = jp.array([
-        data.sensordata[self._mj_model.sensor_adr[sensorid]] > 0
-        for sensorid in self._feet_floor_found_sensor
-    ])
+    contact = self._feet_contact(data)
     contact_filt = contact | state_info["last_contact"]
     first_contact = (state_info["feet_air_time"] > 0.0) * contact_filt
     state_info["feet_air_time"] += self.dt
@@ -552,4 +773,23 @@ locomotion.register_environment(
     "G1ClimbAscender",
     functools.partial(G1ClimbAscender, task="flat_terrain"),
     default_config,
+)
+
+
+def _himalaya_config() -> config_dict.ConfigDict:
+  """Slope-mode defaults with the himalaya terrain selected."""
+  cfg = default_config()
+  cfg.climb_config.terrain = "himalaya"
+  return cfg
+
+
+# Himalaya-terrain variant: the 3 m multi-material test pad (snow/ice/
+# rock, 10/40 deg wedges) from the terrain PR, rope up the 40 deg
+# wedge. Same class; only climb_config.terrain differs.
+locomotion.register_environment(
+    "G1ClimbAscenderHimalaya",
+    functools.partial(
+        G1ClimbAscender, task="flat_terrain",
+    ),
+    _himalaya_config,
 )
