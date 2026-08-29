@@ -17,7 +17,7 @@ from pxr import Usd, UsdGeom, UsdPhysics, UsdShade, Gf, Sdf, Vt
 HERE = os.path.dirname(os.path.abspath(__file__))
 RAW, OUT, TEXDIR = os.path.join(HERE, "climbing_tool_raw.usdz"), os.path.join(HERE, "ascender.usd"), os.path.join(HERE, "textures")
 HEIGHT_M = 0.195          # full tool height (Petzl Ascension) -> sets the scale
-CUT_Z = 0.60              # model-space (1 m tall) cut: keep z > CUT_Z  (cam head)
+CUT_Z = 0.65              # model-space (1 m tall) cut: keep z > CUT_Z  (cam head)
 MASS_KG = 0.110           # cam head + body only (full tool = 165 g)
 
 with tempfile.TemporaryDirectory() as tmp:
