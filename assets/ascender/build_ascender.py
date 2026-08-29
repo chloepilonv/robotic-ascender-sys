@@ -42,7 +42,7 @@ c = UsdGeom.Mesh.Define(stage, "/Ascender/collision")
 c.CreatePointsAttr(Vt.Vec3fArray.FromNumpy(hull.vertices.astype(np.float32)))
 c.CreateFaceVertexCountsAttr(Vt.IntArray([3] * len(hull.faces)))
 c.CreateFaceVertexIndicesAttr(Vt.IntArray.FromNumpy(hull.faces.astype(np.int32).ravel()))
-c.CreatePurposeAttr("guide"); UsdPhysics.CollisionAPI.Apply(c.GetPrim())
+c.CreatePurposeAttr("guide"); c.CreateVisibilityAttr("invisible"); UsdPhysics.CollisionAPI.Apply(c.GetPrim())
 UsdPhysics.MeshCollisionAPI.Apply(c.GetPrim()).CreateApproximationAttr("convexHull")
 
 mass = UsdPhysics.MassAPI.Apply(root.GetPrim()); mass.CreateMassAttr(MASS_KG)

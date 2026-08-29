@@ -91,7 +91,7 @@ def write_mesh(stage, path, verts, faces, material=None, collision=False):
     if collision:
         UsdPhysics.CollisionAPI.Apply(m.GetPrim())
         UsdPhysics.MeshCollisionAPI.Apply(m.GetPrim()).CreateApproximationAttr("convexHull")
-        m.CreatePurposeAttr("guide")
+        m.CreatePurposeAttr("guide"); m.CreateVisibilityAttr("invisible")
     return m
 
 def mesh_arrays(model, mid):
@@ -171,7 +171,7 @@ def build(xml, out, gear=True):
                 s.CreateRadiusAttr(float(model.geom_size[g][0]))
                 set_xform(s.GetPrim(), model.geom_pos[g], model.geom_quat[g])
                 if is_col:
-                    UsdPhysics.CollisionAPI.Apply(s.GetPrim()); s.CreatePurposeAttr("guide")
+                    UsdPhysics.CollisionAPI.Apply(s.GetPrim()); s.CreatePurposeAttr("guide"); s.CreateVisibilityAttr("invisible")
                     pm = UsdPhysics.MaterialAPI.Apply(s.GetPrim())
                     mu = BOOT_FRICTION if gear else float(model.geom_friction[g][0])
                     pm.CreateStaticFrictionAttr(mu); pm.CreateDynamicFrictionAttr(mu)
@@ -182,7 +182,7 @@ def build(xml, out, gear=True):
                 c.CreateAxisAttr("Z")
                 set_xform(c.GetPrim(), model.geom_pos[g], model.geom_quat[g])
                 if is_col:
-                    UsdPhysics.CollisionAPI.Apply(c.GetPrim()); c.CreatePurposeAttr("guide")
+                    UsdPhysics.CollisionAPI.Apply(c.GetPrim()); c.CreatePurposeAttr("guide"); c.CreateVisibilityAttr("invisible")
 
         # ---- gear (visual only, no collision, no mass change)
         if gear and name in GEAR and link_verts:

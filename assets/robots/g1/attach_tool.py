@@ -43,7 +43,7 @@ vis.GetReferences().AddReference("../ascender/ascender.usd", "/Ascender/visual")
 src_col = UsdGeom.Mesh(tool.GetPrimAtPath("/Ascender/collision"))
 col = UsdGeom.Mesh.Define(stage, tp.GetPath().AppendChild("collision"))
 col.CreatePointsAttr(src_col.GetPointsAttr().Get()); col.CreateFaceVertexCountsAttr(src_col.GetFaceVertexCountsAttr().Get())
-col.CreateFaceVertexIndicesAttr(src_col.GetFaceVertexIndicesAttr().Get()); col.CreatePurposeAttr("guide")
+col.CreateFaceVertexIndicesAttr(src_col.GetFaceVertexIndicesAttr().Get()); col.CreatePurposeAttr("guide"); col.CreateVisibilityAttr("invisible")
 UsdPhysics.CollisionAPI.Apply(col.GetPrim()); UsdPhysics.MeshCollisionAPI.Apply(col.GetPrim()).CreateApproximationAttr("convexHull")
 
 # fold tool mass into the link (parallel-axis on the diagonal inertia is small at 165 g; keep principal axes)
