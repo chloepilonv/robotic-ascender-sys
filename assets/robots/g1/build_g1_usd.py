@@ -31,7 +31,7 @@ def fetch_menagerie():
 
 # ------------------------------------------------------------------ gear spec
 # link -> (color, inflate_m, name)  — a shell is the link's convex hull pushed out along its normals
-JACKET_BLUE = (0.05, 0.25, 0.85)
+JACKET_BLUE = (0.95, 0.42, 0.06)   # expedition orange (name kept for the gear table)
 BOOT_YELLOW = (0.95, 0.80, 0.05)
 BOOT_TRIM   = (0.10, 0.10, 0.10)
 BOOT_FRICTION = 0.8  # stock menagerie = 0.6. Keep moderate: higher grip changes slip dynamics -> retrain the policy.
