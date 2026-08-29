@@ -55,8 +55,6 @@ GEAR_PRIMS = [
     ("left_knee_link",  "cyl", (0.0, 0.0, -0.20), (0.049, 0.008), BOOT_TRIM),
     ("right_knee_link", "cyl", (0.0, 0.0, -0.20), (0.049, 0.008), BOOT_TRIM),
     # hood behind the head (torso local frame; head sits ~0.30-0.45 up)
-    # hood: sits behind the head (head spans x -0.06..0.075, z 0.28..0.49 in torso frame) — must not cover the face
-    ("torso_link", "sphere", (-0.125, 0.0, 0.41), (0.07,), JACKET_BLUE),
 ]
 
 def q_mj2gf(q):  # mujoco wxyz -> Gf.Quatf

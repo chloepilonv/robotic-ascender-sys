@@ -4,7 +4,7 @@
 [mujoco_menagerie/unitree_g1](https://github.com/google-deepmind/mujoco_menagerie/tree/main/unitree_g1)
 converted to USD (PhysX articulation) + expedition gear:
 
-- **Jacket** (blue): inflated convex hulls on `torso_link`, shoulder/elbow links, hood sphere behind the head.
+- **Jacket** (blue): inflated convex hulls on `torso_link`, shoulder/elbow links.
 - **Plastic boots** (yellow): inflated hulls on `*_ankle_roll_link` / `*_ankle_pitch_link` + shin cuffs on `*_knee_link`.
 
 Gear lives under `/G1/<link>/gear/*`, is **visual only** (no collision, no mass), so physics = stock menagerie G1.
