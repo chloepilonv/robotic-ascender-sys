@@ -55,14 +55,14 @@ root = UsdGeom.Xform.Define(stage, "/Ascender"); stage.SetDefaultPrim(root.GetPr
 UsdPhysics.RigidBodyAPI.Apply(root.GetPrim())
 
 UsdGeom.Xform.Define(stage, "/Ascender/visual")
-# material: UsdPreviewSurface + 4 texture readers
+# material: UsdPreviewSurface + 4 texture readers (colour spaces copied from the Tripo usdz: sRGB for all but the normal map)
 mat = UsdShade.Material.Define(stage, "/Ascender/visual/Looks/ascender_pbr")
 sh = UsdShade.Shader.Define(stage, "/Ascender/visual/Looks/ascender_pbr/Surface"); sh.CreateIdAttr("UsdPreviewSurface")
 uvr = UsdShade.Shader.Define(stage, "/Ascender/visual/Looks/ascender_pbr/uv"); uvr.CreateIdAttr("UsdPrimvarReader_float2")
 uvr.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st"); uvr.CreateOutput("result", Sdf.ValueTypeNames.Float2)
 for name, tex, chan, cs, typ in [("diffuseColor", "basecolor", "rgb", "sRGB", Sdf.ValueTypeNames.Color3f),
-                                 ("metallic", "metallic", "r", "raw", Sdf.ValueTypeNames.Float),
-                                 ("roughness", "roughness", "r", "raw", Sdf.ValueTypeNames.Float),
+                                 ("metallic", "metallic", "r", "sRGB", Sdf.ValueTypeNames.Float),
+                                 ("roughness", "roughness", "r", "sRGB", Sdf.ValueTypeNames.Float),
                                  ("normal", "normal", "rgb", "raw", Sdf.ValueTypeNames.Normal3f)]:
     t = UsdShade.Shader.Define(stage, f"/Ascender/visual/Looks/ascender_pbr/tex_{tex}"); t.CreateIdAttr("UsdUVTexture")
     t.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(f"./textures/{TEX[tex]}")

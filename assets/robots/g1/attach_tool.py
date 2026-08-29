@@ -5,7 +5,7 @@ The rubber hand is removed; the ascender is bolted to `right_wrist_yaw_link` whe
 the forearm (+X), cam head pointing outward. Visual + convex collision are baked into the link, its mass/CoM
 folded into the link's MassAPI. No extra body/joint -> same 29-DoF articulation, Isaac Lab cfgs unchanged.
 """
-import os, numpy as np
+import os, math, numpy as np
 from pxr import Usd, UsdGeom, UsdPhysics, UsdShade, Gf, Sdf, Vt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -13,26 +13,42 @@ SRC = os.path.join(HERE, "g1_himalaya.usd")
 TOOL = os.path.join(HERE, "..", "..", "ascender", "ascender.usd")
 OUT = os.path.join(HERE, "..", "g1_unitree_ascender.usd")
 LINK = "/G1/right_wrist_yaw_link"
-# Mount: ascender UPRIGHT like on a fixed rope - cam head centred on the wrist joint, handle hanging below
-# (wrist frame: X = forearm, Z = up when the arm is horizontal).
-# Basis mapping (Gf is row-vector convention: rows = images of tool X, Y, Z in the wrist frame):
-#   tool X (width)        -> wrist -X
-#   tool Y (thickness)    -> wrist -Y
-#   tool Z (handle->head) -> wrist +Z   (head up)
-_R = Gf.Matrix3d(-1, 0, 0,   0, -1, 0,   0, 0, 1)   # 180 deg yaw about wrist Z
-HEAD_Z = (0.06, 0.11)                        # cam-mechanism span along the tool axis (110 mm tool, cam in the top half)
-TOOL_POS = Gf.Vec3d(0.08, 0.0, -(HEAD_Z[0] + HEAD_Z[1]) / 2)   # device centre 2 cm further out (device is 73 mm wide in X -> back face at x~0.044)
+# Mount: the device's slanted riveted edge (tool +X side, ~26 deg from vertical) butts flat against the wrist end face.
+# Frame: wrist X = forearm, Z = up when the arm is horizontal. Tool: X = width, Y = thickness, Z = up through the cam.
+# 1) yaw 180 deg about Z so the slanted edge faces the wrist (-X)   2) tilt about wrist Y so that edge is vertical.
+_edge = np.array([0.0379 - 0.0087, 0.0, 0.07 - 0.01])              # slanted edge direction in tool frame (from the mesh)
+SLANT_DEG = math.degrees(math.atan2(_edge[0], _edge[2]))
+_yaw = Gf.Matrix3d(-1, 0, 0,   0, -1, 0,   0, 0, 1)
+_R = None
+for _sgn in (1, -1):                                   # pick the tilt sign/order that makes the edge vertical (row-vector convention)
+    for _cand in (_yaw * Gf.Matrix3d(Gf.Rotation(Gf.Vec3d(0, 1, 0), _sgn * SLANT_DEG)),
+                  Gf.Matrix3d(Gf.Rotation(Gf.Vec3d(0, 1, 0), _sgn * SLANT_DEG)) * _yaw):
+        _e = Gf.Vec3d(*_edge).GetNormalized() * _cand
+        if abs(_e[0]) < 1e-3 and _e[2] > 0.99:
+            _R = _cand
+assert _R is not None, "no tilt made the edge vertical"
+_ts = Usd.Stage.Open(TOOL)   # keep the stage alive while reading
+_tv = np.array(UsdGeom.Mesh(_ts.GetPrimAtPath("/Ascender/visual/mesh")).GetPointsAttr().Get(), dtype=np.float64)
+_tr = np.array([Gf.Vec3d(*v) * _R for v in _tv[::50]])           # rotated sample of the tool points (wrist frame, before translation)
+EDGE_X, CAM_Z_TOOL = 0.036, 0.085                                  # edge 1 cm past the wrist mesh (ends x=0.026); cam centre at wrist z=0
+_cam = Gf.Vec3d(0, 0, CAM_Z_TOOL) * _R
+TOOL_POS = Gf.Vec3d(EDGE_X - _tr[:, 0].min(), 0.0, -_cam[2])
 _qd = _R.ExtractRotation().GetQuat(); TOOL_ROT = Gf.Quatf(_qd.GetReal(), *_qd.GetImaginary())
 HAND_X_MIN = 0.08  # the rubber-hand paddle lives at x 0.087..0.132 in the wrist frame; wrist link mesh ends at 0.047
 
 tool = Usd.Stage.Open(TOOL)
-stage = Usd.Stage.Open(SRC)
-link = stage.GetPrimAtPath(LINK)
-for child in list(stage.GetPrimAtPath(LINK + "/visuals").GetChildren()):  # drop the rubber hand: the tool replaces it
+src = Usd.Stage.Open(SRC)                     # read-only: geometry queries
+# Output = thin stage that REFERENCES g1_himalaya.usd and authors overrides (relative texture paths keep working)
+stage = Usd.Stage.CreateNew(OUT)
+UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z); UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+g1 = stage.DefinePrim("/G1"); g1.GetReferences().AddReference(os.path.relpath(SRC, os.path.dirname(OUT)).replace(os.sep, "/"))
+stage.SetDefaultPrim(g1)
+link = stage.OverridePrim(LINK)
+for child in list(src.GetPrimAtPath(LINK + "/visuals").GetChildren()):  # drop the rubber hand: the tool replaces it
     if child.IsA(UsdGeom.Mesh):
         off = UsdGeom.Xformable(child).GetLocalTransformation().ExtractTranslation()
         if min(pt[0] for pt in UsdGeom.Mesh(child).GetPointsAttr().Get()) + off[0] > HAND_X_MIN:
-            stage.RemovePrim(child.GetPath())
+            stage.OverridePrim(child.GetPath()).SetActive(False)
 tp = UsdGeom.Xform.Define(stage, LINK + "/tool_ascender")
 xf = UsdGeom.Xformable(tp.GetPrim()); xf.AddTranslateOp().Set(TOOL_POS); xf.AddOrientOp().Set(TOOL_ROT)
 TOOL_ROT_D = Gf.Quatd(TOOL_ROT.GetReal(), *TOOL_ROT.GetImaginary())
@@ -46,28 +62,32 @@ col.CreatePointsAttr(src_col.GetPointsAttr().Get()); col.CreateFaceVertexCountsA
 col.CreateFaceVertexIndicesAttr(src_col.GetFaceVertexIndicesAttr().Get()); col.CreatePurposeAttr("guide"); col.CreateVisibilityAttr("invisible")
 UsdPhysics.CollisionAPI.Apply(col.GetPrim()); UsdPhysics.MeshCollisionAPI.Apply(col.GetPrim()).CreateApproximationAttr("convexHull")
 
-# mounting flange: dark cylinder from the wrist link to the cam head so the tool reads as a bolted-on end-effector
+# insertion flange: short dark cylinder from the wrist end into the PLAIN slanted part below the rivets
+# (tool z ~0.03 on the +X edge), so nothing touches the cam mechanism.
 fl_mat = UsdShade.Material.Define(stage, "/G1/Looks/flange_black")
 fsh = UsdShade.Shader.Define(stage, "/G1/Looks/flange_black/Shader"); fsh.CreateIdAttr("UsdPreviewSurface")
 fsh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.12, 0.12, 0.12))
 fsh.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.5); fsh.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.6)
 fl_mat.CreateSurfaceOutput().ConnectToSource(fsh.ConnectableAPI(), "surface")
-FLANGE_X0, FLANGE_X1, FLANGE_R = 0.040, TOOL_POS[0] + 0.006, 0.018   # overlaps wrist mesh (ends 0.047) and the head
+INSERT_TOOL_PT = Gf.Vec3d(0.0126, 0.0, 0.03)          # on the slanted edge, below the rivets (tool frame)
+_ins = INSERT_TOOL_PT * _R + TOOL_POS                  # -> wrist frame
+FLANGE_X0, FLANGE_X1, FLANGE_R = 0.012, _ins[0] + 0.010, 0.010   # starts inside the wrist mesh
 fl = UsdGeom.Cylinder.Define(stage, tp.GetPath().GetParentPath().AppendChild("tool_flange"))
 fl.CreateRadiusAttr(FLANGE_R); fl.CreateHeightAttr(FLANGE_X1 - FLANGE_X0); fl.CreateAxisAttr("X")
-UsdGeom.Xformable(fl.GetPrim()).AddTranslateOp().Set(Gf.Vec3d((FLANGE_X0 + FLANGE_X1) / 2, 0, 0))
+UsdGeom.Xformable(fl.GetPrim()).AddTranslateOp().Set(Gf.Vec3d((FLANGE_X0 + FLANGE_X1) / 2, 0.0, _ins[2]))
 UsdShade.MaterialBindingAPI.Apply(fl.GetPrim()).Bind(fl_mat)
 
 # fold tool mass into the link (parallel-axis on the diagonal inertia is small at 165 g; keep principal axes)
-mass = UsdPhysics.MassAPI(link)
-m0, c0 = mass.GetMassAttr().Get(), Gf.Vec3d(mass.GetCenterOfMassAttr().Get())
+mass_src = UsdPhysics.MassAPI(src.GetPrimAtPath(LINK))
+m0, c0 = mass_src.GetMassAttr().Get(), Gf.Vec3d(mass_src.GetCenterOfMassAttr().Get())
+mass = UsdPhysics.MassAPI(stage.GetPrimAtPath(LINK))   # composed prim: authoring writes overrides into OUT
 mt = UsdPhysics.MassAPI(tool.GetPrimAtPath("/Ascender")).GetMassAttr().Get()
 ct = TOOL_ROT_D.Transform(Gf.Vec3d(UsdPhysics.MassAPI(tool.GetPrimAtPath("/Ascender")).GetCenterOfMassAttr().Get())) + TOOL_POS
 c = (c0 * m0 + ct * mt) / (m0 + mt)
 mass.GetMassAttr().Set(float(m0 + mt)); mass.GetCenterOfMassAttr().Set(Gf.Vec3f(c))
-I0 = np.array(mass.GetDiagonalInertiaAttr().Get()); r = np.array(ct - c); I0 += mt * (r.dot(r) - r * r)
+I0 = np.array(mass_src.GetDiagonalInertiaAttr().Get()); r = np.array(ct - c); I0 += mt * (r.dot(r) - r * r)
 mass.GetDiagonalInertiaAttr().Set(Gf.Vec3f(*map(float, I0)))
 link.SetCustomDataByKey("tool", "ascender")
 
-stage.GetRootLayer().Export(OUT)
-print(f"wrote {OUT}; {LINK} mass {m0:.3f} -> {m0 + mt:.3f} kg")
+stage.GetRootLayer().Save()
+print(f"wrote {OUT} (references g1/g1_himalaya.usd); {LINK} mass {m0:.3f} -> {m0 + mt:.3f} kg")

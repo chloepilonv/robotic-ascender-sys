@@ -99,6 +99,47 @@ def mesh_arrays(model, mid):
     fa, fn = model.mesh_faceadr[mid], model.mesh_facenum[mid]
     return model.mesh_vert[va:va+vn].copy(), model.mesh_face[fa:fa+fn].copy()
 
+LOGO_TEX = "./textures/everest_logo.png"   # relative to g1_himalaya.usd
+def logo_patch(stage, parent_path, hull_v, hull_f, name, center_yz, width, side, material, n=(10, 7)):
+    """Textured quad shrink-wrapped onto the jacket hull along +/-X (side=+1 front, -1 back), 4 mm proud of the surface."""
+    hull = trimesh.Trimesh(hull_v, hull_f)
+    aspect = 0.69; height = width * aspect
+    ys = np.linspace(center_yz[0] - width / 2, center_yz[0] + width / 2, n[0])
+    zs = np.linspace(center_yz[1] - height / 2, center_yz[1] + height / 2, n[1])
+    pts, uvs = [], []
+    for j, z in enumerate(zs):
+        for i, y in enumerate(ys):
+            origin = np.array([side * 1.0, y, z]); loc, _, _ = hull.ray.intersects_location([origin], [[-side, 0, 0]])
+            x = (loc[:, 0].max() if side > 0 else loc[:, 0].min()) if len(loc) else side * 0.09
+            pts.append([x + side * 0.004, y, z]); uvs.append([(i / (n[0] - 1)) if side > 0 else 1 - i / (n[0] - 1), j / (n[1] - 1)])
+    pts = np.array(pts); faces = []
+    for j in range(n[1] - 1):
+        for i in range(n[0] - 1):
+            a = j * n[0] + i; b = a + 1; c = a + n[0]; d = c + 1
+            faces += [[a, b, d], [a, d, c]] if side > 0 else [[a, d, b], [a, c, d]]
+    m = UsdGeom.Mesh.Define(stage, parent_path.AppendChild(name))
+    m.CreatePointsAttr(Vt.Vec3fArray.FromNumpy(pts.astype(np.float32)))
+    m.CreateFaceVertexCountsAttr(Vt.IntArray([3] * len(faces))); m.CreateFaceVertexIndicesAttr(Vt.IntArray.FromNumpy(np.array(faces, np.int32).ravel()))
+    m.CreateSubdivisionSchemeAttr("none"); m.CreateDoubleSidedAttr(True)
+    m.CreateExtentAttr(Vt.Vec3fArray([Gf.Vec3f(*map(float, pts.min(0))), Gf.Vec3f(*map(float, pts.max(0)))]))
+    pv = UsdGeom.PrimvarsAPI(m).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
+    pv.Set(Vt.Vec2fArray.FromNumpy(np.array(uvs, np.float32)))
+    UsdShade.MaterialBindingAPI.Apply(m.GetPrim()).Bind(material)
+
+def make_logo_material(stage, root):
+    path = root.AppendChild("Looks").AppendChild("everest_logo")
+    mat = UsdShade.Material.Define(stage, path)
+    sh = UsdShade.Shader.Define(stage, path.AppendChild("Shader")); sh.CreateIdAttr("UsdPreviewSurface")
+    sh.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.7); sh.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+    uv = UsdShade.Shader.Define(stage, path.AppendChild("uv")); uv.CreateIdAttr("UsdPrimvarReader_float2")
+    uv.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st"); uv.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+    t = UsdShade.Shader.Define(stage, path.AppendChild("tex")); t.CreateIdAttr("UsdUVTexture")
+    t.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(LOGO_TEX); t.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set("sRGB")
+    t.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(uv.ConnectableAPI(), "result"); t.CreateOutput("rgb", Sdf.ValueTypeNames.Color3f)
+    sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(t.ConnectableAPI(), "rgb")
+    mat.CreateSurfaceOutput().ConnectToSource(sh.ConnectableAPI(), "surface")
+    return mat
+
 def inflated_hull(verts, faces, offset):
     hull = trimesh.Trimesh(verts, faces, process=True).convex_hull
     hull = hull.subdivide()  # smoother offset
@@ -194,6 +235,10 @@ def build(xml, out, gear=True):
                 hv[:, 2] = np.minimum(hv[:, 2], 0.30)  # collar stops below the head
             gearscope = UsdGeom.Scope.Define(stage, bpath.AppendChild("gear"))
             write_mesh(stage, gearscope.GetPath().AppendChild(gname), hv, hf, color2mat[color])
+            if name == "torso_link":   # sponsor patches like a real jacket: big on the back, small on the front-right chest
+                logo_mat = make_logo_material(stage, root)
+                logo_patch(stage, gearscope.GetPath(), hv, hf, "logo_back", (0.0, 0.17), 0.17, -1, logo_mat)
+                logo_patch(stage, gearscope.GetPath(), hv, hf, "logo_chest_right", (-0.055, 0.235), 0.06, +1, logo_mat)
         if gear:
             for link, kind, pos, size, color in GEAR_PRIMS:
                 if link != name: continue
@@ -283,6 +328,8 @@ if __name__ == "__main__":
     ap.add_argument("--no-gear", action="store_true")
     a = ap.parse_args()
     build(a.xml or fetch_menagerie(), a.out, gear=not a.no_gear)
-    if a.copy_to:
-        import shutil; shutil.copy(a.out, a.copy_to); print("copied to", a.copy_to)
+    if a.copy_to:   # shared file: a thin stage that REFERENCES the built one (relative texture paths stay valid)
+        ref = Usd.Stage.CreateNew(a.copy_to); UsdGeom.SetStageUpAxis(ref, UsdGeom.Tokens.z); UsdGeom.SetStageMetersPerUnit(ref, 1.0)
+        p = ref.DefinePrim("/G1"); p.GetReferences().AddReference(os.path.relpath(a.out, os.path.dirname(a.copy_to)).replace(os.sep, "/"))
+        ref.SetDefaultPrim(p); ref.GetRootLayer().Save(); print("reference stub", a.copy_to)
     print("wrote", a.out)
