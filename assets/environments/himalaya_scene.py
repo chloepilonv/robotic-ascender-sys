@@ -26,8 +26,9 @@ from isaacsim import SimulationApp  # noqa: E402
 if args.stream:
     # Boot the official streaming experience (isaacsim.exp.full.streaming) so the web viewer connects as usual.
     isaac_path = os.environ.get("ISAAC_PATH", "/isaac-sim")
+    # headless=False keeps the editor UI (menus, stage, property panels) in the stream; --no-window still means no X window.
     simulation_app = SimulationApp(
-        {"headless": True, "extra_args": [
+        {"headless": False, "extra_args": [
             f"--/exts/omni.kit.livestream.app/primaryStream/publicIp={args.public_ip}",
             f"--/exts/omni.kit.livestream.app/primaryStream/signalPort={args.signal_port}",
             f"--/exts/omni.kit.livestream.app/primaryStream/streamPort={args.stream_port}",
