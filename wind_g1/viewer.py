@@ -142,20 +142,24 @@ def main():
   parser.add_argument("--env_name", default="G1JoystickWindFlatTerrain")
   parser.add_argument("--wind_speed", type=float, default=0.0)
   parser.add_argument("--wind_heading", type=float, default=0.0, help="deg")
+  parser.add_argument("--slope_deg", type=float, default=30.0,
+                      help="slope angle for G1ClimbAscender")
   parser.add_argument("--impl", default="jax", choices=["jax", "warp"])
   args = parser.parse_args()
 
-  heading0 = math.radians(args.wind_heading)
-  env = registry.load(
-      args.env_name,
-      config_overrides={
-          "impl": args.impl,
-          "wind_config.enable": True,
-          "wind_config.wind_speed": args.wind_speed,
-          "wind_config.wind_heading": heading0,
-      },
-  )
-  env.use_wind_from_info(True)  # live wind via info["wind"]
+  overrides = {"impl": args.impl}
+  if "Climb" in args.env_name:
+    overrides["climb_config.slope_deg"] = args.slope_deg
+  else:
+    overrides.update({
+        "wind_config.enable": True,
+        "wind_config.wind_speed": args.wind_speed,
+        "wind_config.wind_heading": math.radians(args.wind_heading),
+    })
+  env = registry.load(args.env_name, config_overrides=overrides)
+  is_wind_env = hasattr(env, "use_wind_from_info")
+  if is_wind_env:
+    env.use_wind_from_info(True)  # live wind via info["wind"]
 
   policy = None
   if args.policy == "mels":
@@ -171,7 +175,7 @@ def main():
   # Host-side interactive state.
   cmd = np.zeros(3)  # lin_vel_x, lin_vel_y, ang_vel_yaw
   wind_speed = float(args.wind_speed)
-  wind_heading = heading0
+  wind_heading = math.radians(args.wind_heading)
   speed_multiplier = 1.0
 
   def wind_vec():
@@ -235,12 +239,11 @@ def main():
       action = policy(state.obs["state"], act_rng)[0]
     else:
       action = zero_action
-    # Host-side injection of live command + wind (array swap, no retrace).
-    info = {
-        **state.info,
-        "wind": jp.array(wind_vec()),
-        "command": jp.array(cmd),
-    }
+    # Host-side injection of the live command (array swap, no retrace);
+    # wind is live-updated only on wind envs (climb envs ignore it).
+    info = {**state.info, "command": jp.array(cmd)}
+    if is_wind_env:
+      info["wind"] = jp.array(wind_vec())
     state = state.replace(info=info)
     state = jit_step(state, action)
 
@@ -255,11 +258,12 @@ def main():
     scn = handle.user_scn
     if scn is not None:
       scn.ngeom = 0
-      w = wind_vec()
-      if np.linalg.norm(w) > 1e-3:
-        add_arrow(
-            scn, np.array([0.0, 0.0, 1.5]), 0.1 * w, [0.9, 0.1, 0.1, 0.8]
-        )
+      if is_wind_env:
+        w = wind_vec()
+        if np.linalg.norm(w) > 1e-3:
+          add_arrow(
+              scn, np.array([0.0, 0.0, 1.5]), 0.1 * w, [0.9, 0.1, 0.1, 0.8]
+          )
       if np.linalg.norm(cmd[:2]) > 1e-3:
         theta = math.atan2(cmd[1], cmd[0])
         arrow = 0.3 * np.array([math.cos(theta), math.sin(theta), 0.0])
