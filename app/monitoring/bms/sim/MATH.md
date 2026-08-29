@@ -1,4 +1,4 @@
-# VALUES — every monitored value, its source and the math
+# MATH — every monitored value, its source and the equation
 
 "Base" = the robot root link (pelvis). Base IMU = inertial sensor on it; base pose = its world position + orientation.
 Units: SI unless stated. Joint vectors are in SDK order (29 joints).

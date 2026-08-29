@@ -1,6 +1,6 @@
 """REAL G1 monitor: battery + motors + IMU + mainboard over DDS (unitree_sdk2py).
 
-    python app/monitoring/real/monitor_battery.py --iface eth0 --log app/monitoring/real/log.jsonl
+    python app/monitoring/bms/real/monitor_battery.py --iface eth0 --log app/monitoring/bms/real/log.jsonl
 
 Subscribes:
     rt/lowstate           unitree_hg LowState_      ~500 Hz  motors, IMU, tick
@@ -85,7 +85,7 @@ if __name__ == "__main__":
     p.add_argument("--iface", default="eth0")
     p.add_argument("--bms_topic", default="rt/lf/bmsstate")
     p.add_argument("--mb_topic", default="rt/lf/mainboardstate")
-    p.add_argument("--log", default="app/monitoring/real/log.jsonl")
+    p.add_argument("--log", default="app/monitoring/bms/real/log.jsonl")
     p.add_argument("--period", type=float, default=1.0, help="print/log period in s")
     a = p.parse_args()
     ChannelFactoryInitialize(0, a.iface)

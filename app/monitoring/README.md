@@ -1,6 +1,6 @@
 # monitoring — what we can read on the G1, units, and rates
 
-Order of work: **2. REAL first** (`app/monitoring/real/`) → **1. SIM** (`app/monitoring/sim/`, transposes the same values).
+Order of work: **2. REAL first** (`app/monitoring/bms/real/`) → **1. SIM** (`app/monitoring/bms/sim/`, transposes the same values).
 
 ## A) Scripts (REAL)
 | Script | Does |
@@ -63,6 +63,6 @@ fan speed `fan_state[6]` (rpm), board temps `temperature[6]` (°C).
 - Topic names `rt/lf/bmsstate` / `rt/lf/mainboardstate` are the best guess for firmware ≥1.0; confirm with `discover_topics.py` and pass `--bms_topic`.
 - Pack capacity 9 Ah / 48 V nominal is the G1 EDU spec; edit `derived.py` if the BMS reports another cell count.
 
-## SIM (`app/monitoring/sim/`) — done, see `sim/README.md`
-MuJoCo gives τ, q̇, pose, contacts; `sim/battery_model.py` models battery/thermal/environment (VALUES.md §3–5);
+## SIM (`app/monitoring/bms/sim/`) — done, see `sim/README.md`
+MuJoCo gives τ, q̇, pose, contacts; `sim/battery_model.py` models battery/thermal/environment (MATH.md §3–5);
 `sim/mujoco_monitor.py` writes the same `log.jsonl` schema. Test the app against it before any robot time.

@@ -1,5 +1,5 @@
 """SIM models for what MuJoCo cannot give us: battery, motor/battery temperature, environment.
-Equations: app/monitoring/VALUES.md sections 3-5. Pure numpy, steps at sim dt.
+Equations: app/monitoring/MATH.md sections 3-5. Pure numpy, steps at sim dt.
 """
 import sys
 from pathlib import Path
