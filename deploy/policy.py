@@ -20,13 +20,18 @@ class Policy:
         self._b = [z[f"hidden_{i}_bias"].astype(np.float32) for i in range(4)]
         self._mu = z["obs_mean"].astype(np.float32)
         self._sd = z["obs_std"].astype(np.float32)
-        if self._w[0].shape[0] != C.OBS_DIM:
-            raise ValueError(f"expected {C.OBS_DIM}-dim obs, got {self._w[0].shape[0]}")
+        # Infer which observation view this checkpoint wants from its input
+        # width, so a no-velocity policy and the 103-dim baseline can be fed
+        # from the same canonical observation without a flag to get wrong.
+        self.obs_dim = int(self._w[0].shape[0])
+        self._view = C.view_for(self.obs_dim)
+        self.uses_linvel = self._view is None
         if self._w[3].shape[1] != 2 * C.ACTION_DIM:
             raise ValueError(f"expected {2*C.ACTION_DIM} outputs "
                              f"(mean+logstd), got {self._w[3].shape[1]}")
         # Reused scratch: normalized obs, three hidden activations, output.
-        self._x = np.empty(C.OBS_DIM, dtype=np.float32)
+        self._x = np.empty(self.obs_dim, dtype=np.float32)
+        self._in = np.empty(self.obs_dim, dtype=np.float32)
         self._h = [np.empty(w.shape[1], dtype=np.float32) for w in self._w]
         # Separate scratch: _swish must not alias its input (dividing a buffer
         # by itself silently yields all ones).
@@ -41,7 +46,20 @@ class Policy:
         return x
 
     def __call__(self, obs) -> np.ndarray:
-        """obs -> raw action (29,). Deterministic: the log-std half is dropped."""
+        """Canonical 103-dim obs -> raw action (29,).
+
+        Always takes the FULL canonical observation regardless of what this
+        checkpoint was trained on; the view is applied here. Deterministic --
+        the log-std half of the output is dropped.
+
+        WARNING: the return value is a view into a reused buffer and is
+        INVALIDATED by the next call. Copy it if you need to keep it -- this
+        matters when running two policies side by side, or when comparing an
+        action against the previous step's.
+        """
+        if self._view is not None:
+            np.take(obs, self._view, out=self._in)
+            obs = self._in
         np.subtract(obs, self._mu, out=self._x)
         np.divide(self._x, self._sd, out=self._x)
         h = self._x

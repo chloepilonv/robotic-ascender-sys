@@ -62,5 +62,31 @@ SLICE_JOINT_VEL = slice(41, 70)    # motor_state.dq
 SLICE_LAST_ACT  = slice(70, 99)    # previous raw policy output
 SLICE_PHASE     = slice(99, 103)   # [cos p0, cos p1, sin p0, sin p1]
 
+# ---------------------------------------------------------------------------
+# Observation views.
+#
+# The 103-dim vector above is CANONICAL: observation.py always builds it in
+# full. A policy trained without base linear velocity (see the estimator
+# problem) takes a 100-dim observation that is exactly this vector with
+# dims 0:3 removed -- a strict subset, not a different layout.
+#
+# So one telemetry pipeline feeds every policy variant; each one just declares
+# its view. That is what makes running two policies side by side cheap: build
+# the obs once, slice it per policy.
+OBS_VIEWS = {
+    103: None,                      # full canonical vector
+    100: np.arange(3, OBS_DIM),     # canonical minus linvel
+}
+
+
+def view_for(obs_dim: int):
+    """Index array mapping the canonical obs to what `obs_dim` expects."""
+    if obs_dim not in OBS_VIEWS:
+        raise ValueError(
+            f"no known observation view for {obs_dim} dims; "
+            f"known: {sorted(OBS_VIEWS)}")
+    return OBS_VIEWS[obs_dim]
+
+
 # Command ranges the policy was trained over. Clamp before feeding.
 CMD_LIMITS = np.array([[-1.0, 1.0], [-0.5, 0.5], [-1.0, 1.0]], dtype=np.float32)
