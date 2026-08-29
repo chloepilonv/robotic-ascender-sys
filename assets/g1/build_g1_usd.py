@@ -207,6 +207,35 @@ def build(xml, out, gear=True):
                 set_xform(prim, pos, (1, 0, 0, 0))
                 UsdShade.MaterialBindingAPI.Apply(prim).Bind(color2mat[color])
 
+    # ---- sensor frames
+    # IMUs: from the MJCF <site>s (Isaac Lab ImuCfg / ContactSensorCfg attach to these prims)
+    for sid in range(model.nsite):
+        sname = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_SITE, sid)
+        if not sname.startswith("imu"):
+            continue
+        b = model.site_bodyid[sid]
+        p = UsdGeom.Xform.Define(stage, body_paths[b].AppendChild(sname)).GetPrim()
+        set_xform(p, model.site_pos[sid], model.site_quat[sid])
+    # Head sensors (not in menagerie; positions from the G1 spec, torso frame; head spans z 0.28..0.49)
+    torso = body_paths[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "torso_link")]
+    head = UsdGeom.Xform.Define(stage, torso.AppendChild("head_sensors")).GetPrim()
+    set_xform(head, (0.0039635, 0, -0.044), (1, 0, 0, 0))  # same offset as head_link geom
+    # Intel RealSense D435i: front of the face, looking +X. USD cameras look down -Z with +Y up,
+    # so cam(-Z)->+X, cam(+Y)->+Z, cam(+X)->-Y.
+    cam = UsdGeom.Camera.Define(stage, head.GetPath().AppendChild("d435i_camera"))
+    cam.CreateFocalLengthAttr(1.93); cam.CreateHorizontalApertureAttr(3.896); cam.CreateVerticalApertureAttr(2.453)  # ~87x58 deg
+    cam.CreateClippingRangeAttr(Gf.Vec2f(0.1, 20.0))
+    # Gf is row-vector convention (v * M): rows are the world-space images of cam x, y, z.
+    R = Gf.Matrix3d(0, -1, 0,   0, 0, 1,   -1, 0, 0)
+    assert R.GetRow(2) * -1 == Gf.Vec3d(1, 0, 0) and R.GetRow(1) == Gf.Vec3d(0, 0, 1)
+    q = R.ExtractRotation().GetQuat()
+    xf = UsdGeom.Xformable(cam.GetPrim()); xf.ClearXformOpOrder()
+    xf.AddTranslateOp().Set(Gf.Vec3d(0.075, 0.0, 0.43))
+    xf.AddOrientOp().Set(Gf.Quatf(q.GetReal(), *q.GetImaginary()))
+    # Livox Mid-360 LiDAR: on top of the head, +Z up (Isaac Lab RayCasterCfg / RTX lidar attach here)
+    lid = UsdGeom.Xform.Define(stage, head.GetPath().AppendChild("mid360_lidar")).GetPrim()
+    set_xform(lid, (0.0, 0.0, 0.50), (1, 0, 0, 0))
+
     # ---- joints
     kp = {}; kv = {}
     for a in range(model.nu):

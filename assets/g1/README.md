@@ -21,6 +21,17 @@ Gear lives under `/G1/<link>/gear/*`, is **visual only** (no collision, no mass)
 
 Joint prim names == MJCF joint names (`left_hip_pitch_joint`, …) → Isaac Lab `joint_names_expr` regexes from the stock G1 cfg work unchanged.
 
+## Sensors
+| Prim | Type | Real hardware |
+|---|---|---|
+| `/G1/pelvis/imu_in_pelvis` | Xform (MJCF site) | pelvis IMU (gyro+accel) |
+| `/G1/torso_link/imu_in_torso` | Xform (MJCF site) | torso IMU |
+| `/G1/torso_link/head_sensors/d435i_camera` | `Camera` (87x58 deg, looks +X, Z up) | Intel RealSense D435i |
+| `/G1/torso_link/head_sensors/mid360_lidar` | Xform on top of head | Livox Mid-360 |
+| `/G1/*_ankle_roll_link` | rigid body w/ contact reporting | foot contact |
+
+`g1_himalaya_cfg.py` = Isaac Lab `ArticulationCfg` + `ImuCfg` x2 + `ContactSensorCfg` + `CameraCfg` + `RayCasterCfg` for all of the above.
+
 ## Rebuild
 ```bash
 pip install mujoco usd-core trimesh scipy
@@ -33,8 +44,5 @@ python build_g1_usd.py --no-gear  # plain G1
 from isaaclab.assets import ArticulationCfg
 import isaaclab.sim as sim_utils
 G1_HIMALAYA_CFG = ArticulationCfg(
-    spawn=sim_utils.UsdFileCfg(usd_path="assets/g1/g1_himalaya.usd", activate_contact_sensors=True),
-    init_state=ArticulationCfg.InitialStateCfg(pos=(0, 0, 0.8)),
-    actuators={...},  # copy from isaaclab_assets.robots.unitree.G1_CFG
-)
+    ...)  # see g1_himalaya_cfg.py for the full, ready-to-use config
 ```
