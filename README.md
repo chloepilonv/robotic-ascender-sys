@@ -19,6 +19,16 @@ site-packages (automatic on first env load); nothing else to install.
 - `learning/train_jax_ppo.py` — upstream playground v0.2.0 trainer with
   wind-env aliases and a `--num_videos 0` video guard.
 - `tests/test_wind_env.py` — headless env smoke test.
+- `terrain/` — real Everest terrain for the fixed-rope / ascender task. A
+  25 x 15 m patch of the **Lhotse Face between Camp II and Camp III**
+  (6907 m, 38.9 deg), from Copernicus GLO-30 + OpenStreetMap route nodes.
+  Loaded into MuJoCo as an `hfield`. See `terrain/README.md` — in particular
+  the REAL vs SYNTHETIC section before quoting the terrain anywhere.
+
+```bash
+python -m terrain.mujoco_scene              # viewer
+python -m terrain.mujoco_scene --headless   # physics check
+```
 
 ## Interactive viewer (WASD + live wind)
 
