@@ -1,3 +1,7 @@
 _menagerie/
 __pycache__/
 .DS_Store
+
+# lhotse_face: generated at runtime / regenerable
+assets/environments/lhotse_face/lhotse_face.xml
+assets/environments/lhotse_face/data/*.tif
