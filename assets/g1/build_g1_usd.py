@@ -278,7 +278,10 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--xml", default=None)
     ap.add_argument("--out", default=os.path.join(HERE, "g1_himalaya.usd"))
+    ap.add_argument("--copy-to", default=os.path.join(HERE, "..", "g1_unitree.usd"), help="also write a copy here (shared file)")
     ap.add_argument("--no-gear", action="store_true")
     a = ap.parse_args()
     build(a.xml or fetch_menagerie(), a.out, gear=not a.no_gear)
+    if a.copy_to:
+        import shutil; shutil.copy(a.out, a.copy_to); print("copied to", a.copy_to)
     print("wrote", a.out)
