@@ -48,3 +48,9 @@ import isaaclab.sim as sim_utils
 G1_HIMALAYA_CFG = ArticulationCfg(
     ...)  # see g1_himalaya_cfg.py for the full, ready-to-use config
 ```
+
+## Ascender variant
+`assets/robots/g1_unitree_ascender.usd` = same robot holding the ascender (`assets/ascender/ascender.usd`) in the right hand.
+Built by `attach_tool.py`: tool baked into `right_wrist_yaw_link` (visual + convex collision, +0.165 kg folded into the link mass),
+so the articulation is unchanged (29 DoF) and the Isaac Lab cfg works as-is. Grip = handle vertical in front of the palm, cam head up.
+Tune `TOOL_POS` / `TOOL_ROT` in `attach_tool.py` to change the grip. Scene: `himalaya_scene.py --robot g1_unitree_ascender`.
