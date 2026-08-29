@@ -32,7 +32,8 @@ _tv = np.array(UsdGeom.Mesh(_ts.GetPrimAtPath("/Ascender/visual/mesh")).GetPoint
 _tr = np.array([Gf.Vec3d(*v) * _R for v in _tv[::50]])           # rotated sample of the tool points (wrist frame, before translation)
 EDGE_X, CAM_Z_TOOL = 0.036, 0.085                                  # edge 1 cm past the wrist mesh (ends x=0.026); cam centre at wrist z=0
 _cam = Gf.Vec3d(0, 0, CAM_Z_TOOL) * _R
-TOOL_POS = Gf.Vec3d(EDGE_X - _tr[:, 0].min(), 0.0, -_cam[2])
+Z_UP = 0.02                                                        # raise the device along wrist Z
+TOOL_POS = Gf.Vec3d(EDGE_X - _tr[:, 0].min(), 0.0, -_cam[2] + Z_UP)
 _qd = _R.ExtractRotation().GetQuat(); TOOL_ROT = Gf.Quatf(_qd.GetReal(), *_qd.GetImaginary())
 HAND_X_MIN = 0.08  # the rubber-hand paddle lives at x 0.087..0.132 in the wrist frame; wrist link mesh ends at 0.047
 
@@ -61,21 +62,6 @@ col = UsdGeom.Mesh.Define(stage, tp.GetPath().AppendChild("collision"))
 col.CreatePointsAttr(src_col.GetPointsAttr().Get()); col.CreateFaceVertexCountsAttr(src_col.GetFaceVertexCountsAttr().Get())
 col.CreateFaceVertexIndicesAttr(src_col.GetFaceVertexIndicesAttr().Get()); col.CreatePurposeAttr("guide"); col.CreateVisibilityAttr("invisible")
 UsdPhysics.CollisionAPI.Apply(col.GetPrim()); UsdPhysics.MeshCollisionAPI.Apply(col.GetPrim()).CreateApproximationAttr("convexHull")
-
-# insertion flange: short dark cylinder from the wrist end into the PLAIN slanted part below the rivets
-# (tool z ~0.03 on the +X edge), so nothing touches the cam mechanism.
-fl_mat = UsdShade.Material.Define(stage, "/G1/Looks/flange_black")
-fsh = UsdShade.Shader.Define(stage, "/G1/Looks/flange_black/Shader"); fsh.CreateIdAttr("UsdPreviewSurface")
-fsh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.12, 0.12, 0.12))
-fsh.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.5); fsh.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.6)
-fl_mat.CreateSurfaceOutput().ConnectToSource(fsh.ConnectableAPI(), "surface")
-INSERT_TOOL_PT = Gf.Vec3d(0.0126, 0.0, 0.03)          # on the slanted edge, below the rivets (tool frame)
-_ins = INSERT_TOOL_PT * _R + TOOL_POS                  # -> wrist frame
-FLANGE_X0, FLANGE_X1, FLANGE_R = 0.012, _ins[0] + 0.010, 0.010   # starts inside the wrist mesh
-fl = UsdGeom.Cylinder.Define(stage, tp.GetPath().GetParentPath().AppendChild("tool_flange"))
-fl.CreateRadiusAttr(FLANGE_R); fl.CreateHeightAttr(FLANGE_X1 - FLANGE_X0); fl.CreateAxisAttr("X")
-UsdGeom.Xformable(fl.GetPrim()).AddTranslateOp().Set(Gf.Vec3d((FLANGE_X0 + FLANGE_X1) / 2, 0.0, _ins[2]))
-UsdShade.MaterialBindingAPI.Apply(fl.GetPrim()).Bind(fl_mat)
 
 # fold tool mass into the link (parallel-axis on the diagonal inertia is small at 165 g; keep principal axes)
 mass_src = UsdPhysics.MassAPI(src.GetPrimAtPath(LINK))
