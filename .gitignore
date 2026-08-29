@@ -1,3 +1,9 @@
 _menagerie/
 __pycache__/
 .DS_Store
+
+# terrain: large source rasters and regenerable meshes
+terrain/data/*.tif
+terrain/lhotse_face.xml
+terrain/*.obj
+*.ply
