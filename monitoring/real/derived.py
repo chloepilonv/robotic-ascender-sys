@@ -5,7 +5,7 @@ No DDS import here on purpose: the sim reuses the same maths on simulated inputs
 from collections import deque
 import numpy as np
 
-# G1 pack (EDU, 9000 mAh, 13S Li-ion). Adjust if the BMS reports different cell count.
+# G1 pack: 9000 mAh, 13S Li-ion, 48 V nominal (Unitree spec). Derating below is derived from generic Li-ion cold curves.
 PACK_CAPACITY_AH = 9.0
 PACK_NOMINAL_V = 48.0
 
