@@ -56,3 +56,10 @@ G1_HIMALAYA_CFG = ArticulationCfg(
 `right_wrist_yaw_link`, +0.165 kg folded into the link mass, so the articulation is unchanged (29 DoF)
 and the Isaac Lab cfg works as-is. The end-effector frame is `/G1/right_wrist_yaw_link/tool_ascender` (origin = tool base, +Z = along tool to the cam head).
 Tune `TOOL_POS` / `TOOL_ROT` in `attach_tool.py`. Scene: `himalaya_scene.py --robot g1_unitree_ascender`.
+
+### Policy note — wrist offset
+The ascender is fixed to `right_wrist_yaw_link`, so its pose is entirely set by the 3 wrist joints
+(`right_wrist_roll/pitch/yaw_joint`). Any policy or IK that targeted the rubber hand must be re-targeted to the
+tool frame `/G1/right_wrist_yaw_link/tool_ascender` (+Z = up through the cam head, rope runs along it):
+the "hand" now points +Z of the wrist instead of +X, i.e. roughly a **-90° wrist-pitch offset** vs. the stock hand,
+plus the +0.11 kg on the link. Add that offset to the wrist default / target joint positions in the env cfg.
