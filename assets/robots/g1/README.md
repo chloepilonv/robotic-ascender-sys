@@ -50,7 +50,7 @@ G1_HIMALAYA_CFG = ArticulationCfg(
 ```
 
 ## Ascender variant (ascender = right end-effector)
-`assets/robots/g1_unitree_ascender.usd` = same robot with the **right rubber hand removed and the ascender bolted on in its place**
+`assets/robots/g1_unitree_ascender.usd` = same robot with the **right rubber hand removed and a handleless (Petzl Basic-style, 110 x 73 mm) ascender bolted on in its place**
 (handle along the forearm, base 2 cm inside the wrist link, flat face in the wrist X-Y plane). Built by `attach_tool.py`: the visual
 **references** `assets/ascender/ascender.usd` (textured, so keep the `assets/` tree together), convex collision baked into
 `right_wrist_yaw_link`, +0.165 kg folded into the link mass, so the articulation is unchanged (29 DoF)

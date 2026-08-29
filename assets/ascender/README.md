@@ -1,10 +1,10 @@
-# Ascender (handled rope clamp) — cam head only
+# Ascender (handleless, Petzl Basic-style) — G1 right end-effector
 
 | File | What |
 |---|---|
-| `climbing_tool_raw.usdz` | raw Tripo scan, full tool, 1 m tall, 982k verts, textured (74 MB) — source only |
-| `ascender.usd` | sim-ready **cam head only** (rope channel + locking mechanism; handle loop and grip cut away at model z = 0.65, loop arm clipped by a slanted cut `SPUR_*`). Scaled so the full tool would be **195 mm** (head ≈ 66 mm), **110 g**, textures re-bound from `textures/`, convex-hull collision (invisible), `RigidBodyAPI` + `MassAPI`. Frame = full-tool frame (origin at the old handle bottom, +Z up through the head). |
+| `headless_effector_raw.usdz` | raw Tripo scan, 1 m tall, 972k verts, textured (73 MB) — source only |
+| `ascender.usd` | sim-ready: scaled to **110 x 73 mm**, ~100 g, textures re-bound from `textures/`, convex-hull collision (invisible), `RigidBodyAPI` + `MassAPI`. Frame: origin at the bottom (carabiner hole), +Z up through the cam, X = width, Y = thickness. |
 | `textures/` | basecolor / metallic / roughness / normal JPEGs extracted from the usdz |
-| `build_ascender.py` | raw → sim (`CUT_Z`, `HEIGHT_M`, `MASS_KG` at the top) |
+| `build_ascender.py` | raw → sim (`HEIGHT_M`, `MASS_KG`, optional `CUT_Z` / `SPUR_*` cuts) |
 
 Used by `assets/robots/g1/attach_tool.py` → `assets/robots/g1_unitree_ascender.usd`.

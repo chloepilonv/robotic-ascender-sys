@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Sim-ready ascender from the raw Tripo scan (climbing_tool_raw.usdz, 1 m tall, 982k verts, full PBR textures).
-
-Only the CAM HEAD is kept (rope channel + locking mechanism); the handle loop and rubber grip are cut away
-(everything below model z = CUT_Z). Textures are extracted next to this file and re-bound.
+"""Sim-ready ascender from the raw Tripo scan (headless_effector_raw.usdz: Petzl Basic-style handleless ascender,
+1 m tall in the scan, 972k verts, full PBR textures). Whole model kept (CUT_Z below the model = no cut).
+Textures are extracted next to this file and re-bound.
 
 ascender.usd:
   /Ascender             RigidBodyAPI + MassAPI, Z-up, metres. Frame = full tool frame (origin at the old handle bottom,
@@ -15,11 +14,11 @@ import os, zipfile, tempfile, shutil, numpy as np, trimesh
 from pxr import Usd, UsdGeom, UsdPhysics, UsdShade, Gf, Sdf, Vt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RAW, OUT, TEXDIR = os.path.join(HERE, "climbing_tool_raw.usdz"), os.path.join(HERE, "ascender.usd"), os.path.join(HERE, "textures")
-HEIGHT_M = 0.195          # full tool height (Petzl Ascension) -> sets the scale
-CUT_Z = 0.65              # model-space (1 m tall) cut: keep z > CUT_Z  (cam head)
-SPUR_Z_MAX, SPUR_X0, SPUR_SLOPE = 0.74, 0.06, 0.5   # slanted cut removing the loop arm (model space)
-MASS_KG = 0.110           # cam head + body only (full tool = 165 g)
+RAW, OUT, TEXDIR = os.path.join(HERE, "headless_effector_raw.usdz"), os.path.join(HERE, "ascender.usd"), os.path.join(HERE, "textures")
+HEIGHT_M = 0.110          # real tool height (110 x 73 mm) -> sets the scale
+CUT_Z = -1.0              # model-space (1 m tall) horizontal cut: keep z > CUT_Z  (-1 = keep all)
+SPUR_Z_MAX, SPUR_X0, SPUR_SLOPE = -1.0, 9.0, 0.0    # slanted cut (disabled for this model)
+MASS_KG = 0.100           # handleless ascender
 
 with tempfile.TemporaryDirectory() as tmp:
     zipfile.ZipFile(RAW).extractall(tmp)
@@ -30,8 +29,11 @@ with tempfile.TemporaryDirectory() as tmp:
     tri = np.array(mesh.GetFaceVertexIndicesAttr().Get()).reshape(-1, 3)
     st_uv = np.array(UsdGeom.PrimvarsAPI(mesh).GetPrimvar("st").Get(), dtype=np.float32).reshape(-1, 3, 2)  # faceVarying
     os.makedirs(TEXDIR, exist_ok=True)
+    TEX = {}
     for f in os.listdir(os.path.join(tmp, "textures")):
         shutil.copy(os.path.join(tmp, "textures", f), TEXDIR)
+        for k in ("basecolor", "metallic", "roughness", "normal"):
+            if k in f.lower(): TEX[k] = f
 
 center = np.array([(pts[:, 0].min() + pts[:, 0].max()) / 2, (pts[:, 1].min() + pts[:, 1].max()) / 2, pts[:, 2].min()])
 scale = HEIGHT_M / (pts[:, 2].max() - pts[:, 2].min())
@@ -63,7 +65,7 @@ for name, tex, chan, cs, typ in [("diffuseColor", "basecolor", "rgb", "sRGB", Sd
                                  ("roughness", "roughness", "r", "raw", Sdf.ValueTypeNames.Float),
                                  ("normal", "normal", "rgb", "raw", Sdf.ValueTypeNames.Normal3f)]:
     t = UsdShade.Shader.Define(stage, f"/Ascender/visual/Looks/ascender_pbr/tex_{tex}"); t.CreateIdAttr("UsdUVTexture")
-    t.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(f"./textures/climbing_tool_3d_model_{tex}.JPEG")
+    t.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(f"./textures/{TEX[tex]}")
     t.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set(cs)
     t.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(uvr.ConnectableAPI(), "result")
     if tex == "normal":

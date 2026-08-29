@@ -16,11 +16,11 @@ LINK = "/G1/right_wrist_yaw_link"
 # Mount: ascender UPRIGHT like on a fixed rope - cam head centred on the wrist joint, handle hanging below
 # (wrist frame: X = forearm, Z = up when the arm is horizontal).
 # Basis mapping (Gf is row-vector convention: rows = images of tool X, Y, Z in the wrist frame):
-#   tool X (width)        -> wrist -X
-#   tool Y (thickness)    -> wrist -Y   (cam plate faces sideways)
+#   tool X (width)        -> wrist +X
+#   tool Y (thickness)    -> wrist +Y   (mechanism side = tool -Y = outward, away from the body)
 #   tool Z (handle->head) -> wrist +Z   (head up)
-_R = Gf.Matrix3d(-1, 0, 0,   0, -1, 0,   0, 0, 1)   # = 180 deg yaw about wrist Z
-HEAD_Z = (0.12, 0.195)                       # cam head span along the tool axis
+_R = Gf.Matrix3d(1, 0, 0,   0, 1, 0,   0, 0, 1)   # identity: cam mechanism (tool -Y) faces away from the body
+HEAD_Z = (0.06, 0.11)                        # cam-mechanism span along the tool axis (110 mm tool, cam in the top half)
 TOOL_POS = Gf.Vec3d(0.06, 0.0, -(HEAD_Z[0] + HEAD_Z[1]) / 2)   # head on the joint, just past the wrist mesh (ends x=0.047)
 _qd = _R.ExtractRotation().GetQuat(); TOOL_ROT = Gf.Quatf(_qd.GetReal(), *_qd.GetImaginary())
 HAND_X_MIN = 0.08  # the rubber-hand paddle lives at x 0.087..0.132 in the wrist frame; wrist link mesh ends at 0.047
@@ -52,7 +52,7 @@ fsh = UsdShade.Shader.Define(stage, "/G1/Looks/flange_black/Shader"); fsh.Create
 fsh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.12, 0.12, 0.12))
 fsh.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.5); fsh.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.6)
 fl_mat.CreateSurfaceOutput().ConnectToSource(fsh.ConnectableAPI(), "surface")
-FLANGE_X0, FLANGE_X1, FLANGE_R = 0.040, TOOL_POS[0] + 0.012, 0.026   # overlaps wrist mesh (ends 0.047) and the head
+FLANGE_X0, FLANGE_X1, FLANGE_R = 0.040, TOOL_POS[0] + 0.006, 0.018   # overlaps wrist mesh (ends 0.047) and the head
 fl = UsdGeom.Cylinder.Define(stage, tp.GetPath().GetParentPath().AppendChild("tool_flange"))
 fl.CreateRadiusAttr(FLANGE_R); fl.CreateHeightAttr(FLANGE_X1 - FLANGE_X0); fl.CreateAxisAttr("X")
 UsdGeom.Xformable(fl.GetPrim()).AddTranslateOp().Set(Gf.Vec3d((FLANGE_X0 + FLANGE_X1) / 2, 0, 0))
