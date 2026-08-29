@@ -547,7 +547,7 @@ class G1ClimbAscender(g1_joystick.Joystick):
     return (palm - self._line_pt) @ self._slope_axis
 
 
-# Registered on import; see wind_g1/__init__.py.
+# Registered on import; see rl/environment/__init__.py.
 locomotion.register_environment(
     "G1ClimbAscender",
     functools.partial(G1ClimbAscender, task="flat_terrain"),

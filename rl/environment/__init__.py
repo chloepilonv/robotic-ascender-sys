@@ -5,5 +5,5 @@ Importing this package registers `G1JoystickWindFlatTerrain`,
 registry so `mujoco_playground.registry.load` resolves them.
 """
 
-from wind_g1 import climb_env  # noqa: F401  registers the climb env on import
-from wind_g1 import wind_env  # noqa: F401  registers the wind envs on import
+from rl.environment import climb_env  # noqa: F401  registers the climb env on import
+from rl.environment import wind_env  # noqa: F401  registers the wind envs on import

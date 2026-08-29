@@ -6,7 +6,11 @@ per plan (Verification 4 notes GUI check may be user-performed).
 """
 
 import math
+import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 
 import numpy as np
 
@@ -14,9 +18,9 @@ import jax
 import jax.numpy as jp
 
 from mujoco_playground import registry
-import wind_g1  # noqa: F401
-from wind_g1 import wind_env
-from wind_g1.viewer import add_arrow, load_policy, rotation_z_to
+import rl.environment  # noqa: F401
+from rl.environment import wind_env
+from rl.scripts.viewer import add_arrow, load_policy, rotation_z_to
 
 
 def make_env(speed=0.0, heading=0.0):
@@ -66,7 +70,7 @@ print(f"command injection OK after 505 steps: {obs_cmd}")
 
 # --- on_key semantics (import module fresh to isolate closure state) ------
 import importlib
-import wind_g1.viewer as viewer_mod
+import rl.scripts.viewer as viewer_mod
 importlib.reload(viewer_mod)
 
 cmd_state = {"cmd": np.zeros(3), "speed": 3.0, "heading": 0.0, "mult": 1.0}

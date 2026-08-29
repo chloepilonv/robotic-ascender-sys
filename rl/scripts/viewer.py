@@ -15,7 +15,7 @@ Keyboard drives the joystick command and the wind:
     0          wind off
 
 Usage:
-  python -m wind_g1.viewer [--policy CKPT_DIR] [--wind_speed M/S]
+  python -m rl.scripts.viewer [--policy CKPT_DIR] [--wind_speed M/S]
   [--wind_heading DEG] [--env_name NAME] [--impl jax|warp]
 
 Without --policy the G1 runs with zero actions: it will sag and fall —
@@ -27,8 +27,8 @@ import math
 import os
 import sys
 
-# Bootstrap: allow `python wind_g1/viewer.py` in addition to `-m wind_g1.viewer`.
-_PKG_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Bootstrap: allow `python rl/scripts/viewer.py` in addition to `-m rl.scripts.viewer`.
+_PKG_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _PKG_ROOT not in sys.path:
   sys.path.insert(0, _PKG_ROOT)
 
@@ -47,7 +47,7 @@ from brax.training.agents.ppo import networks as ppo_networks  # noqa: E402
 from etils import epath  # noqa: E402
 
 from mujoco_playground import registry  # noqa: E402
-import wind_g1  # noqa: E402,F401  registers G1JoystickWind* envs
+import rl.environment  # noqa: E402,F401  registers G1JoystickWind* envs
 
 # GLFW keycodes (press events only; launch_passive has no release events).
 KEY_W, KEY_S, KEY_A, KEY_D = 87, 83, 65, 68
