@@ -66,11 +66,12 @@ UsdPhysics.CollisionAPI.Apply(col.GetPrim()); UsdPhysics.MeshCollisionAPI.Apply(
 # mounting block: dark rectangular bracket from inside the wrist link into the plain slanted zone below the rivets
 bk_mat = UsdShade.Material(stage.GetPrimAtPath("/G1/Looks/metal"))   # same grey metal as the robot links
 INSERT_TOOL_PT = Gf.Vec3d(0.0126, 0.0, 0.03)          # on the slanted edge, below the rivets (tool frame)
+BRACKET_Z_UP = 0.01                                    # bracket raised along wrist Z
 _ins = INSERT_TOOL_PT * _R + TOOL_POS                  # -> wrist frame
 BLOCK_X0, BLOCK_X1, BLOCK_Y, BLOCK_Z = 0.012, _ins[0] + 0.012, 0.020, 0.024   # x span, width (Y), height (Z)
 bk = UsdGeom.Cube.Define(stage, tp.GetPath().GetParentPath().AppendChild("tool_bracket")); bk.CreateSizeAttr(1.0)
 bx = UsdGeom.Xformable(bk.GetPrim())
-bx.AddTranslateOp().Set(Gf.Vec3d((BLOCK_X0 + BLOCK_X1) / 2, 0.0, _ins[2])); bx.AddScaleOp().Set(Gf.Vec3f(BLOCK_X1 - BLOCK_X0, BLOCK_Y, BLOCK_Z))
+bx.AddTranslateOp().Set(Gf.Vec3d((BLOCK_X0 + BLOCK_X1) / 2, 0.0, _ins[2] + BRACKET_Z_UP)); bx.AddScaleOp().Set(Gf.Vec3f(BLOCK_X1 - BLOCK_X0, BLOCK_Y, BLOCK_Z))
 UsdShade.MaterialBindingAPI.Apply(bk.GetPrim()).Bind(bk_mat)
 
 # fold tool mass into the link (parallel-axis on the diagonal inertia is small at 165 g; keep principal axes)
