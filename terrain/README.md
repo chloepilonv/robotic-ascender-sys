@@ -26,8 +26,12 @@ macro slope; synthetic sub-30 m detail (there is no other option — see below).
 python -m terrain.mujoco_scene                      # viewer
 python -m terrain.mujoco_scene --headless           # physics check, no window
 python -m terrain.mujoco_scene --rope-height 0.6    # rope standoff (default 0.6 m)
-python -m terrain.export_obj                        # rebuild the OBJ for Blender
+python -m terrain.export_obj                        # rebuild the OBJ (also shipped)
 ```
+
+The mesh is shipped at `assets/terrain/lhotse_face_B.obj` (9.9 MB) for Blender
+and renderers. `export_obj.py` rebuilds it identically from the heightfield if
+you would rather not pull it.
 
 The terrain is a **`hfield`, not a mesh geom**. MuJoCo replaces mesh geoms with
 their convex hull for collision, which would turn a 38.9° slope into a solid
@@ -100,8 +104,16 @@ implemented**.
 
 ## Regenerating from scratch
 
-`pipeline/` holds the full chain. It needs the source rasters, which are
-gitignored (213 MB + 43 MB):
+`pipeline/` holds the full chain. Fetch the source raster first:
+
+```bash
+python -m terrain.fetch_data     # 41 MB Copernicus tile, free, no auth
+```
+
+**No Git LFS, no Drive.** The only file that could not live in plain git is a
+203 MB DEM from a different project (GitHub rejects >100 MB); nothing here
+needs it. LFS would spend the repo owner's quota and force every clone through
+`git-lfs`, for a raster that is one public URL away. Scripts:
 
 ```
 everest_route.py     OSM route + DEM validation
