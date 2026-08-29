@@ -13,15 +13,14 @@ SRC = os.path.join(HERE, "g1_himalaya.usd")
 TOOL = os.path.join(HERE, "..", "..", "ascender", "ascender.usd")
 OUT = os.path.join(HERE, "..", "g1_unitree_ascender.usd")
 LINK = "/G1/right_wrist_yaw_link"
-# Tool base sunk 2 cm into the wrist link (its mesh ends at x=0.047) so it is visibly bolted on.
-# Orientation: tool Z (handle -> cam head) onto wrist +X (forearm) = rotY(90), then rolled 90 deg about the forearm
-# so the flat face of the ascender lies in the wrist X-Y plane (cam opening faces +/-Z).
-TOOL_POS = Gf.Vec3d(0.03, 0.0, 0.0)
+# Mount: cam head (tool top, z 0.12..0.195) sits right on the wrist joint, handle points out along the forearm,
+# flat face of the ascender vertical (wrist X-Z plane).
 # Basis mapping (Gf is row-vector convention: rows = images of tool X, Y, Z in the wrist frame):
-#   tool X (width)     -> wrist +Y
-#   tool Y (thickness) -> wrist +Z   (flat face in the wrist X-Y plane)
-#   tool Z (handle)    -> wrist +X   (along the forearm)
-_R = Gf.Matrix3d(0, 1, 0,   0, 0, 1,   1, 0, 0)
+#   tool X (width)     -> wrist +Z
+#   tool Y (thickness) -> wrist +Y
+#   tool Z (handle->head) -> wrist -X   (head toward the wrist, handle outward)
+_R = Gf.Matrix3d(0, 0, 1,   0, 1, 0,   -1, 0, 0)
+TOOL_POS = Gf.Vec3d(0.225, 0.0, 0.0)   # tool top (z=0.195) lands at wrist x=0.03, i.e. head spans x 0.03..0.105
 _qd = _R.ExtractRotation().GetQuat(); TOOL_ROT = Gf.Quatf(_qd.GetReal(), *_qd.GetImaginary())
 HAND_X_MIN = 0.08  # the rubber-hand paddle lives at x 0.087..0.132 in the wrist frame; wrist link mesh ends at 0.047
 
