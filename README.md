@@ -10,15 +10,20 @@ site-packages (automatic on first env load); nothing else to install.
 
 ## Layout
 
-- `wind_g1/wind_env.py` — `G1JoystickWind` env: upstream G1 joystick task +
-  quadratic-drag wind force on the torso (`F = ½·ρ·Cd·A·|v_wind − v_torso|·
-  (v_wind − v_torso)`), written to `xfrc_applied` each control step.
-  Random impulse pushes are disabled; wind is the perturbation source.
-  Registered as `G1JoystickWindFlatTerrain` / `G1JoystickWindRoughTerrain`.
-- `wind_g1/viewer.py` — interactive viewer (below).
-- `learning/train_jax_ppo.py` — upstream playground v0.2.0 trainer with
-  wind-env aliases and a `--num_videos 0` video guard.
-- `tests/test_wind_env.py` — headless env smoke test.
+- `rl/` — all reinforcement-learning code:
+  - `rl/environment/wind_env.py` — `G1JoystickWind` env: upstream G1 joystick
+    task + quadratic-drag wind force on the torso (`F = ½·ρ·Cd·A·
+    |v_wind − v_torso|·(v_wind − v_torso)`), written to `xfrc_applied` each
+    control step. Random impulse pushes are disabled; wind is the
+    perturbation source. Registered as `G1JoystickWindFlatTerrain` /
+    `G1JoystickWindRoughTerrain`. `rl/environment/climb_env.py` registers the
+    fixed-rope `G1ClimbAscender` env the same way.
+  - `rl/scripts/viewer.py` — interactive viewer (below).
+  - `rl/scripts/train_jax_ppo.py` — upstream playground v0.2.0 trainer with
+    wind-env aliases and a `--num_videos 0` video guard.
+  - `rl/policies/` — saved policy weights (`mels_g1_joystick.npz` baseline).
+  - `rl/tests/` — headless smoke tests (`test_wind_env.py`,
+    `test_climb_env.py`, `test_viewer_internals.py`).
 - `terrain/` — real Everest terrain for the fixed-rope / ascender task. A
   25 x 15 m patch of the **Lhotse Face between Camp II and Camp III**
   (6907 m, 38.9 deg), from Copernicus GLO-30 + OpenStreetMap route nodes.
@@ -35,13 +40,13 @@ python -m terrain.mujoco_scene --headless   # physics check
 From the repo root, with the baseline walking policy:
 
 ```bash
-/home/mrinal/miniconda3/envs/everest/bin/python -m wind_g1.viewer --policy mels
+/home/mrinal/miniconda3/envs/everest/bin/python -m rl.scripts.viewer --policy mels
 ```
 
 With a trained policy checkpoint instead:
 
 ```bash
-/home/mrinal/miniconda3/envs/everest/bin/python -m wind_g1.viewer \
+/home/mrinal/miniconda3/envs/everest/bin/python -m rl.scripts.viewer \
     --policy logs/<experiment>/checkpoints/<step> --wind_speed 10
 ```
 
@@ -68,7 +73,7 @@ every keypress. Hold-to-move semantics would require `pynput` (not installed).
 
 ## Baseline walking policy (`--policy mels`)
 
-`policies/mels_g1_joystick.npz` is the Unitree G1 joystick policy from the
+`rl/policies/mels_g1_joystick.npz` is the Unitree G1 joystick policy from the
 official MuJoCo Playground live demo (research.mels.ai), extracted from the
 demo's published config: MLP 103→512→256→128→58 with swish activations and
 an obs normalizer. Its observation layout matches the playground
@@ -96,7 +101,7 @@ to avoid OOM. Also set `JAX_DEFAULT_MATMUL_PRECISION=highest` (upstream
 recommendation for Ampere+ GPUs).
 
 ```bash
-/home/mrinal/miniconda3/envs/everest/bin/python learning/train_jax_ppo.py \
+/home/mrinal/miniconda3/envs/everest/bin/python rl/scripts/train_jax_ppo.py \
   --env_name G1JoystickWindFlatTerrain \
   --playground_config_overrides '{"wind_config.enable": true, "wind_config.wind_speed": 10.0}' \
   --num_timesteps 200_000_000 --num_videos 0 --logdir logs

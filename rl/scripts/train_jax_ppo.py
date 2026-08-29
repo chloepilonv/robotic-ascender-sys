@@ -237,8 +237,8 @@ def main(argv):
   # Load environment configuration
   if _ENV_NAME.value.startswith("G1JoystickWind"):
     import sys
-    sys.path.insert(0, str(epath.Path(__file__).parent.parent.resolve()))
-    import wind_g1  # noqa: F401  registers G1JoystickWind* in the registry
+    sys.path.insert(0, str(epath.Path(__file__).parent.parent.parent.resolve()))
+    import rl.environment  # noqa: F401  registers G1JoystickWind* in the registry
 
   env_cfg = registry.get_default_config(_ENV_NAME.value)
 

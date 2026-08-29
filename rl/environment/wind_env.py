@@ -103,7 +103,7 @@ class G1JoystickWind(g1_joystick.Joystick):
     return super().step(state, action)
 
 
-# Registered on import; see wind_g1/__init__.py.
+# Registered on import; see rl/environment/__init__.py.
 locomotion.register_environment(
     "G1JoystickWindFlatTerrain",
     functools.partial(G1JoystickWind, task="flat_terrain"),

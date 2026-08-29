@@ -4,14 +4,19 @@ Checks: registry resolution, force magnitude/direction at 15 m/s headwind
 on a stationary torso, zero force when disabled, downwind acceleration.
 """
 
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 import numpy as np
 
 import jax
 import jax.numpy as jp
 
-import wind_g1  # noqa: F401  registers the envs
+import rl.environment  # noqa: F401  registers the envs
 from mujoco_playground import registry
-from wind_g1 import wind_env
+from rl.environment import wind_env
 
 # --- Verification 2: registry -------------------------------------------
 cfg = registry.get_default_config("G1JoystickWindFlatTerrain")

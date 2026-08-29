@@ -18,6 +18,11 @@ Checks:
    verified explicitly via hand_height_on_line >= slide).
 """
 
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 import math
 
 import jax
@@ -25,9 +30,9 @@ import jax.numpy as jp
 import mujoco
 import numpy as np
 
-import wind_g1  # noqa: F401  registers the envs
+import rl.environment  # noqa: F401  registers the envs
 from mujoco_playground import registry
-from wind_g1 import climb_env
+from rl.environment import climb_env
 
 SLOPE_DEG = 30.0
 
