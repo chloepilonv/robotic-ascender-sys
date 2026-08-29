@@ -13,10 +13,16 @@ SRC = os.path.join(HERE, "g1_himalaya.usd")
 TOOL = os.path.join(HERE, "..", "..", "ascender", "ascender.usd")
 OUT = os.path.join(HERE, "..", "g1_unitree_ascender.usd")
 LINK = "/G1/right_wrist_yaw_link"
-# tool origin (bottom of handle) at the end of the wrist link (its mesh ends at x=0.047); tool Z (handle -> cam head)
-# rotated onto wrist +X (forearm axis): rotate 90 deg about Y. Tool width (X) -> wrist -Z, thickness (Y) -> wrist Y.
-TOOL_POS = Gf.Vec3d(0.05, 0.0, 0.0)
-TOOL_ROT = Gf.Quatf(0.7071068, 0.0, 0.7071068, 0.0)
+# Tool base sunk 2 cm into the wrist link (its mesh ends at x=0.047) so it is visibly bolted on.
+# Orientation: tool Z (handle -> cam head) onto wrist +X (forearm) = rotY(90), then rolled 90 deg about the forearm
+# so the flat face of the ascender lies in the wrist X-Y plane (cam opening faces +/-Z).
+TOOL_POS = Gf.Vec3d(0.03, 0.0, 0.0)
+# Basis mapping (Gf is row-vector convention: rows = images of tool X, Y, Z in the wrist frame):
+#   tool X (width)     -> wrist +Y
+#   tool Y (thickness) -> wrist +Z   (flat face in the wrist X-Y plane)
+#   tool Z (handle)    -> wrist +X   (along the forearm)
+_R = Gf.Matrix3d(0, 1, 0,   0, 0, 1,   1, 0, 0)
+_qd = _R.ExtractRotation().GetQuat(); TOOL_ROT = Gf.Quatf(_qd.GetReal(), *_qd.GetImaginary())
 HAND_X_MIN = 0.08  # the rubber-hand paddle lives at x 0.087..0.132 in the wrist frame; wrist link mesh ends at 0.047
 
 tool = Usd.Stage.Open(TOOL)
@@ -31,24 +37,14 @@ tp = UsdGeom.Xform.Define(stage, LINK + "/tool_ascender")
 xf = UsdGeom.Xformable(tp.GetPrim()); xf.AddTranslateOp().Set(TOOL_POS); xf.AddOrientOp().Set(TOOL_ROT)
 TOOL_ROT_D = Gf.Quatd(TOOL_ROT.GetReal(), *TOOL_ROT.GetImaginary())
 
-mat = UsdShade.Material.Define(stage, "/G1/Looks/ascender_alu")
-sh = UsdShade.Shader.Define(stage, "/G1/Looks/ascender_alu/Shader"); sh.CreateIdAttr("UsdPreviewSurface")
-src_sh = UsdShade.Shader(tool.GetPrimAtPath("/Ascender/Looks/anodized_alu/Shader"))
-for n, t in [("diffuseColor", Sdf.ValueTypeNames.Color3f), ("metallic", Sdf.ValueTypeNames.Float), ("roughness", Sdf.ValueTypeNames.Float)]:
-    sh.CreateInput(n, t).Set(src_sh.GetInput(n).Get())
-mat.CreateSurfaceOutput().ConnectToSource(sh.ConnectableAPI(), "surface")
-
-for name, collision in [("visual", False), ("collision", True)]:
-    s = UsdGeom.Mesh(tool.GetPrimAtPath("/Ascender/" + name))
-    d = UsdGeom.Mesh.Define(stage, tp.GetPath().AppendChild(name))
-    d.CreatePointsAttr(s.GetPointsAttr().Get()); d.CreateFaceVertexCountsAttr(s.GetFaceVertexCountsAttr().Get())
-    d.CreateFaceVertexIndicesAttr(s.GetFaceVertexIndicesAttr().Get()); d.CreateSubdivisionSchemeAttr("none")
-    d.CreateExtentAttr(s.GetExtentAttr().Get())
-    if collision:
-        d.CreatePurposeAttr("guide"); UsdPhysics.CollisionAPI.Apply(d.GetPrim())
-        UsdPhysics.MeshCollisionAPI.Apply(d.GetPrim()).CreateApproximationAttr("convexHull")
-    else:
-        UsdShade.MaterialBindingAPI.Apply(d.GetPrim()).Bind(mat)
+# visual: reference the textured ascender (usdz PBR material comes along); collision: convex hull baked in
+vis = stage.DefinePrim(tp.GetPath().AppendChild("visual"))
+vis.GetReferences().AddReference("../ascender/ascender.usd", "/Ascender/visual")
+src_col = UsdGeom.Mesh(tool.GetPrimAtPath("/Ascender/collision"))
+col = UsdGeom.Mesh.Define(stage, tp.GetPath().AppendChild("collision"))
+col.CreatePointsAttr(src_col.GetPointsAttr().Get()); col.CreateFaceVertexCountsAttr(src_col.GetFaceVertexCountsAttr().Get())
+col.CreateFaceVertexIndicesAttr(src_col.GetFaceVertexIndicesAttr().Get()); col.CreatePurposeAttr("guide")
+UsdPhysics.CollisionAPI.Apply(col.GetPrim()); UsdPhysics.MeshCollisionAPI.Apply(col.GetPrim()).CreateApproximationAttr("convexHull")
 
 # fold tool mass into the link (parallel-axis on the diagonal inertia is small at 165 g; keep principal axes)
 mass = UsdPhysics.MassAPI(link)

@@ -51,7 +51,8 @@ G1_HIMALAYA_CFG = ArticulationCfg(
 
 ## Ascender variant (ascender = right end-effector)
 `assets/robots/g1_unitree_ascender.usd` = same robot with the **right rubber hand removed and the ascender bolted on in its place**
-(`assets/ascender/ascender.usd`, handle along the forearm, cam head outward). Built by `attach_tool.py`: tool baked into
-`right_wrist_yaw_link` (visual + convex collision, +0.165 kg folded into the link mass), so the articulation is unchanged (29 DoF)
+(handle along the forearm, base 2 cm inside the wrist link, flat face in the wrist X-Y plane). Built by `attach_tool.py`: the visual
+**references** `assets/ascender/ascender.usd` (textured, so keep the `assets/` tree together), convex collision baked into
+`right_wrist_yaw_link`, +0.165 kg folded into the link mass, so the articulation is unchanged (29 DoF)
 and the Isaac Lab cfg works as-is. The end-effector frame is `/G1/right_wrist_yaw_link/tool_ascender` (origin = tool base, +Z = along tool to the cam head).
 Tune `TOOL_POS` / `TOOL_ROT` in `attach_tool.py`. Scene: `himalaya_scene.py --robot g1_unitree_ascender`.
