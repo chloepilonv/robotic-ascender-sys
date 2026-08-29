@@ -16,10 +16,10 @@ LINK = "/G1/right_wrist_yaw_link"
 # Mount: ascender UPRIGHT like on a fixed rope - cam head centred on the wrist joint, handle hanging below
 # (wrist frame: X = forearm, Z = up when the arm is horizontal).
 # Basis mapping (Gf is row-vector convention: rows = images of tool X, Y, Z in the wrist frame):
-#   tool X (width)        -> wrist +X
-#   tool Y (thickness)    -> wrist +Y   (mechanism side = tool -Y = outward, away from the body)
+#   tool X (width)        -> wrist -X
+#   tool Y (thickness)    -> wrist -Y
 #   tool Z (handle->head) -> wrist +Z   (head up)
-_R = Gf.Matrix3d(1, 0, 0,   0, 1, 0,   0, 0, 1)   # identity: cam mechanism (tool -Y) faces away from the body
+_R = Gf.Matrix3d(-1, 0, 0,   0, -1, 0,   0, 0, 1)   # 180 deg yaw about wrist Z
 HEAD_Z = (0.06, 0.11)                        # cam-mechanism span along the tool axis (110 mm tool, cam in the top half)
 TOOL_POS = Gf.Vec3d(0.06, 0.0, -(HEAD_Z[0] + HEAD_Z[1]) / 2)   # head on the joint, just past the wrist mesh (ends x=0.047)
 _qd = _R.ExtractRotation().GetQuat(); TOOL_ROT = Gf.Quatf(_qd.GetReal(), *_qd.GetImaginary())
