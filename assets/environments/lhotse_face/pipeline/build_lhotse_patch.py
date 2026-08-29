@@ -111,8 +111,10 @@ print(f"  dimensions : {Vx.ptp() if hasattr(Vx,'ptp') else np.ptp(Vx):.2f} x "
 print(f"  vertical gain over patch : {np.ptp(Zmacro):.2f} m")
 
 import os
-os.makedirs("assets/terrain", exist_ok=True)
-obj = f"assets/terrain/lhotse_face_{a.candidate}.obj"
+# write next to this pipeline's environment, not a top-level assets/terrain
+OUTDIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+os.makedirs(OUTDIR, exist_ok=True)
+obj = os.path.join(OUTDIR, f"lhotse_face_{a.candidate}.obj")
 with open(obj, "w") as f:
     f.write(f"# Lhotse Face patch, candidate {a.candidate}\n")
     f.write(f"# REAL: location/slope/aspect from Copernicus GLO-30\n")
@@ -160,6 +162,6 @@ meta = dict(
     resolution_m=a.res, vertices=int(len(Vt)), triangles=int(len(F)),
     rope_route_xyz=rope.tolist(),
 )
-json.dump(meta, open(f"assets/terrain/lhotse_face_{a.candidate}.json","w"), indent=2)
+json.dump(meta, open(os.path.join(OUTDIR, f"lhotse_face_{a.candidate}.json"),"w"), indent=2)
 np.save(f"data/processed/everest/patch_{a.candidate}_Z.npy", Z)
-print(f"  wrote      : assets/terrain/lhotse_face_{a.candidate}.json")
+print(f"  wrote      : {OUTDIR}/lhotse_face_{a.candidate}.json")
