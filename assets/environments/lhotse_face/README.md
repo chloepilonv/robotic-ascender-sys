@@ -6,7 +6,7 @@ A 25 × 15 m patch of the **Everest South Col route**, between Camp II and
 Camp III, for the fixed-rope / ascender task. Real geographic location and
 macro slope; synthetic sub-30 m detail (there is no other option — see below).
 
-![route](docs/viewA_route.png)
+![route](../../../img/terrain/viewA_route.png)
 
 ## Where it is
 
@@ -20,7 +20,7 @@ macro slope; synthetic sub-30 m detail (there is no other option — see below).
 | downhill aspect | 292° WNW, into the Western Cwm |
 | patch | 25 × 15 m, 20.14 m vertical gain, 5 cm sampling |
 
-![context](docs/context_patch.png)
+![context](../../../img/terrain/context_patch.png)
 
 ## Training patch set
 
@@ -100,7 +100,7 @@ against the actual per-cell triangles.
 
 Elevation is pushed in as float32 via `model.hfield_data` rather than a PNG: an
 8-bit PNG quantises this patch's 20.5 m span into 8 cm steps, coarser than the
-12 cm RMS roughness itself. **`terrain/lhotse_face.xml` alone is not enough** —
+12 cm RMS roughness itself. **`lhotse_face.xml` alone is not enough** —
 it is written for inspection but carries no elevation data; run the module.
 
 ## Data sources
@@ -197,7 +197,7 @@ edge, so it cannot be registered. Cropping it, via `crop_mesh_ladder.py`:
 
 It is good for a **visual backdrop at 250–1000 m** and useless at robot scale.
 
-![crop](docs/sketchfab_crop_1000m.png)
+![crop](../../../img/terrain/sketchfab_crop_1000m.png)
 
 ## Known gotchas
 

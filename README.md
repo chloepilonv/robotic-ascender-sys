@@ -24,15 +24,17 @@ site-packages (automatic on first env load); nothing else to install.
   - `rl/policies/` — saved policy weights (`mels_g1_joystick.npz` baseline).
   - `rl/tests/` — headless smoke tests (`test_wind_env.py`,
     `test_climb_env.py`, `test_viewer_internals.py`).
-- `terrain/` — real Everest terrain for the fixed-rope / ascender task. A
-  25 x 15 m patch of the **Lhotse Face between Camp II and Camp III**
-  (6907 m, 38.9 deg), from Copernicus GLO-30 + OpenStreetMap route nodes.
-  Loaded into MuJoCo as an `hfield`. See `terrain/README.md` — in particular
-  the REAL vs SYNTHETIC section before quoting the terrain anywhere.
+- `assets/environments/lhotse_face/` — real Everest terrain for the fixed-rope
+  / ascender task. Nine patches on the **Lhotse Face between Camp II and
+  Camp III**, from Copernicus GLO-30 + OpenStreetMap route nodes, loaded into
+  MuJoCo as an `hfield`. Four are real measurements; five have the slope
+  overridden for curriculum. See its README — in particular the REAL vs
+  SYNTHETIC section before quoting the terrain anywhere.
 
 ```bash
-python -m terrain.mujoco_scene              # viewer
-python -m terrain.mujoco_scene --headless   # physics check
+cd assets/environments/lhotse_face
+python mujoco_scene.py --list      # all nine, with their class
+python mujoco_scene.py --patch B   # real Lhotse Face, 38.8 deg
 ```
 
 ## Interactive viewer (WASD + live wind)

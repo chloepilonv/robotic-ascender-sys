@@ -5,7 +5,7 @@ The OBJ is ~10 MB and would be the largest file in the repo, so only the
 0.55 MB compressed heightfield is version-controlled. This rebuilds the mesh
 byte-for-byte identically whenever you need it (Blender, rendering, etc.).
 
-    python -m terrain.export_obj [-o lhotse_face_B.obj]
+    python export_obj.py [-o lhotse_face_B.obj]
 """
 import argparse, json, os
 import numpy as np

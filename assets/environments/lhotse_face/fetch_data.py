@@ -5,7 +5,7 @@ The raster is NOT in git and does not need to be: it is 41 MB, published at a
 stable public URL, and needed only if you re-run pipeline/. Git LFS would cost
 quota and force every clone through it; a fetch is free and always current.
 
-    python -m terrain.fetch_data
+    python fetch_data.py
 """
 import os, sys, urllib.request
 
@@ -47,8 +47,8 @@ def fetch(name, url):
 
 
 if __name__ == "__main__":
-    print("Fetching terrain source data into terrain/data/")
+    print("Fetching terrain source data into data/")
     for n, u in FILES.items():
         fetch(n, u)
-    print("\nNote: terrain/mujoco_scene.py does NOT need this -- the patch "
+    print("\nNote: mujoco_scene.py does NOT need this -- the patch "
           "heightfield is committed. This is only for re-running pipeline/.")

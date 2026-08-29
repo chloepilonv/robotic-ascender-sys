@@ -14,7 +14,7 @@ tests. Run everything from the repo root in the `everest` conda env
     control step. Registered as `G1JoystickWindFlatTerrain` /
     `G1JoystickWindRoughTerrain`.
   - `climb_env.py` — `G1ClimbAscender`: fixed-rope / ascender climb task on
-    the Lhotse Face terrain (see `terrain/README.md`).
+    the Lhotse Face terrain (see `assets/environments/lhotse_face/README.md`).
 - `scripts/` — entry points (run as modules from the repo root):
   - `viewer.py` — interactive WASD viewer with live wind:
     `python -m rl.scripts.viewer --policy mels`
