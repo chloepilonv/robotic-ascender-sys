@@ -22,6 +22,64 @@ macro slope; synthetic sub-30 m detail (there is no other option — see below).
 
 ![context](docs/context_patch.png)
 
+## Training patch set
+
+Nine patches in **two classes that are not equivalent evidence**. The split is
+in the directory structure on purpose.
+
+### `patches/real/` — location AND slope measured from the DEM
+
+Four points along the real Lhotse Face, spread across the steep band between
+Camp II and Camp III:
+
+| patch | altitude | slope | aspect | lat, lon |
+|---|---:|---:|---:|---|
+| `A` | 6788 m | 33.5° | 288° | 27.97121, 86.91439 |
+| `B` | 6879 m | **38.8°** | 292° | 27.97047, 86.91548 |
+| `C` | 6982 m | 36.4° | 295° | 27.96973, 86.91657 |
+| `D` | 7082 m | 35.7° | 297° | 27.96900, 86.91765 |
+
+These are terrain observations. The slope figures are what the DEM says the
+Lhotse Face does there.
+
+### `patches/curriculum/` — location real, **slope overridden**
+
+Patch B's location with the incline forced to a chosen angle, for curriculum /
+domain randomisation:
+
+| patch | applied | vs real (38.8°) |
+|---|---:|---:|
+| `B_slope25` | 25° | −13.8° |
+| `B_slope30` | 30° | −8.8° |
+| `B_slope35` | 35° | −3.8° |
+| `B_slope45` | 45° | +6.2° |
+| `B_slope50` | 50° | +11.2° |
+
+**These are training aids, not measurements.** The Lhotse Face is not 50° at
+that location. Do not label a curriculum patch as "the Lhotse Face at N
+degrees" in a writeup or demo — say the slope was set for training. Every
+curriculum `.json` carries a `WARNING` field saying so, and the loader prints
+`SYNTHETIC OVERRIDE` at startup.
+
+### What is synthetic in *both* classes
+
+**All detail finer than ~30 m.** GLO-30 cells here are 27.3 × 30.7 m, so a
+25 × 15 m patch is **0.36 of one cell**. No public sub-metre Everest terrain
+exists. Roughness is seeded correlated noise (2.0 / 0.6 / 0.2 m octaves,
+0.120 m RMS) and shifts the planar slope by about +0.2°.
+
+So per patch: `location_is_real: true` always; `slope_is_real` true for
+`real/`, false for `curriculum/`; sub-30 m detail synthetic everywhere.
+
+### Using them
+
+```bash
+python mujoco_scene.py --list             # every patch, with its class
+python mujoco_scene.py --patch A          # a real one
+python mujoco_scene.py --patch B_slope45  # a curriculum one
+python build_patch_set.py                 # regenerate (needs fetch_data.py first)
+```
+
 ## Quick start
 
 ```bash

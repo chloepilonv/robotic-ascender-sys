@@ -1,0 +1,32 @@
+{
+  "name": "A",
+  "geometry_class": "real_location_real_slope",
+  "slope_is_real": true,
+  "location_is_real": true,
+  "lat": 27.971212833333333,
+  "lon": 86.91438716666667,
+  "approx_altitude_m": 6788,
+  "real_slope_deg": 33.5,
+  "applied_slope_deg": 33.5,
+  "planar_slope_after_roughness_deg": 33.7,
+  "downhill_aspect_deg": 287.6,
+  "plane_fit_residual_m": 7.43,
+  "length_m": 25.0,
+  "width_m": 15.0,
+  "resolution_m": 0.05,
+  "vertical_gain_m": 16.52,
+  "synthetic_refinement": true,
+  "synthetic_rms_m": 0.12,
+  "synthetic_seed": 20260829,
+  "synthetic_octaves_m": [
+    2.0,
+    0.6,
+    0.2
+  ],
+  "native_dem_resolution_m": [
+    27.31,
+    30.71
+  ],
+  "real_dem_cells_in_patch": 0.447,
+  "source": "Copernicus GLO-30 (ESA) + OpenStreetMap camp nodes"
+}
