@@ -32,7 +32,7 @@ _tv = np.array(UsdGeom.Mesh(_ts.GetPrimAtPath("/Ascender/visual/mesh")).GetPoint
 _tr = np.array([Gf.Vec3d(*v) * _R for v in _tv[::50]])           # rotated sample of the tool points (wrist frame, before translation)
 EDGE_X, CAM_Z_TOOL = 0.036, 0.085                                  # edge 1 cm past the wrist mesh (ends x=0.026); cam centre at wrist z=0
 _cam = Gf.Vec3d(0, 0, CAM_Z_TOOL) * _R
-Z_UP = 0.02                                                        # raise the device along wrist Z
+Z_UP = 0.03                                                        # raise the device along wrist Z
 TOOL_POS = Gf.Vec3d(EDGE_X - _tr[:, 0].min(), 0.0, -_cam[2] + Z_UP)
 _qd = _R.ExtractRotation().GetQuat(); TOOL_ROT = Gf.Quatf(_qd.GetReal(), *_qd.GetImaginary())
 HAND_X_MIN = 0.08  # the rubber-hand paddle lives at x 0.087..0.132 in the wrist frame; wrist link mesh ends at 0.047
@@ -62,6 +62,20 @@ col = UsdGeom.Mesh.Define(stage, tp.GetPath().AppendChild("collision"))
 col.CreatePointsAttr(src_col.GetPointsAttr().Get()); col.CreateFaceVertexCountsAttr(src_col.GetFaceVertexCountsAttr().Get())
 col.CreateFaceVertexIndicesAttr(src_col.GetFaceVertexIndicesAttr().Get()); col.CreatePurposeAttr("guide"); col.CreateVisibilityAttr("invisible")
 UsdPhysics.CollisionAPI.Apply(col.GetPrim()); UsdPhysics.MeshCollisionAPI.Apply(col.GetPrim()).CreateApproximationAttr("convexHull")
+
+# mounting block: dark rectangular bracket from inside the wrist link into the plain slanted zone below the rivets
+bk_mat = UsdShade.Material.Define(stage, "/G1/Looks/bracket_black")
+bsh = UsdShade.Shader.Define(stage, "/G1/Looks/bracket_black/Shader"); bsh.CreateIdAttr("UsdPreviewSurface")
+bsh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.12, 0.12, 0.12))
+bsh.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.5); bsh.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.6)
+bk_mat.CreateSurfaceOutput().ConnectToSource(bsh.ConnectableAPI(), "surface")
+INSERT_TOOL_PT = Gf.Vec3d(0.0126, 0.0, 0.03)          # on the slanted edge, below the rivets (tool frame)
+_ins = INSERT_TOOL_PT * _R + TOOL_POS                  # -> wrist frame
+BLOCK_X0, BLOCK_X1, BLOCK_Y, BLOCK_Z = 0.012, _ins[0] + 0.012, 0.020, 0.024   # x span, width (Y), height (Z)
+bk = UsdGeom.Cube.Define(stage, tp.GetPath().GetParentPath().AppendChild("tool_bracket")); bk.CreateSizeAttr(1.0)
+bx = UsdGeom.Xformable(bk.GetPrim())
+bx.AddTranslateOp().Set(Gf.Vec3d((BLOCK_X0 + BLOCK_X1) / 2, 0.0, _ins[2])); bx.AddScaleOp().Set(Gf.Vec3f(BLOCK_X1 - BLOCK_X0, BLOCK_Y, BLOCK_Z))
+UsdShade.MaterialBindingAPI.Apply(bk.GetPrim()).Bind(bk_mat)
 
 # fold tool mass into the link (parallel-axis on the diagonal inertia is small at 165 g; keep principal axes)
 mass_src = UsdPhysics.MassAPI(src.GetPrimAtPath(LINK))
