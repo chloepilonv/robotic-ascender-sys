@@ -63,6 +63,6 @@ fan speed `fan_state[6]` (rpm), board temps `temperature[6]` (°C).
 - Topic names `rt/lf/bmsstate` / `rt/lf/mainboardstate` are the best guess for firmware ≥1.0; confirm with `discover_topics.py` and pass `--bms_topic`.
 - Pack capacity 9 Ah / 48 V nominal is the G1 EDU spec; edit `derived.py` if the BMS reports another cell count.
 
-## SIM plan (`monitoring/sim/`, next)
-Isaac Lab gives `τ`, `q̇`, no temps/battery. Model: `P_elec = Σ|τ q̇| / η + P_idle(≈60 W)`, `SOC -= P_elec·dt / (9 Ah·48 V)`,
-motor temp = 1st-order thermal model on `τ²R`. Feed into the same `derived.py` + a board (camera stream + values).
+## SIM (`monitoring/sim/`) — done, see `sim/README.md`
+MuJoCo gives τ, q̇, pose, contacts; `sim/battery_model.py` models battery/thermal/environment (VALUES.md §3–5);
+`sim/mujoco_monitor.py` writes the same `log.jsonl` schema. Test the app against it before any robot time.
