@@ -12,7 +12,10 @@ import argparse, os, sys
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--headless", action="store_true")
-ap.add_argument("--stream", action="store_true", help="headless + WebRTC livestream")
+ap.add_argument("--stream", action="store_true", help="headless + WebRTC livestream (same app as the web viewer)")
+ap.add_argument("--public-ip", default=os.environ.get("ISAACSIM_HOST", "127.0.0.1"))
+ap.add_argument("--signal-port", default=os.environ.get("ISAACSIM_SIGNAL_PORT", "49100"))
+ap.add_argument("--stream-port", default=os.environ.get("ISAACSIM_STREAM_PORT", "47998"))
 ap.add_argument("--frames", type=int, default=0, help="step N frames then exit (0 = run until closed)")
 ap.add_argument("--save", default="", help="also save the assembled stage to this .usd")
 ap.add_argument("--assets", default=os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
@@ -20,10 +23,18 @@ ap.add_argument("--assets", default=os.path.abspath(os.path.join(os.path.dirname
 args = ap.parse_args()
 
 from isaacsim import SimulationApp  # noqa: E402
-simulation_app = SimulationApp({"headless": args.headless or args.stream})
 if args.stream:
-    from isaacsim.core.utils.extensions import enable_extension
-    enable_extension("omni.kit.livestream.webrtc")
+    # Boot the official streaming experience (isaacsim.exp.full.streaming) so the web viewer connects as usual.
+    isaac_path = os.environ.get("ISAAC_PATH", "/isaac-sim")
+    simulation_app = SimulationApp(
+        {"headless": True, "extra_args": [
+            f"--/exts/omni.kit.livestream.app/primaryStream/publicIp={args.public_ip}",
+            f"--/exts/omni.kit.livestream.app/primaryStream/signalPort={args.signal_port}",
+            f"--/exts/omni.kit.livestream.app/primaryStream/streamPort={args.stream_port}",
+            "--no-window"]},
+        experience=os.path.join(isaac_path, "apps", "isaacsim.exp.full.streaming.kit"))
+else:
+    simulation_app = SimulationApp({"headless": args.headless})
 
 import omni.usd                                                     # noqa: E402
 from isaacsim.core.api import World                                  # noqa: E402
