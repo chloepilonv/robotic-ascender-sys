@@ -1,13 +1,13 @@
 """SIM monitor: read MuJoCo mjData every step, run battery/thermal models, write the SAME log.jsonl as REAL.
 
 Library use (inside your own policy loop):
-    mon = SimMonitor(model, env=Environment(altitude_m=5300, wind_kmh=30), log="monitoring/sim/log.jsonl")
+    mon = SimMonitor(model, env=Environment(altitude_m=5300, wind_kmh=30), log="app/monitoring/sim/log.jsonl")
     while running:
         mujoco.mj_step(model, data)
         mon.step(data)                 # call after every mj_step
 
 Standalone demo (no policy, PD hold of the standing keyframe + arm swing), 60 s of sim in a few s real time:
-    python monitoring/sim/mujoco_monitor.py --xml path/to/mujoco_menagerie/unitree_g1/g1.xml --seconds 60 --altitude 5300
+    python app/monitoring/sim/mujoco_monitor.py --xml path/to/mujoco_menagerie/unitree_g1/g1.xml --seconds 60 --altitude 5300
 """
 import argparse, json, sys, time
 from pathlib import Path

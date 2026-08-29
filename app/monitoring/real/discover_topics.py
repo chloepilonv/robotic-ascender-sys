@@ -1,6 +1,6 @@
 """List every DDS topic the G1 is publishing (run this FIRST on the robot network).
 
-    python monitoring/real/discover_topics.py --iface eth0 --seconds 5
+    python app/monitoring/real/discover_topics.py --iface eth0 --seconds 5
 
 Prints topic name + type name. Use it to confirm the BMS/mainboard topic names
 used in monitor_battery.py (rt/lf/bmsstate, rt/lf/mainboardstate).
