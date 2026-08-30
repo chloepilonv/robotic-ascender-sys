@@ -98,6 +98,16 @@ MICROPHONE_QUEUE_SECONDS = 2.0    # ring buffer; a page that runs ahead is cappe
 # converts jitter into a fixed 150 ms of latency, which nobody can hear and the
 # behaviour does not care about.
 MICROPHONE_PRIME_SECONDS = 0.15
+# ------------------------------------------------- the microphone noise gate
+# MIC-mode blocks quieter than this rms reach the ear model as SILENCE. Room
+# noise -- fans, keyboard, distant chatter -- was passing webrtcvad and calling
+# the robot (user, 2026-08-30: "background noise is triggering"). This is a
+# GATE, not normalisation: the no-AGC ruling stands, and a shout arrives
+# exactly as loud as it was spoken. Speech at the laptop measures ~0.05-0.3
+# rms and room noise ~0.003-0.01, so 0.02 (-34 dBFS) sits between. The HUD
+# meter still reads the RAW level: a gated room shows a moving meter and a
+# deaf robot, which is the truth.
+MICROPHONE_NOISE_GATE_RMS = 0.02
 
 # --------------------------------------------------------------- the array
 # FOUR MICS ON THE HEAD, in the TORSO body's own frame: +x forward, +y left,
@@ -393,15 +403,26 @@ class MicrophoneStream:
         self._level_window = []
 
     def push_pcm_bytes(self, payload: bytes) -> int:
-        """int16 little-endian PCM (with or without the `MIC0` prefix). -> count."""
+        """int16 little-endian PCM (with or without the `MIC0` prefix). -> count.
+
+        Blocks quieter than `MICROPHONE_NOISE_GATE_RMS` are delivered to the
+        ear model as SILENCE (the level meter still sees the raw block), so
+        room noise cannot open voice segments. A gate, not normalisation.
+        """
         if payload[:4] == MIC_MESSAGE_PREFIX:
             payload = payload[4:]
         if len(payload) < 2:
             return 0
         samples = np.frombuffer(payload, dtype="<i2").astype(np.float32) / 32768.0
+        block_rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
+        if block_rms < MICROPHONE_NOISE_GATE_RMS:
+            return self.push(samples, deliver=np.zeros_like(samples))
         return self.push(samples)
 
-    def push(self, samples) -> int:
+    def push(self, samples, deliver=None) -> int:
+        """`samples` feed the level meter; `deliver` (default: the same
+        samples) is what actually enters the ear buffer -- the noise gate
+        passes zeros there while the meter keeps reading the room."""
         samples = np.asarray(samples, dtype=np.float32)
         if samples.size:
             self._level_window.append((int(samples.size),
@@ -413,14 +434,16 @@ class MicrophoneStream:
             self.recent_rms = float(np.sqrt(
                 sum(row[1] for row in self._level_window) / max(total, 1)))
             self.recent_peak = max(row[2] for row in self._level_window)
+        delivered = samples if deliver is None else np.asarray(deliver,
+                                                              dtype=np.float32)
         with self.lock:
-            self.buffer = np.concatenate((self.buffer, samples))
-            self.samples_received += int(samples.size)
+            self.buffer = np.concatenate((self.buffer, delivered))
+            self.samples_received += int(delivered.size)
             excess = self.buffer.size - self.capacity
             if excess > 0:
                 self.buffer = self.buffer[excess:]
                 self.samples_dropped += int(excess)
-        return int(samples.size)
+        return int(delivered.size)
 
     def take(self, count: int) -> np.ndarray:
         """The next `count` samples, zero-padded if the page has not kept up.
