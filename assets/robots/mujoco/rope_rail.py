@@ -47,7 +47,7 @@ CAM_FRICTION_N = 3.0  # push needed to slide the cam up the rope
 # frame), axis pitched -6 deg about tool y. (The collision mesh is a convex
 # hull, so its centre is NOT the channel.)
 CHANNEL_CENTRE_TOOL = (-0.0213, -0.0012, 0.055)  # m, tool frame (z = mid-tool)
-CHANNEL_PITCH_DEG = -6.4
+CHANNEL_PITCH_DEG = 25.0  # set by eye from side renders: tool lies along the rope (2026-08-30)
 ROPE_HEIGHT = 0.60  # m above the ground at reset (arm pose is solved for it)
 RIGHT_ARM_IK = ("right_shoulder_pitch_joint", "right_elbow_joint") + RIGHT_WRIST
 

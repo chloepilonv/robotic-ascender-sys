@@ -171,3 +171,35 @@ def mode_ascender_progress(
   vel = asset.data.joint_vel[:, asset_cfg.joint_ids].reshape(env.num_envs)
   slide = env.climb_mode > 0.5  # type: ignore[attr-defined]
   return torch.where(slide, torch.clamp(vel, 0.0, max_vel), -torch.abs(vel))
+
+
+# ----------------------------------------------------------------------------
+# Hiking posture + stillness
+# ----------------------------------------------------------------------------
+
+HIKE_POSE = {  # legs flexed like a hiker going uphill (rad); ankle set per slope in env_cfg
+  ".*_hip_pitch_joint": -0.45,
+  ".*_knee_joint": 0.85,
+  "waist_pitch_joint": 0.15,
+}
+
+
+def hiking_posture(env: ManagerBasedRlEnv, targets: dict, std: float, asset_cfg: SceneEntityCfg = ROBOT) -> torch.Tensor:
+  """Reward: legs/waist near a hiking pose (hips and knees flexed, slight forward lean)."""
+  asset: Entity = env.scene[asset_cfg.name]
+  ids, vals = [], []
+  for i, name in enumerate(asset.joint_names):
+    for pat, v in targets.items():
+      if __import__("re").fullmatch(pat, name):
+        ids.append(i)
+        vals.append(v)
+  q = asset.data.joint_pos[:, ids]
+  err = q - torch.tensor(vals, device=env.device)
+  return torch.exp(-torch.sum(torch.square(err), dim=1) / (std**2 * len(ids)))
+
+
+def stillness(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = ROBOT) -> torch.Tensor:
+  """Penalty on joint speed while in SLIDE mode (the body should be posed, not jiggling)."""
+  asset: Entity = env.scene[asset_cfg.name]
+  v2 = torch.sum(torch.square(asset.data.joint_vel[:, asset_cfg.joint_ids]), dim=1)
+  return torch.where(env.climb_mode > 0.5, v2, torch.zeros_like(v2))  # type: ignore[attr-defined]
