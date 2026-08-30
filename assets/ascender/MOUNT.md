@@ -9,13 +9,18 @@ Joint: `right_wrist_yaw_joint`. Its child link `right_wrist_yaw_link` ends in th
 | Attachment | round **stem** on the hand, slides into the wrist socket | Prosthetic-hand manual p.5, Dex3-1 manual p.4 |
 | Lock | U-shaped **clamp ("hoop")**, **2× M3, 10 mm thread** | same |
 | Cover plate | 2× M2, 5 mm thread; hides the **power connector** (powered hands only) | same |
-| Socket outer section | ≈ 36 × 60 mm (measured on `right_wrist_yaw_link.STL`) | menagerie STL |
-| Stem diameter / length / groove | **not public — measure with calipers** on the rubber hand | — |
+| Socket (wrist side) | round cup: **bore Ø ≈ 49–50 mm at the mouth, ≈ 20 mm deep**, wall ≈ 3 mm, outer Ø ≈ 56–60 mm (mouth at x = 41.5 mm from the wrist-yaw joint) | measured on Unitree's `right_wrist_yaw_link.STL` (menagerie), ±0.5 mm mesh resolution |
+| Hand "stem" (plug) | the round base of the hand that fills that cup: Ø ≈ 49 mm × ~20 mm + a groove the clamp hooks into; **not in any public file** (the rubber-hand STL starts at the cup mouth) → caliper it | — |
 | Warning | with a hand/tool mounted, avoid squatting and lying down | Dex3-1 manual p.7 |
 
 Manuals: [G1 End Prosthetic Hand assembly guide](https://www.unitree.com/images/G1-End%20Prosthetic%20Hand%20Disassembly%20and%20Assembly%20Guide%20Manual.pdf),
 [Dex3-1 assembly guide](https://www.unitree.com/images/G1-Flagship%20Version%20A%26B%20Terminal%20Three-Fingered%20Dexterous%20Hand%20Dex3-1%20Disassembly%20and%20Assembly%20Guide%20Manual%20V1.1.pdf).
 CAD: no public G1 STEP ([unitree_cad](https://github.com/unitreerobotics/unitree_cad) has only A1/Aliengo/Laikago). EDU owners: support ticket at support.unitree.com → ask for `wrist_yaw_link` + hand-stem STEP.
+
+## Where to see the socket
+`python3 -m mujoco.viewer --mjcf $PWD/assets/robots/mujoco/g1_unitree.xml` → double-click the right wrist. Or open
+`assets/robots/g1/_menagerie/unitree_g1/assets/right_wrist_yaw_link.STL` in Fusion 360 / MeshLab and use the measure tool.
+Measure script: slice the STL at x = 40 mm → inner radius ≈ 24.5 mm (see git log of this file).
 
 ## Build plan
 1. Remove the rubber hand: 2× M2 cover plate, 2× M3 clamp, pull the hand. Caliper the stem (Ø, length, groove position, any anti-rotation flat).
