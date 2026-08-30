@@ -48,6 +48,8 @@ CMD_RAMP_S   = 1.0     # ease the command in and out; never step-change it
 WALK_S       = 1.5     # ~2 gait cycles at 1.375 Hz -> 2-4 footfalls
 CMD_VX       = 0.25    # ~0.19 m/s -> ~0.47 m total, half the 1 m limit
 MAX_TILT_DEG = 30.0    # abort if the robot leans past this (rest pose is ~13 deg)
+CONVERGE_TOL = 0.15    # rad: how close to DEFAULT_POSE before the policy engages
+CONVERGE_MAX_S = 12.0  # give up waiting after this and report, rather than engage
 DAMP_KD = 8.0          # per the access doc: kp=0, kd~8 on all 29 joints.
 MAX_TARGET_STEP   = 0.05   # rad/step: SLEW LIMIT -- clamp changes above this
 ABORT_TARGET_STEP = 0.30   # rad/step: genuinely wrong -> damp and stop
@@ -148,6 +150,8 @@ def main():
     prof = {k: [] for k in ("read", "obs", "policy", "send", "total")}
     n_slew = 0
     n_overlimit = 0
+    converged = False
+    t_conv = 0.0
     rss0 = rss_mb()
     print(f"RSS at start: {rss0:.1f} MB")
 
@@ -171,8 +175,25 @@ def main():
                 r = (t - RAMP_GAINS_S) / RAMP_POSE_S
                 target, kp, kd = (1 - r) * q0 + r * C.DEFAULT_POSE, C.TRAIN_KP, C.TRAIN_KD
                 stage = "B pose"
+            elif not converged:                        # B2: HOLD until arrived
+                # The armed run showed the robot stalls ~0.5 rad short of the
+                # commanded pose. Engaging the policy there puts it far out of
+                # distribution and its output swings ~1.8 rad between steps.
+                # Wait for actual arrival instead of trusting the timer.
+                err = float(np.abs(q - C.DEFAULT_POSE).max())
+                target, kp, kd = C.DEFAULT_POSE, C.TRAIN_KP, C.TRAIN_KD
+                stage = "B2 settle"
+                if err < CONVERGE_TOL:
+                    converged = True
+                    t_conv = t
+                    print(f"  CONVERGED at t={t:.1f}s, |q-default|max={err:.3f}")
+                elif t > RAMP_GAINS_S + RAMP_POSE_S + CONVERGE_MAX_S:
+                    print(f"\nSTOP: pose did not converge in {CONVERGE_MAX_S:.0f}s "
+                          f"(|q-default|max={err:.3f}, need <{CONVERGE_TOL}). "
+                          f"NOT engaging the policy.")
+                    break
             else:                                      # C: policy
-                tC = t - RAMP_GAINS_S - RAMP_POSE_S
+                tC = t - t_conv
                 # Command schedule: settle at zero -> ease in -> hold -> ease out.
                 if tC < SETTLE_S:
                     vx, stage_c = 0.0, "C stand"
@@ -198,7 +219,7 @@ def main():
                 action = policy(obs).copy()
                 prof["policy"].append(time.perf_counter() - _t)
                 builder.set_last_action(action); builder.advance_phase()
-                r = min(1.0, (t - RAMP_GAINS_S - RAMP_POSE_S) / RAMP_ACTION_S)
+                r = min(1.0, tC / RAMP_ACTION_S)
                 target = C.DEFAULT_POSE + r * C.ACTION_SCALE * action
                 kp, kd, stage = C.TRAIN_KP, C.TRAIN_KD, stage_c
 
@@ -256,8 +277,7 @@ def main():
         if n_pol:
             print(f"slew-limited steps : {n_slew} / {n_pol} policy steps "
                   f"({100.0*n_slew/n_pol:.0f}%)")
-            print(f"over ABORT limit   : {n_overlimit} (dry only; would have "
-                  f"aborted an armed run)")
+            print(f"over ABORT limit   : {n_overlimit} (clamped; dry runs only)")
             print("  NOTE: in a DRY run the robot never moves, so the observation stays "
                   "far\n  out of distribution and the policy output is erratic. High slew "
                   "counts here\n  are expected and are NOT predictive of the armed run --"
