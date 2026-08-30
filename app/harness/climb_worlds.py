@@ -121,7 +121,7 @@ SANDBOX_SEED = 7
 # correlation between B and B_slope25 is -0.06, i.e. unrelated draws). Reusing
 # patch B's actual roughness for all six means slope is the only variable that
 # changes across the ladder.
-UNEVEN_SLOPE_DEGREES = (5, 10, 15, 20, 25, 30)
+UNEVEN_SLOPE_DEGREES = (0, 5, 10, 15, 20, 25, 30)   # 0: flat Himalaya ground, no rope (user, 2026-08-30)
 
 
 def make_uneven_terrain(slope_degrees):
