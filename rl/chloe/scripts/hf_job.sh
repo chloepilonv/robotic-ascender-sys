@@ -29,7 +29,7 @@ if [ -n "${RESUME:-}" ]; then
   RESUME_ARGS=(--agent.resume --agent.load-run run --log-root logs/rsl_rl)
 fi
 
-.venv/bin/python -m rl.chloe.scripts.train_mjlab_ppo "$TASK" --agent.max-iterations "$ITERS" "${RESUME_ARGS[@]}"
+.venv/bin/python -m rl.chloe.scripts.train_mjlab_ppo "$TASK" --agent.max-iterations "$ITERS" ${EXTRA_ARGS:-} "${RESUME_ARGS[@]}"
 
 RUN=$(ls -d logs/rsl_rl/g1_ascender_slope*/*/ | sort | tail -1)
 CKPT=$(ls "$RUN"/model_*.pt | sort -V | tail -1)
