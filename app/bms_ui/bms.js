@@ -11,17 +11,22 @@
     #bmsPanel[hidden] { display: none; }
     main { grid-template-rows: 1fr auto; } #stage { grid-row: 1; grid-column: 1; } aside { grid-row: 1 / span 2; grid-column: 2; }
     #bmsPanel .head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
-    #bmsPanel .head h2 { margin: 0; font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--accent); }
+    #bmsPanel { --bat: #ffb454; --bat-2: #ffd08a; }
+    #bmsPanel .head { cursor: pointer; user-select: none; }
+    #bmsPanel .head h2 { margin: 0; font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--bat); }
+    #bmsPanel .head h2::before { content: '▾ '; color: var(--bat); } #bmsPanel.folded .head h2::before { content: '▸ '; }
+    #bmsPanel.folded .body { display: none; } #bmsPanel.folded { padding-bottom: 8px; }
+    #bmsPanel.folded #bmsMore { visibility: hidden; }
     #bmsPanel .head span { font-size: 11px; color: var(--ink-faint); }
     #bmsPanel .head .lnk { margin-left: auto; font-size: 11px; color: var(--ink-dim); cursor: pointer; user-select: none; }
     #bmsPanel .head .lnk:hover { color: var(--accent-2); }
     #bmsPanel .row6 { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)) 220px; gap: 8px; }
     .bt { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; min-width: 0; }
     .bt h3 { margin: 0 0 2px; font-size: 9.5px; text-transform: uppercase; letter-spacing: .12em; color: var(--ink-faint); font-weight: 600; }
-    .bt .big { font-size: 21px; font-weight: 600; color: var(--accent-2); font-variant-numeric: tabular-nums; line-height: 1.1; }
+    .bt .big { font-size: 21px; font-weight: 600; color: var(--bat-2); font-variant-numeric: tabular-nums; line-height: 1.1; }
     .bt .big small { font-size: 10.5px; color: var(--ink-dim); font-weight: 400; margin-left: 3px; }
     .bt .sub { font-size: 10.5px; color: var(--ink-dim); margin-top: 2px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .bt.warn { border-color: var(--warn); } .bt.bad { border-color: var(--bad); } .bt.bad .big { color: var(--bad); }
+    .bt { border-color: #3a3222; } .bt.warn { border-color: var(--warn); } .bt.bad { border-color: var(--bad); } .bt.bad .big { color: var(--bad); }
     .bt svg { width: 100%; height: 46px; display: block; }
     #bmsDetails { display: none; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
     #bmsDetails.open { display: grid; }
@@ -31,7 +36,8 @@
   `;
   const panel = `
     <div class="head"><h2>Battery Management System</h2><span>simulated · app/bms/sim</span>
-      <span class="lnk" id="bmsMore">details ▸</span><span class="lnk" id="bmsHide">hide</span></div>
+      <span class="lnk" id="bmsMore">details ▸</span></div>
+    <div class="body">
     <div class="row6">
       <div class="bt" id="btSoc"><h3>charge</h3><div class="big"><span id="bSoc">—</span><small>%</small></div><div class="sub" id="bTte">—</div></div>
       <div class="bt" id="btV"><h3>pack</h3><div class="big"><span id="bV">—</span><small>V</small></div><div class="sub" id="bSag">—</div></div>
@@ -47,6 +53,7 @@
       <div class="bt"><h3>last ${HISTORY_SECONDS} s · SOC (blue) · V (amber) · P (green)</h3>
         <div class="kv"><span>P<sub>mech</sub> Σ|τ·q̇| <b id="bPmech">—</b></span><span>copper <b id="bPcu">—</b></span><span>η <b id="bEff">—</b></span><span>hottest <b id="bTmot">—</b></span></div>
         <svg id="histChart" viewBox="0 0 360 64" preserveAspectRatio="none"></svg></div>
+    </div>
     </div>`;
   const knobs = `
     <h2>Battery</h2>
@@ -67,8 +74,9 @@
   tab.style.marginLeft = 'auto'; tab.style.marginRight = '12px';
   document.getElementById('status').insertAdjacentElement('beforebegin', tab);
   const $ = id => document.getElementById(id);
-  const setOpen = open => { section.hidden = !open; tab.classList.toggle('active', open); };
-  tab.onclick = () => setOpen(section.hidden); $('bmsHide').onclick = () => setOpen(false);
+  const setOpen = open => { section.classList.toggle('folded', !open); tab.classList.toggle('active', open); };
+  tab.onclick = () => setOpen(section.classList.contains('folded'));
+  section.querySelector('.head').onclick = e => { if (e.target.id !== 'bmsMore') setOpen(section.classList.contains('folded')); };
   $('bmsMore').onclick = () => { const d = $('bmsDetails'); d.classList.toggle('open'); $('bmsMore').textContent = d.classList.contains('open') ? 'details ▾' : 'details ▸'; };
   $('tamb').addEventListener('input', e => { $('tambOut').textContent = e.target.value + ' °C'; send({ type: 'knob', name: 't_amb', value: Number(e.target.value) }); });
   $('soc0').addEventListener('input', e => { $('soc0Out').textContent = e.target.value + ' %'; });
@@ -93,8 +101,8 @@
       const W = 200, H = 46, t0 = rintCurve[0][0], t1 = rintCurve[rintCurve.length - 1][0], rMax = rintCurve[0][1];
       const X = t => 4 + (t - t0) / (t1 - t0) * (W - 8), Y = r => H - 4 - r / rMax * (H - 10);
       const tb = Math.max(t0, Math.min(t1, b.t_bat_C));
-      $('rintChart').innerHTML = line(rintCurve.map(([t, r]) => [X(t), Y(r)]), 'var(--accent)') +
-        `<circle cx="${X(tb)}" cy="${Y(b.r_int_ohm)}" r="3.5" fill="var(--warn)"/>` +
+      $('rintChart').innerHTML = line(rintCurve.map(([t, r]) => [X(t), Y(r)]), 'var(--bat)') +
+        `<circle cx="${X(tb)}" cy="${Y(b.r_int_ohm)}" r="3.5" fill="#fff"/>` +
         `<text x="${X(t0)}" y="${H - 1}" font-size="7" fill="var(--ink-faint)">${t0}°</text><text x="${X(t1) - 14}" y="${H - 1}" font-size="7" fill="var(--ink-faint)">${t1}°</text>`;
     }
     if (b.tau_Nm) {

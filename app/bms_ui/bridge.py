@@ -85,6 +85,7 @@ class BmsPlugin:
         self.model.t_motor[:] = self.t_amb_c
         if self.model.soc > 0 and capacity_factor(self.t_amb_c) > 0:
             self.model.cutoff = False        # a warmed-up pack recovers from a cold cut-off
+            self.model.undervoltage_s = 0.0
 
     def set_soc0(self, soc0: float) -> None:
         self.soc0 = float(np.clip(soc0, 0.0, 100.0))
