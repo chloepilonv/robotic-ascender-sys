@@ -14,6 +14,7 @@
 // rotating the world would mean rotating every streamed pose too.
 import * as THREE from './vendor/three.module.js';
 import { GLTFLoader } from './vendor/addons/loaders/GLTFLoader.js';
+import { WindFlag } from './flag.js';
 
 // The sun the recorded mp4 uses (app/harness/graphics.py). Repeating the same
 // two numbers is what keeps the WebGL view and the JPEG view the same weather;
@@ -331,6 +332,7 @@ export class World {
     this.footBodies = [];
     this.lastContacts = null;
     this.pelvisIndex = 1;
+    this.flag = null;              // the head's wind pennant (flag.js)
     this.name = null;
     this.worldKey = 0;
     this.triangleCount = 0;
@@ -379,6 +381,10 @@ export class World {
 
   dispose() {
     if (!this.root) return;
+    // The flag hangs off a GLB node, so it has to come off before the traversal
+    // below disposes everything under the root -- otherwise the next world
+    // would inherit a flag whose buffers are already freed.
+    if (this.flag) { this.flag.dispose(); this.flag = null; }
     this.root.traverse(object => {
       if (object.geometry) object.geometry.dispose();
       if (object.material) {
@@ -468,6 +474,21 @@ export class World {
 
     this.heightField = this.terrainMeshes.length
       ? new TerrainHeightField(this.terrainMeshes) : null;
+
+    // THE WIND PENNANT (flag.js). The G1's head is a geom on `torso_link`, not
+    // a body of its own, so the flag rides that node -- the sidecar names it,
+    // and the node name is the fallback for a sidecar written before it did.
+    //
+    // BUILT AFTER THE TRAVERSAL ABOVE, DELIBERATELY. That loop walks everything
+    // under the root and rewrites each material -- `side = FrontSide`, a
+    // metalness lift on dark colours -- which would turn the cloth one-sided and
+    // the pole into painted plastic. The flag dresses itself; it must not be in
+    // the tree while the GLB's own dressing runs.
+    const mountIndex = sidecar.torso_body ?? -1;
+    const mountNode = (mountIndex >= 0 ? this.bodies[mountIndex] : null)
+      || byName.get('torso_link') || null;
+    this.flag = mountNode ? new WindFlag(mountNode) : null;
+    if (!mountNode) console.warn('render3d: no torso node; the wind flag is off');
 
     const sun = sidecar.sun || {};
     this.sunVector = sun.direction
@@ -590,6 +611,9 @@ export class World {
   update(elapsedSeconds, cameraPosition, followPosition, windEast, windNorth,
          pixelHeight) {
     if (this.footprints) this.footprints.update(elapsedSeconds);
+    // The same world wind vector the snow drifts with, so the flag and the
+    // flakes can never disagree about which way it is blowing.
+    if (this.flag) this.flag.update(elapsedSeconds, windEast, windNorth);
 
     // The shadow camera is a 18 m box: parking it on the robot is what buys a
     // 2048 map enough texels to resolve a boot on a 25 m face.
