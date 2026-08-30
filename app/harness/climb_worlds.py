@@ -218,10 +218,12 @@ CLIMB_WORLD_DEFINITIONS = dict([
                 slope=float(degrees), provenance="real roughness, set slope")
     for degrees in UNEVEN_SLOPE_DEGREES
 ] + [
-    _definition("flat_free", None, "Flat · 0° · no rope · smooth",
-                "A perfectly flat, perfectly smooth plane, rope off, stock"
-                " walking policy: the floor the walker was trained on. The"
+    _definition("flat_free", None, "Flat · 0° · no rope · stock G1",
+                "A perfectly flat, perfectly smooth plane, rope off, and the"
+                " BARE mujoco_playground G1 (user ruling 2026-08-30) -- the"
+                " stock robot on the stock policy's own training floor. The"
                 " baseline every other world is measured against.",
+                robot="playground",
                 rope=False, terrain_factory=make_flat_terrain,
                 slope=0.0, provenance="synthetic, zero roughness"),
     _definition("sandbox_free", None, "Sandbox · 120 x 120 m · 12° · no rope",
