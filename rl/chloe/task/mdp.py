@@ -156,11 +156,16 @@ def climb_mode(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def mode_uphill_velocity(env: ManagerBasedRlEnv, target: float, std: float) -> torch.Tensor:
-  """WALK: track `target` uphill speed. SLIDE: stand still (track 0)."""
+  """WALK: track `target` uphill speed. SLIDE: no reward (standing must not pay; v7 loophole)."""
   asset: Entity = env.scene[ROBOT.name]
   vx = asset.data.root_link_lin_vel_w[:, 0]
-  want = torch.where(env.climb_mode > 0.5, torch.zeros_like(vx), torch.full_like(vx, target))  # type: ignore[attr-defined]
-  return torch.exp(-torch.square(vx - want) / std**2)
+  r = torch.exp(-torch.square(vx - target) / std**2)
+  return torch.where(env.climb_mode > 0.5, torch.zeros_like(r), r)  # type: ignore[attr-defined]
+
+
+def in_slide(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """1 while in SLIDE mode (used as a per-step time-pressure penalty)."""
+  return (env.climb_mode > 0.5).float()  # type: ignore[attr-defined]
 
 
 def mode_ascender_progress(

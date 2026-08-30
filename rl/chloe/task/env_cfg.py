@@ -60,13 +60,15 @@ class RatchetEnv(ManagerBasedRlEnv):
     n = len(env_ids)
     self.climb_mode[env_ids] = torch.randint(0, 2, (n,), device=self.device).float()
     self._slide_at_switch[env_ids] = self.sim.data.qpos[env_ids, self._slide_qadr]
+    self._phase_t[env_ids] = 0.0
 
   def _mode_update(self) -> None:
     robot = self.scene["robot"]
     carrier_x = robot.data.body_link_pos_w[:, self._carrier_body, 0]
     rel_x = carrier_x - robot.data.root_link_pos_w[:, 0]
-    self.climb_mode, self._slide_at_switch = CM.update_mode(
-      self.climb_mode, self.sim.data.qpos[:, self._slide_qadr], self._slide_at_switch, rel_x
+    self.climb_mode, self._slide_at_switch, self._phase_t = CM.update_mode(
+      self.climb_mode, self.sim.data.qpos[:, self._slide_qadr], self._slide_at_switch, rel_x,
+      self._phase_t, self.step_dt,
     )
 
   def __init__(self, cfg, device: str, **kwargs):
@@ -82,6 +84,7 @@ class RatchetEnv(ManagerBasedRlEnv):
     self._carrier_body = self.scene["robot"].find_bodies(R.CARRIER_BODY)[0][0]
     self.climb_mode = torch.zeros(self.num_envs, device=self.device)
     self._slide_at_switch = torch.zeros(self.num_envs, device=self.device)
+    self._phase_t = torch.zeros(self.num_envs, device=self.device)
     self._slide_qadr = int(model.jnt_qposadr[jid])
     self._slide_dadr = int(model.jnt_dofadr[jid])
     self._sim_step = self.sim.step
@@ -245,9 +248,10 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
     "uphill_velocity": RewardTermCfg(
       func=mdp.mode_uphill_velocity, weight=2.0, params={"target": 0.3, "std": 0.3}
     ),
-    "ascender_progress": RewardTermCfg(  # rope = support, not propulsion (weight < uphill)
-      func=mdp.mode_ascender_progress, weight=1.0, params={"asset_cfg": mdp.SLIDE}
+    "ascender_progress": RewardTermCfg(
+      func=mdp.mode_ascender_progress, weight=2.0, params={"asset_cfg": mdp.SLIDE}
     ),
+    "slide_time_pressure": RewardTermCfg(func=mdp.in_slide, weight=-0.5),  # standing in SLIDE costs
     "rope_tension": RewardTermCfg(
       func=mdp.rope_tension_band, weight=0.5, params={"lo": 20.0, "hi": 150.0}
     ),
