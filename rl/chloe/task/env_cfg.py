@@ -247,16 +247,16 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
     "wind": EventTermCfg(
       func=mdp.wind_on_torso,
       mode="reset",
-      params={"speed_range": (0.0, 15.0), "asset_cfg": mdp.TORSO},  # v0; storms (30) later
+      params={"speed_range": (0.0, 10.0), "asset_cfg": mdp.TORSO},
     ),
   }
 
   rewards = {
     "uphill_velocity": RewardTermCfg(
-      func=mdp.uphill_velocity, weight=4.0, params={"target": 0.3, "std": 0.3}
+      func=mdp.uphill_velocity, weight=4.0, params={"target": 0.4, "std": 0.3}
     ),
-    "ascender_progress": RewardTermCfg(  # rope = support, not propulsion (weight < uphill)
-      func=mdp.ascender_progress, weight=0.5, params={"asset_cfg": mdp.SLIDE}
+    "ascender_progress": RewardTermCfg(  # reward longer ascender slides
+      func=mdp.ascender_progress, weight=1.5, params={"asset_cfg": mdp.SLIDE, "max_vel": 2.0}
     ),
     "rope_tension": RewardTermCfg(
       func=mdp.rope_tension_band, weight=0.5, params={"lo": 20.0, "hi": 150.0}
@@ -272,6 +272,12 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
     # "stillness": RewardTermCfg(  # mode-dependent, disabled with climb_mode
     #   func=mdp.stillness, weight=-0.01, params={"asset_cfg": G1_JOINTS}
     # ),
+    "foot_clearance": RewardTermCfg(
+      func=mdp.foot_clearance, weight=0.5, params={"target": 0.12, "std": 0.05, "asset_cfg": mdp.FEET}
+    ),
+    "feet_air_time": RewardTermCfg(
+      func=mdp.feet_air_time, weight=0.3, params={"threshold": 0.05, "asset_cfg": mdp.FEET}
+    ),
     "upright": RewardTermCfg(
       func=vel_mdp.upright,
       weight=1.0,

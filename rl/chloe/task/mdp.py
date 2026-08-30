@@ -57,6 +57,19 @@ def uphill_velocity(env: ManagerBasedRlEnv, target: float, std: float) -> torch.
   return torch.exp(-torch.square(vx - target) / std**2)
 
 
+def walk_velocity(env: ManagerBasedRlEnv, target: float, std: float) -> torch.Tensor:
+  """Track a target base velocity along +x, scaled by env.walk_command (0 = stand, 1 = walk)."""
+  asset: Entity = env.scene[ROBOT.name]
+  vx = asset.data.root_link_lin_vel_w[:, 0]
+  want = target * env.walk_command  # type: ignore[attr-defined]
+  return torch.exp(-torch.square(vx - want) / std**2)
+
+
+def walk_command(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Observation: the walk/stop command (1 = walk at target speed, 0 = stand still)."""
+  return env.walk_command.unsqueeze(-1)  # type: ignore[attr-defined]
+
+
 def ascender_progress(
   env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = SLIDE, max_vel: float = 1.0
 ) -> torch.Tensor:
@@ -64,6 +77,25 @@ def ascender_progress(
   asset: Entity = env.scene[asset_cfg.name]
   vel = asset.data.joint_vel[:, asset_cfg.joint_ids].reshape(env.num_envs)
   return torch.clamp(vel, 0.0, max_vel)
+
+FEET = SceneEntityCfg("robot", body_names=(".*_ankle_roll_link",))
+
+
+def foot_clearance(env: ManagerBasedRlEnv, target: float = 0.12, std: float = 0.05,
+                   asset_cfg: SceneEntityCfg = FEET) -> torch.Tensor:
+  """Reward feet reaching `target` height (m) — encourages lifting, not shuffling."""
+  asset: Entity = env.scene[asset_cfg.name]
+  foot_z = asset.data.body_link_pos_w[:, asset_cfg.body_ids, 2]  # (num_envs, num_feet)
+  return torch.exp(-torch.sum(torch.square(foot_z - target) / std**2, dim=1) / foot_z.shape[1])
+
+
+def feet_air_time(env: ManagerBasedRlEnv, threshold: float = 0.05,
+                  asset_cfg: SceneEntityCfg = FEET) -> torch.Tensor:
+  """Reward feet that are airborne (z velocity above threshold) — encourages committed steps, not shuffling."""
+  asset: Entity = env.scene[asset_cfg.name]
+  foot_vel_z = asset.data.body_link_vel_w[:, asset_cfg.body_ids, 5]  # vz component
+  airborne = (foot_vel_z.abs() > threshold).float()
+  return airborne.mean(dim=1)
 
 
 def rope_side(
