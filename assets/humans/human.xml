@@ -1,0 +1,63 @@
+<!-- A Himalayan hiker to be DETECTED, not simulated: assets/humans/README.md.
+     One mocap body (set data.mocap_pos / mocap_quat to place it), primitive
+     limbs sized to a 1.75 m adult in a down jacket, beanie, backpack, boots,
+     gripping the fixed line, mid-stride. Faces +X. All geoms group 2 (rendered by
+     default), class `human`, names human_*. Collision OFF: the robot may not
+     walk into a person in the first place -- that is the gate's job -- so a
+     contact response would only hide gate failures behind a physics wall. -->
+<mujoco model="hiker">
+  <compiler angle="degree" />
+  <asset>
+    <material name="jacket" rgba="0.95 0.35 0.05 1" specular="0.2" shininess="0.3" />
+    <material name="pants" rgba="0.12 0.14 0.18 1" />
+    <material name="skin" rgba="0.80 0.60 0.48 1" />
+    <material name="beanie" rgba="0.75 0.10 0.15 1" />
+    <material name="boots" rgba="0.30 0.20 0.12 1" />
+    <material name="pack" rgba="0.15 0.30 0.55 1" />
+    <material name="glove" rgba="0.08 0.08 0.10 1" />
+  </asset>
+  <default>
+    <default class="human">
+      <geom type="capsule" contype="0" conaffinity="0" group="2" />
+    </default>
+  </default>
+  <worldbody>
+    <body name="human" mocap="true" pos="0 0 0">
+      <!-- z origin = ground contact; slight forward lean like a loaded hiker -->
+      <!-- torso: puffy jacket = two overlapping fat capsules + hip -->
+      <geom name="human_hips" class="human" fromto="-0.01 0 0.90 0 0 1.05" size="0.17" material="jacket" />
+      <geom name="human_torso" class="human" fromto="0 0 1.02 0.03 0 1.40" size="0.19" material="jacket" />
+      <geom name="human_chest" class="human" type="ellipsoid" pos="0.05 0 1.30" size="0.17 0.20 0.16" material="jacket" />
+      <geom name="human_collar" class="human" fromto="0.02 0.10 1.45 0.02 -0.10 1.45" size="0.09" material="jacket" />
+      <!-- head + beanie -->
+      <geom name="human_neck" class="human" fromto="0.03 0 1.42 0.04 0 1.50" size="0.05" material="skin" />
+      <geom name="human_head" class="human" type="ellipsoid" pos="0.05 0 1.61" size="0.10 0.09 0.12" material="skin" />
+      <geom name="human_beanie" class="human" type="ellipsoid" pos="0.04 0 1.66" size="0.105 0.10 0.10" material="beanie" />
+      <geom name="human_pompom" class="human" type="sphere" pos="0.03 0 1.77" size="0.035" material="beanie" />
+      <!-- backpack -->
+      <geom name="human_pack" class="human" type="box" pos="-0.20 0 1.20" size="0.10 0.16 0.24" material="pack" />
+      <geom name="human_pack_lid" class="human" type="box" pos="-0.19 0 1.46" size="0.09 0.15 0.03" material="pack" />
+      <geom name="human_mat" class="human" fromto="-0.22 0.19 0.96 -0.22 -0.19 0.96" size="0.055" material="beanie" />
+      <!-- arms -->
+      <geom name="human_shoulder_l" class="human" type="sphere" pos="0.02 0.22 1.40" size="0.09" material="jacket" />
+      <geom name="human_shoulder_r" class="human" type="sphere" pos="0.02 -0.22 1.40" size="0.09" material="jacket" />
+      <!-- arms: the fixed line runs up-slope on the hiker's RIGHT (same side
+           as the robot's ascender hand). Right hand out to the side, gripping
+           the rope at ~1.15 m; left arm swings naturally. -->
+      <geom name="human_upper_arm_l" class="human" fromto="0.02 0.24 1.40 -0.06 0.28 1.12" size="0.075" material="jacket" />
+      <geom name="human_forearm_l" class="human" fromto="-0.06 0.28 1.12 0.06 0.30 0.88" size="0.065" material="jacket" />
+      <geom name="human_hand_l" class="human" type="sphere" pos="0.08 0.30 0.85" size="0.05" material="glove" />
+      <geom name="human_upper_arm_r" class="human" fromto="0.02 -0.24 1.40 0.06 -0.38 1.18" size="0.075" material="jacket" />
+      <geom name="human_forearm_r" class="human" fromto="0.06 -0.38 1.18 0.22 -0.46 1.14" size="0.065" material="jacket" />
+      <geom name="human_hand_r" class="human" type="sphere" pos="0.26 -0.48 1.14" size="0.05" material="glove" />
+      <!-- legs: mid-stride, left forward, right trailing -->
+      <geom name="human_thigh_l" class="human" fromto="0 0.10 0.92 0.16 0.11 0.50" size="0.09" material="pants" />
+      <geom name="human_thigh_r" class="human" fromto="0 -0.10 0.92 -0.14 -0.11 0.52" size="0.09" material="pants" />
+      <geom name="human_shin_l" class="human" fromto="0.16 0.11 0.50 0.20 0.11 0.12" size="0.07" material="pants" />
+      <geom name="human_shin_r" class="human" fromto="-0.14 -0.11 0.52 -0.24 -0.11 0.14" size="0.07" material="pants" />
+      <geom name="human_boot_l" class="human" type="box" pos="0.25 0.11 0.06" size="0.15 0.06 0.06" material="boots" />
+      <geom name="human_boot_r" class="human" type="box" pos="-0.18 -0.11 0.07" euler="0 -20 0" size="0.15 0.06 0.06" material="boots" />
+      <site name="human_center" pos="0 0 1.05" size="0.01" group="5" />
+    </body>
+  </worldbody>
+</mujoco>
