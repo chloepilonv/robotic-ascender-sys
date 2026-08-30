@@ -274,9 +274,15 @@ def make_header(episode, meta, arguments) -> dict:
         "world_description": episode.definition["description"],
         "config_overrides": dict(episode.definition.get("config_overrides", {})),
         "rope_enabled": episode.rope_enabled,
-        "policy": (os.path.basename(episode.controller.policy_path)
-                   if meta.get("kind") == "chloe_ascender"
-                   else "mels_g1_joystick.npz"),
+        # A `chloe_ascender` world is not necessarily a NETWORK world: the
+        # `scripted_*` rungs share the plant and run a hand-written gait, whose
+        # controller has no checkpoint to name. Ask the controller what it is,
+        # rather than assuming every world of this kind carries a `.onnx`.
+        "policy": (getattr(episode.controller, "policy_path", None)
+                   and os.path.basename(episode.controller.policy_path)
+                   or ("scripted gait (no network)"
+                       if meta.get("kind") == "chloe_ascender"
+                       else "mels_g1_joystick.npz")),
         "autonomous": bool(getattr(episode, "autonomous", False)),
         "seed": arguments.seed,
         "slope_degrees": episode.slope_degrees,
