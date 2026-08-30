@@ -94,6 +94,36 @@ DOUBLE_SUPPORT_END = ("right_step", "left_step", "hand_slide",
 # The gait, in radians of joint angle, as deltas from the plant's reset pose.
 HIP_PITCH_SWEEP = 0.15      # +-this about the reset hip pitch: the step
 KNEE_FLOOR_RADIANS = 0.30   # the knee never straightens past this
+
+# ROUND THREE, THE LOAD-TRANSFER LEVER, AND WHY THESE NUMBERS DID NOT MOVE.
+# The round-two gait climbs while CROUCHED (pelvis ~0.37 m, torso up-z ~0.41)
+# with 140-190 N of rope load per phase -- more than a third of a ~343 N robot
+# hanging off its own arm. The obvious fix is to stand it up so the legs carry
+# it: raise the stance (KNEE_FLOOR_RADIANS 0.15 / 0.30 / 0.45), drop the
+# forward lean (WAIST_PITCH_LEAN 0.08 -> 0.0), then give the taller robot a
+# bigger step (HIP_PITCH_SWEEP up to 0.30, foot clearances up to 7 cm),
+# 72 configurations at 10 and 20 degrees, rope force measured throughout.
+#
+# IT WORKS, AND THAT IS THE PROBLEM. Standing tall does exactly what it says:
+# rope load falls to 72 N mean / 143 N peak and the robot holds an honest
+# upright posture (pelvis 0.613 m, up-z +0.99) -- and it stops climbing
+# (-0.11 m at 20 degrees). The correlation across all 72 cells runs the wrong
+# way: every cell that climbs hangs at 150-250 N, and every cell under ~100 N
+# stands still. On this plant the hanging IS the propulsion -- the weld is what
+# lets a skating foot be dragged uphill at all, and unloading it hands the
+# slope back a robot that has to walk up under its own friction, which is the
+# thing round two established it cannot do.
+#
+# The one genuinely better 20-degree cell found (sweep 0.22, right clearance
+# 7 cm, settle_right 0.4) climbs +0.12 m at 116 N mean -- a real improvement on
+# round two's -0.09 m, and the only cell to be positive at 20 degrees AND under
+# 150 N. It costs 10 degrees everything: +0.68 m -> -0.14 m. So it is recorded
+# here and NOT shipped, per the standing rule that a measured win is not
+# allowed to regress a bigger measured win.
+#
+# What the numbers say the real fix is: not posture, but getting weight onto
+# the feet at all -- a shorter rope stand-off, or a gait that presses the soles
+# into the slope instead of letting the weld take the reaction.
 KNEE_LIFT = 0.45            # extra knee flexion that picks the swing foot up
 RIGHT_FOOT_CLEARANCE_METERS = 0.045  # how far the SWING (right) foot rises
 LEFT_FOOT_CLEARANCE_METERS = 0.020   # a DRAG, not a step -- see below
@@ -157,6 +187,29 @@ SCRIPTED_GAIN_SCALE = {
     "waist_roll": (4.0, 3.0),
     "waist_pitch": (4.0, 3.0),
 }
+
+
+def rope_force_newtons(model, data, grip_equality_id) -> float:
+    """Magnitude of the weld constraint's force, newtons.
+
+    THE LOAD-TRANSFER GAUGE. The ascender is welded to the carriage, so this is
+    literally how much of the robot the ROPE is holding rather than the legs --
+    and on this plant it is the number that decides whether the gait works. A
+    ~35 kg G1 weighs about 343 N; a stance reading near that is a robot hanging
+    off its own arm with unloaded, skating feet. Same expression as
+    `ChloeAscenderEpisode.rope_force_newtons`, kept here so `run_headless`
+    measures it without building an episode.
+    """
+    import mujoco
+    if data.nefc == 0:
+        return 0.0
+    rows = np.where(
+        (np.asarray(data.efc_type[:data.nefc])
+         == int(mujoco.mjtConstraint.mjCNSTR_EQUALITY))
+        & (np.asarray(data.efc_id[:data.nefc]) == grip_equality_id))[0]
+    if rows.size == 0:
+        return 0.0
+    return float(np.linalg.norm(np.asarray(data.efc_force)[rows]))
 
 
 def cosine_ease(fraction: float) -> float:
@@ -534,6 +587,9 @@ def run_headless(slope_degrees=20.0, seconds=15.0, frame="tilted_plane",
     slide_address = scene.ascender.qpos_address
     imu_site = scene.imu_torso_site_id
 
+    grip_equality_id = int(scene.model.equality("ascender_grip").id)
+    rope_force_by_phase = {phase: [] for phase in PHASE_ORDER}
+
     marks = {}
     stop_state = None
     report = {"slope_degrees": float(slope_degrees), "frame": frame,
@@ -547,9 +603,12 @@ def run_headless(slope_degrees=20.0, seconds=15.0, frame="tilted_plane",
                              and stop_at_seconds <= time_seconds
                              and (resume_at_seconds is None
                                   or time_seconds < resume_at_seconds))
+        phase_this_tick = controller.phase
         for _ in range(substeps):
             controller.substep(scene.data)
             scene.step(wind)
+        rope_force_by_phase[phase_this_tick].append(
+            rope_force_newtons(scene.model, scene.data, grip_equality_id))
         upright = float(scene.data.site_xmat[imu_site].reshape(3, 3)[2, 2])
         if report["fell_at_seconds"] is None and (
                 upright < 0.0 or not np.isfinite(scene.data.qpos).all()):
@@ -589,6 +648,11 @@ def run_headless(slope_degrees=20.0, seconds=15.0, frame="tilted_plane",
         "at_stop": stop_state,
         "at_resume": marks.get("at_resume"),
         "cycles": controller.cycles_completed,
+        "rope_force_mean_newtons_by_phase": {
+            phase: (float(np.mean(values)) if values else 0.0)
+            for phase, values in rope_force_by_phase.items()},
+        "rope_force_peak_newtons": max(
+            [float(np.max(v)) for v in rope_force_by_phase.values() if v] or [0.0]),
     })
     if stop_state is not None and marks.get("at_resume") is not None:
         report["hold_slide_meters"] = (marks["at_resume"]["rope_meters"]
@@ -601,6 +665,14 @@ def run_headless(slope_degrees=20.0, seconds=15.0, frame="tilted_plane",
                                           - marks["at_resume"]["uphill_meters"])
         report["stood_through_hold"] = bool(marks["at_resume"]["upright"] > 0.0)
     if verbose:
+        print("[scripted] rope load per phase (how much the WELD is carrying;"
+              " the robot weighs ~343 N -- near that is a robot hanging, with"
+              " unloaded feet that skate):")
+        for phase in PHASE_ORDER:
+            values = rope_force_by_phase[phase]
+            if values:
+                print(f"      {phase:>13}  {np.mean(values):7.1f} N mean"
+                      f"  {np.max(values):7.1f} N peak")
         print(f"[scripted] end: {'STANDING' if report['standing'] else 'FELL'}"
               f"  uphill={report['uphill_meters']:+.2f} m"
               f"  rope={report['rope_meters']:+.2f} m"
