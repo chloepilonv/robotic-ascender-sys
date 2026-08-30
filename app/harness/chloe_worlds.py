@@ -169,7 +169,7 @@ CHLOE_POLICY_VERSIONS = {
                 " MEASURED 2026-08-30: stands still at 10/20/30 deg, either"
                 " start mode -- the loophole her v8 run is fixing. Shipped so"
                 " the team can see it; not the default.",
-        "slopes": (20,),
+        "slopes": (0, 20),
     },
 }
 CURRENT_CHLOE_VERSION = "v1"
