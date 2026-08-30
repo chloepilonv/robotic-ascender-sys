@@ -65,6 +65,28 @@ from app.harness.recorder import Recorder  # noqa: E402
 from app.harness import worlds as worlds_module  # noqa: E402
 
 RENDER_WIDTH, RENDER_HEIGHT = 960, 540    # 16:9 -- the page fills the viewport with it
+RENDER_MAXIMUM_WIDTH, RENDER_MAXIMUM_HEIGHT = 1920, 1080   # native-resolution cap (F = fullscreen in the page)
+
+
+def clamp_render_size(viewport) -> tuple:
+    """Browser-reported viewport (css px * devicePixelRatio) -> (width, height) we will render.
+    Even numbers (JPEG/mp4 friendly), capped so a 5K display cannot drag the tick below realtime."""
+    try:
+        width, height = int(viewport["width"]), int(viewport["height"])
+    except (TypeError, KeyError, ValueError):
+        return RENDER_WIDTH, RENDER_HEIGHT
+    if width < 320 or height < 180:
+        return RENDER_WIDTH, RENDER_HEIGHT
+    scale = min(1.0, RENDER_MAXIMUM_WIDTH / width, RENDER_MAXIMUM_HEIGHT / height)
+    return (int(width * scale) // 2) * 2, (int(height * scale) // 2) * 2
+
+
+def make_renderer(model, width: int, height: int):
+    """The offscreen framebuffer is sized from model.vis.global_ at context creation;
+    raise it to the cap once so any requested size up to 1920x1080 fits."""
+    model.vis.global_.offwidth = max(int(model.vis.global_.offwidth), RENDER_MAXIMUM_WIDTH)
+    model.vis.global_.offheight = max(int(model.vis.global_.offheight), RENDER_MAXIMUM_HEIGHT)
+    return mujoco.Renderer(model, height, width)
 JPEG_QUALITY = 80
 
 # Third-person orbit, matching the browser's defaults so live and recorded
@@ -605,11 +627,12 @@ def run(arguments) -> str:
         server.knobs["friction"] = meta["foot_friction"]
 
     renderer = None
+    render_size = (RENDER_WIDTH, RENDER_HEIGHT)   # follows the browser viewport in live mode
     camera = ChaseCamera()
     heading = HeadingController(arguments.command_speed)
     rendered_model = None
     if not arguments.no_render:
-        renderer = mujoco.Renderer(model, RENDER_HEIGHT, RENDER_WIDTH)
+        renderer = make_renderer(model, *render_size)
         rendered_model = model
 
     episodes_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "episodes")
@@ -702,7 +725,7 @@ def run(arguments) -> str:
                         # share a model share the renderer; a different model
                         # needs a new one.
                         renderer.close()
-                        renderer = mujoco.Renderer(model, RENDER_HEIGHT, RENDER_WIDTH)
+                        renderer = make_renderer(model, *render_size)
                         rendered_model = model
                     # The friction knob still reads the OLD world; re-sync it or
                     # the next tick paints the previous mu over the new map.
@@ -742,6 +765,14 @@ def run(arguments) -> str:
         recorder.append_bms(episode.latest_bms)
 
         jpeg = None
+        if renderer is not None and server is not None:
+            wanted = clamp_render_size(server.latest_input.get("viewport"))
+            if wanted != render_size:
+                renderer.close()
+                renderer = make_renderer(episode.model, *wanted)
+                rendered_model = episode.model
+                render_size = wanted
+                print(f"[runtime] render size -> {wanted[0]}x{wanted[1]}", flush=True)
         if renderer is not None:
             renderer.update_scene(episode.data, camera.aim(
                 row["root_position_world"], azimuth_degrees, elevation_degrees))

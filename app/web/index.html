@@ -141,7 +141,7 @@
       <div class="badge" id="ropeBadge">rope —</div>
       <div class="badge" id="motionBadge">holding</div>
     </div>
-    <div id="lookHint">move mouse to look · hold W to climb · R to respawn</div>
+    <div id="lookHint">move mouse to look · hold W to climb · R to respawn · F fullscreen</div>
     <div id="lockOverlay"><div><i id="pausedPill">PAUSED</i><b id="lockTitle">click to take control</b><span id="lockSubtitle">Esc to release</span></div></div>
     <div id="worldToast"></div>
     <div id="banner">FELL</div>
@@ -589,8 +589,23 @@ function send(payload) { if (state.socket && state.socket.readyState === 1) stat
 let lastCameraSendMilliseconds = 0, cameraSendPending = false;
 function sendInput() {
   lastCameraSendMilliseconds = performance.now(); cameraSendPending = false;
-  send({ type: 'input', keys: [...state.keys], camera: { ...state.camera } });
+  send({ type: 'input', keys: [...state.keys], camera: { ...state.camera }, viewport: viewportPixels() });
 }
+// the runtime renders at whatever the stage is showing, in device pixels (capped server-side at 1920x1080)
+function viewportPixels() {
+  const ratio = window.devicePixelRatio || 1;
+  return { width: Math.round(stage.clientWidth * ratio), height: Math.round(stage.clientHeight * ratio) };
+}
+const stage = $('stage');
+let viewportSendTimer = null;
+function viewportChanged() { clearTimeout(viewportSendTimer); viewportSendTimer = setTimeout(sendInput, 150); }
+window.addEventListener('resize', viewportChanged);
+document.addEventListener('fullscreenchange', viewportChanged);
+// F toggles fullscreen on the stage; the browser drops pointer lock on the way out, so click again to resume
+document.addEventListener('keydown', event => {
+  if (event.key.toLowerCase() !== 'f' || event.repeat || state.mode !== 'live') return;
+  if (document.fullscreenElement) document.exitFullscreen(); else stage.requestFullscreen?.();
+});
 
 // the single climb key: W held = climb, released = hang
 let climbHeldByPointer = false;
