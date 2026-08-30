@@ -470,7 +470,7 @@ function paintHud(frame) {
                     east: windVelocity[0], north: windVelocity[1] };
   paintWindReadout();
   noteWindSpeed(state.windNow.speed);
-  noteVisibility(frame.visibility_meters);
+  if (!frame.paused) noteVisibility(frame.visibility_meters);
   paintBatteryCard(frame);
   paintGuideCard(frame);
   paintHearingCard(frame);
@@ -667,13 +667,16 @@ function paintGuideCard(frame) {
     return;
   }
   const freeWalk = Boolean(guide.free_walk);
-  if ((guide.enabled !== undefined && Boolean(guide.enabled) !== guideState.on)
-      || freeWalk !== guideState.freeWalk) {
+  // Paused frames are re-broadcasts of the last pre-pause state: syncing the
+  // switches from them would snap back a click the server has already taken.
+  if (!frame.paused
+      && ((guide.enabled !== undefined && Boolean(guide.enabled) !== guideState.on)
+          || freeWalk !== guideState.freeWalk)) {
     guideState.on = Boolean(guide.enabled);
     guideState.freeWalk = freeWalk;
     paintGuideSwitch();
   }
-  if (guide.eyes !== undefined && Boolean(guide.eyes) !== eyesState.on) {
+  if (!frame.paused && guide.eyes !== undefined && Boolean(guide.eyes) !== eyesState.on) {
     eyesState.on = Boolean(guide.eyes);
     $('eyesSwitch').setAttribute('aria-checked', String(eyesState.on));
   }
@@ -1001,7 +1004,7 @@ function paintHearingCard(frame) {
     readout.style.display = 'none';
     return;
   }
-  if (hearing.enabled !== undefined && Boolean(hearing.enabled) !== hearingState.on) {
+  if (!frame.paused && hearing.enabled !== undefined && Boolean(hearing.enabled) !== hearingState.on) {
     hearingState.on = Boolean(hearing.enabled);
     paintHearingSwitch();
   }
