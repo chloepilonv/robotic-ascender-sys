@@ -245,9 +245,13 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
     "uphill_velocity": RewardTermCfg(
       func=mdp.mode_uphill_velocity, weight=2.0, params={"target": 0.3, "std": 0.3}
     ),
-    "ascender_progress": RewardTermCfg(
-      func=mdp.mode_ascender_progress, weight=2.0, params={"asset_cfg": mdp.SLIDE}
+    "ascender_progress": RewardTermCfg(  # rope = support, not propulsion (weight < uphill)
+      func=mdp.mode_ascender_progress, weight=1.0, params={"asset_cfg": mdp.SLIDE}
     ),
+    "rope_tension": RewardTermCfg(
+      func=mdp.rope_tension_band, weight=0.5, params={"lo": 20.0, "hi": 150.0}
+    ),
+    "rope_jerk": RewardTermCfg(func=mdp.rope_tension_rate, weight=-0.002),
     "face_uphill": RewardTermCfg(func=mdp.face_uphill, weight=1.0),
     "hiking_posture": RewardTermCfg(
       func=mdp.hiking_posture,

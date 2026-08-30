@@ -203,3 +203,29 @@ def stillness(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = ROBOT) -> torc
   asset: Entity = env.scene[asset_cfg.name]
   v2 = torch.sum(torch.square(asset.data.joint_vel[:, asset_cfg.joint_ids]), dim=1)
   return torch.where(env.climb_mode > 0.5, v2, torch.zeros_like(v2))  # type: ignore[attr-defined]
+
+
+# ----------------------------------------------------------------------------
+# Rope as support: moderate, continuous tension, no jerking
+# ----------------------------------------------------------------------------
+
+
+def _tension(env: ManagerBasedRlEnv) -> torch.Tensor:
+  return env.sim.data.qfrc_constraint[:, env._slide_dadr].abs()  # type: ignore[attr-defined]
+
+
+def rope_tension_band(env: ManagerBasedRlEnv, lo: float, hi: float) -> torch.Tensor:
+  """Reward ~1 when rope tension is inside [lo, hi] N, decaying outside (soft band)."""
+  t = _tension(env)
+  mid, half = 0.5 * (lo + hi), 0.5 * (hi - lo)
+  return torch.exp(-torch.square((t - mid) / half))
+
+
+def rope_tension_rate(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Penalty on |change of tension| per step (N) — no sudden pulling or jerking."""
+  t = _tension(env)
+  prev = getattr(env, "_prev_tension", None)
+  if prev is None or prev.shape != t.shape:
+    prev = t.clone()
+  env._prev_tension = t.clone()  # type: ignore[attr-defined]
+  return torch.abs(t - prev)
