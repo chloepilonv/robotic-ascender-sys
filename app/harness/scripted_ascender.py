@@ -80,7 +80,7 @@ CONTROL_DT_SECONDS = chloe_policy.CONTROL_DT_SECONDS
 PHASE_SECONDS = {
     "settle_left": 0.30,
     "right_step": 0.80,
-    "settle_right": 0.30,
+    "settle_right": 0.70,   # the long one: the pelvis travels before the drag
     "left_step": 0.80,
     "hand_slide": 0.45,
 }
@@ -95,8 +95,40 @@ DOUBLE_SUPPORT_END = ("right_step", "left_step", "hand_slide",
 HIP_PITCH_SWEEP = 0.15      # +-this about the reset hip pitch: the step
 KNEE_FLOOR_RADIANS = 0.30   # the knee never straightens past this
 KNEE_LIFT = 0.45            # extra knee flexion that picks the swing foot up
-FOOT_CLEARANCE_METERS = 0.045   # how far the swing foot rises off the slope
-WEIGHT_SHIFT_HIP_ROLL = 0.10    # both hips roll together -> the pelvis leans
+RIGHT_FOOT_CLEARANCE_METERS = 0.045  # how far the SWING (right) foot rises
+LEFT_FOOT_CLEARANCE_METERS = 0.020   # a DRAG, not a step -- see below
+
+# WHY THE LEFT FOOT ONLY EVER DRAGS (round two, measured). Round one lifted
+# both feet the same 4.5 cm and slid downhill on every slope. Two rounds of
+# ablations said why, and the second reason is the real one:
+#   * The centre-of-mass story is true but not the binding constraint. The rope
+#     hand is welded on the RIGHT (y = -0.24 m), so with the left foot up both
+#     supports are on the right of the body. Driving the pelvis over them --
+#     weight shifts of 0.20/0.28/0.36 rad, settle phases of 0.7 and 1.2 s, the
+#     left foot planted 0.12 rad wider -- did not climb in ANY of 24 cells at
+#     20 degrees, and the widened stance was strictly worse.
+#   * THE FEET ARE SKATING. Tracing the feet along the slope showed the left
+#     foot travelling 0.28 m DOWNHILL in half a second: not a step, a slip. The
+#     weld is a rigid 5-DoF constraint that carries most of the weight (266 N
+#     of rope force against a ~343 N robot), so the feet are barely loaded and
+#     barely have friction, and a foot lifted clear comes down sliding.
+# So the left foot never fully unloads: 2 cm of clearance, just enough to break
+# static friction and slide uphill, with the weight left where it is. That one
+# change is what turned -0.20 m into +0.68 m at 10 degrees.
+# THE TWO SHIFTS ARE NOT THE SAME SIZE, because the two steps are not the same
+# problem. The rope hand is welded on the RIGHT (y = -0.24 m). Lifting the
+# RIGHT foot leaves left-foot + hand straddling the body: an easy support line,
+# and a small lean does it. Lifting the LEFT foot leaves right-foot (y = -0.12)
+# + hand (y = -0.24) BOTH on the right of the body, so the centre of mass has
+# to travel past them or it rolls left -- which is exactly what killed round
+# one. Hence a much bigger shift before the left foot leaves, and a longer
+# phase to get there.
+WEIGHT_SHIFT_ONTO_LEFT = 0.10    # both hips roll together -> the pelvis leans
+WEIGHT_SHIFT_ONTO_RIGHT = 0.0    # measured: +0.10 rad moves the pelvis -0.055 m
+                                 # -- and measured USELESS here, see below
+LEFT_STANCE_WIDEN = 0.0          # the left foot plants further out, widening
+                                 # the polygon it will have to hold alone.
+                                 # Measured HARMFUL at every size tried.
 WAIST_PITCH_LEAN = 0.08         # lean into the slope, like a climber
 ARM_PUSH_SHOULDER_PITCH = -0.12  # the one arm command: push the cam uphill
 
@@ -289,7 +321,7 @@ class ScriptedAscenderController:
 
     # --------------------------------------------------------- the keyframes
     def _pose(self, left_hip=0.0, right_hip=0.0, left_lift=0.0, right_lift=0.0,
-              hip_roll=0.0, shoulder_push=0.0) -> np.ndarray:
+              hip_roll=0.0, left_splay=0.0, shoulder_push=0.0) -> np.ndarray:
         """One keyframe.
 
         `left_hip` / `right_hip` displace hip pitch (negative = thigh uphill);
@@ -301,13 +333,13 @@ class ScriptedAscenderController:
         """
         pose = self.default_pose_radians.copy()
         pose[self.joint_index["waist_pitch_joint"]] += WAIST_PITCH_LEAN
-        pose[self.joint_index["left_hip_roll_joint"]] += hip_roll
+        pose[self.joint_index["left_hip_roll_joint"]] += hip_roll + left_splay
         pose[self.joint_index["right_hip_roll_joint"]] += hip_roll
         # The ankles roll back by the same amount, so the pelvis leans but the
         # SOLES stay flat on the slope. Without this the weight shift rolls the
         # robot onto the edges of its feet and stops paying for itself long
         # before the centre of mass has gone anywhere.
-        pose[self.joint_index["left_ankle_roll_joint"]] -= hip_roll
+        pose[self.joint_index["left_ankle_roll_joint"]] -= hip_roll + left_splay
         pose[self.joint_index["right_ankle_roll_joint"]] -= hip_roll
         pose[self.joint_index["right_shoulder_pitch_joint"]] += shoulder_push
         for side, hip_delta, lift in (("left", left_hip, left_lift),
@@ -337,38 +369,44 @@ class ScriptedAscenderController:
         # loads the RIGHT foot. Getting this backwards puts the weight on the
         # foot that is about to leave the ground, which is what made the first
         # version sit down after three steps.
-        shift_left = -WEIGHT_SHIFT_HIP_ROLL
-        shift_right = +WEIGHT_SHIFT_HIP_ROLL
-        clearance = FOOT_CLEARANCE_METERS
+        onto_left = -WEIGHT_SHIFT_ONTO_LEFT
+        onto_right = +WEIGHT_SHIFT_ONTO_RIGHT
+        right_clearance = RIGHT_FOOT_CLEARANCE_METERS
+        left_clearance = LEFT_FOOT_CLEARANCE_METERS
+        wide = LEFT_STANCE_WIDEN
         return {
             # both feet level, the spawn stance
             "home": self._pose(),
             # weight left, right foot still trailing and ready to swing
             "left_loaded": self._pose(left_hip=-sweep, right_hip=+sweep,
-                                      hip_roll=shift_left),
+                                      hip_roll=onto_left, left_splay=wide),
             "right_lifted": self._pose(left_hip=-sweep, right_hip=+sweep,
-                                       right_lift=clearance,
-                                       hip_roll=shift_left),
+                                       right_lift=right_clearance,
+                                       hip_roll=onto_left, left_splay=wide),
             "right_forward": self._pose(left_hip=0.0, right_hip=-sweep,
-                                        right_lift=clearance,
-                                        hip_roll=shift_left),
+                                        right_lift=right_clearance,
+                                        hip_roll=onto_left, left_splay=wide),
             # right foot planted uphill, left now trailing
             "right_planted": self._pose(left_hip=+sweep, right_hip=-sweep,
-                                        hip_roll=shift_left),
+                                        hip_roll=onto_left, left_splay=wide),
+            # THE LONG ONE: the pelvis travels all the way over the right foot
+            # before anything comes off the ground.
             "right_loaded": self._pose(left_hip=+sweep, right_hip=-sweep,
-                                       hip_roll=shift_right),
+                                       hip_roll=onto_right, left_splay=wide),
             "left_lifted": self._pose(left_hip=+sweep, right_hip=-sweep,
-                                      left_lift=clearance,
-                                      hip_roll=shift_right),
+                                      left_lift=left_clearance,
+                                      hip_roll=onto_right, left_splay=wide),
             "left_forward": self._pose(left_hip=-sweep, right_hip=0.0,
-                                       left_lift=clearance,
-                                       hip_roll=shift_right),
+                                       left_lift=left_clearance,
+                                       hip_roll=onto_right, left_splay=wide),
             "left_planted": self._pose(left_hip=-sweep, right_hip=+sweep,
-                                       hip_roll=shift_right),
+                                       hip_roll=onto_right, left_splay=wide),
             # both feet down, the shoulder gives the cam a shove uphill
             "hand_pushed": self._pose(left_hip=-sweep, right_hip=+sweep,
+                                      hip_roll=onto_left, left_splay=wide,
                                       shoulder_push=ARM_PUSH_SHOULDER_PITCH),
-            "hand_settled": self._pose(left_hip=-sweep, right_hip=+sweep),
+            "hand_settled": self._pose(left_hip=-sweep, right_hip=+sweep,
+                                       hip_roll=onto_left, left_splay=wide),
         }
 
     # ---------------------------------------------------------------- the api

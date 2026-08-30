@@ -227,16 +227,34 @@ SCRIPTED_SLOPE_LADDER_DEGREES = (0, 10, 20, 30)
 SCRIPTED_POLICY_VERSION = "scripted"
 
 
+def _scripted_measured(slope):
+    """What the gait actually did there, 15 s, calm, friction 0.8.
+
+    Measured 2026-08-30 by `scripted_ascender._matrix`, and quoted rather than
+    promised: the rungs that do not climb are kept in the app ON PURPOSE, the
+    same way Chloe's out-of-band slopes are, so the failure is visible on the
+    page and not only in a table.
+    """
+    return {
+        0.0: "climbs 1.48 m in 15 s (1.58 m of rope)",
+        10.0: "climbs 0.68 m in 15 s (0.80 m of rope)",
+        20.0: "does NOT climb -- holds the line but slides 0.09 m downhill",
+        30.0: "does NOT climb -- holds the line but slides 0.39 m downhill",
+    }[float(slope)]
+
+
 def _scripted_definition(slope):
     name, definition = _definition(
         f"scripted_{slope:g}", float(slope),
         f"Scripted · {slope:g}° · rope",
         "A hand-written quasi-static climbing gait -- no network anywhere."
         " The ascender is welded to the rope, so the right wrist is pinned to a"
-        " straight line; with both feet down that is a three-point support, and"
-        " a gait that lifts only one foot at a time never needs to catch"
-        f" itself. Right foot, left foot, right hand slides up, on a {slope:g}"
-        " degree slope. W gates it; nothing steers it.")
+        " straight line and the weld carries most of the weight; the feet are"
+        " lightly loaded and skate, which is why the left foot only DRAGS"
+        " (2 cm of clearance) while the right one steps."
+        f" Right foot steps, left foot drags, the hand slides up. At {slope:g}"
+        f" degrees it {_scripted_measured(slope)}. W gates it; nothing steers"
+        " it.")
     definition["policy_version"] = SCRIPTED_POLICY_VERSION
     definition["policy_relative_path"] = None
     definition["slope_provenance"] = "chosen for the demo (nothing was trained)"
