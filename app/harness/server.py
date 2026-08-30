@@ -7,7 +7,13 @@ http://<host>:<port+1>/app/web/index.html and the episode media at
 team environment, and the two directory listings the page used to scrape are
 now explicit JSON endpoints.
 
-Out (binary)  : one JPEG per control tick, 640x480, quality 80.
+Out (binary)  : one JPEG per control tick, quality 80 -- the third-person view.
+                PLUS, while the guide is on and at the vision rate (10 Hz), a
+                second binary message: the 4 ASCII bytes `EYE0` followed by a
+                JPEG of the robot's LEFT EYE (320x240, quality 70) with the
+                detection box and "2.4 m . FOLLOW" drawn on it. The two are told
+                apart by the first four bytes: a main frame is a raw JPEG and
+                starts 0xFFD8.
 Out (text)    : {"type":"state", "tick":int, "time_seconds":f,
                  "command":[lin_vel_x, lin_vel_y, ang_vel_yaw],
                  "wind_velocity_world_meters_per_second":[f,f],
@@ -20,7 +26,14 @@ Out (text)    : {"type":"state", "tick":int, "time_seconds":f,
                  "hand_height_on_line_meters":f, "hand_line_error_meters":f,
                  "height_gained_meters":f, "rope_force_newtons":f,
                  "slope_degrees":f, "realtime_factor":f, "heading_degrees":f,
-                 "paused":bool}
+                 "paused":bool,
+                 "guide":{"enabled":bool,
+                          "mode":"FOLLOW"|"WAIT"|"LOST",
+                          "distance_meters":f|null,     # stereo, metres
+                          "bearing_degrees":f|null,     # + = human to the LEFT
+                          "true_distance_meters":f|null,# LABELLED CHEAT, HUD only
+                          "human_progress_meters":f}}
+                The `guide` block is present every tick, guide on or off.
                 A state with "loading":true is the last frame before the loop
                 blocks to build a newly selected world; frames resume when it
                 lands.
@@ -31,10 +44,14 @@ In  (text)    : {"type":"input", "keys":["w"],
                     azimuth/elevation convention, defaults 180 / -15. The camera's
                     viewing direction is ALSO the steering input: the robot turns
                     to face it, W walks (climbs) that way.
-                {"type":"knob", "name":"wind_x"|"wind_y"|"friction", "value":f}
+                {"type":"knob", "name":"wind_x"|"wind_y"|"friction"|"guide", "value":f}
                     wind_x / wind_y are the world-frame XY WIND VELOCITY in m/s
                     (NOT newtons -- the force is the quadratic drag law from
                     rl/environment/wind_env.py). friction is the foot geoms' mu.
+                    guide is 0/1: with it on, W walks the HUMAN GUIDE along the
+                    rope and the robot's command comes from the stereo follower
+                    instead of the keyboard (A/D do nothing; the follower owns
+                    yaw). Default 0.
                 {"type":"reset"}      respawn at the knees_bent keyframe, ascender
                                       travel back to 0.
                 {"type":"pause", "value":true|false}
@@ -78,7 +95,11 @@ class Server:
                       "t_amb": 15.0, "soc0": 100.0,
                       # 0/1: the wind dial is a TARGET a gusting process
                       # wanders around, instead of a constant.
-                      "wind_natural": 0.0}
+                      "wind_natural": 0.0,
+                      # 0/1: the human guide walks the rope route and the robot
+                      # follows it by stereo vision. While it is 1, W drives the
+                      # HUMAN and the robot's command comes from the follower.
+                      "guide": 0.0}
         self.reset_requested = False
         self.paused = False
         self.world_requested = None

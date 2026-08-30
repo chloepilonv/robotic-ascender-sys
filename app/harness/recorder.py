@@ -34,6 +34,18 @@ HUD_FIELD_NAMES = [
     # that knocked the robot over.
     "wind_speed_mps", "wind_heading_degrees", "wind_gain", "wind_gust",
     "wind_natural",
+    # The guide follower (app/harness/guide.py). `guide_mode` is a CODE, not a
+    # string, because these rows are stacked into float arrays: 0 WAIT, 1
+    # FOLLOW, 2 LOST (guide.GUIDE_MODE_CODES is the authority). The two distance
+    # columns carry -1.0 when there is nothing to report -- not NaN, which
+    # `JSON.parse` in the browser rejects outright.
+    "guide_mode", "guide_distance_meters", "guide_true_distance_meters",
+    "guide_human_progress_meters",
+    # The running number of foot landings (app/harness/snow.py's touchdown
+    # detector -- the same one that stamps footprints and fires the page's
+    # `foot_steps` sound events, so a replay's step count is the same count the
+    # live session heard).
+    "step_count",
 ]
 
 

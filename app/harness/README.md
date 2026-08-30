@@ -39,7 +39,8 @@ rope off — the walker gives up between 10° and 15°) and `sandbox_free` /
 `sandbox_rope`, a 120 × 120 m free-roam map.
 
 Keys: **W** walk, **A/D** turn in place (they suspend the camera-follow while
-held). Wind dial is in m/s and goes through **his** `WindParams` into
+held) — *unless the `guide` knob is on, in which case W drives the HUMAN and the
+robot drives itself; see "Follow the guide" below.* Wind dial is in m/s and goes through **his** `WindParams` into
 `ClimbScene.step`; the `wind_natural` knob turns the dial into a target that
 gusts and drifts. Neither the wind nor this terrain is in training yet — the
 trainer is still on the old `climb_env` — so the state message keeps saying
@@ -59,6 +60,98 @@ Other entry points:
 `--port` moves the websocket (HTTP is port+1); `--command-speed` sets the W
 forward command (default 0.5 m/s).
 
+`--pose-stream` (ON by default, `--no-pose-stream` to turn it off) adds a second
+binary message beside the JPEG: every body's world pose once per control tick,
+946 bytes, ~47 kB/s. It is what **http://localhost:8766/app/web/render3d.html**
+runs on -- a WebGL third-person view that draws the scene in the browser instead
+of showing a picture of it, so it gets a game camera, soft shadows, a snow/ice
+terrain shader, blown snow and footprints. It needs the world exported once:
+
+    python -m app.harness.export_scene --world lhotse_B      # or --all
+
+writes `app/harness/scene_assets/<world>.glb` plus a JSON sidecar (gitignored;
+lhotse_B is 18.5 MB). The map selector on that page only offers worlds that have
+been exported. The JPEG stream, `episode.mp4` and `app/web/index.html` are
+unaffected either way -- the pose hook costs a measured 20 us of a 20 ms tick.
+
+
+## Follow the guide (`app/harness/guide.py`)
+
+Turn the **`guide`** knob on and a human guide appears 2.5 m up the rope. Hold
+**W** and the *human* walks (0.5 m/s along the route, 0.6 m to the rope's left,
+snapped to the terrain — it never slips and never falls, because it is a mocap
+body with no degrees of freedom and no collision). The **robot decides for
+itself** what to do about that. A/D do nothing while the guide is on: the
+follower owns the yaw command, and the camera-follow controller stands down.
+
+The robot has two RGB cameras on its head, 6 cm apart, at the `d435i` mount
+already in the jacketed MJCF. Ten times a second they are rendered at 320×240
+and OpenCV's semi-global block matcher turns the pair into a disparity map;
+`depth = focal_pixels × baseline / disparity` gives metres. **The distance is
+real passive stereo — nothing in the decision path reads the simulator.** Which
+pixels are the human is a **stand-in** (a colour threshold on the guide's
+orange-red, where a person detector would go); `PARITY.md` has the full ledger
+of what is vision, what is stand-in and what is a labelled cheat.
+
+Three states, with hysteresis so it cannot chatter at the threshold it is trying
+to hold:
+
+| mode | when | command |
+|---|---|---|
+| `FOLLOW` | range > 1.3 m, or > 1.0 m while already following | `lin_vel_x` 0.5, `ang_vel_yaw` = clamp(2·bearing, ±1) |
+| `WAIT` | range ≤ 1.0 m, or ≤ 1.3 m while already waiting | zero |
+| `LOST` | nothing detected for a whole second | zero |
+
+The page gets a `guide` block in every state message and, at the vision rate, a
+second binary message — the four bytes `EYE0` then a JPEG of the left eye with
+the detection box drawn on it. Episodes record `guide_mode` (0 WAIT, 1 FOLLOW,
+2 LOST), `guide_distance_meters`, `guide_true_distance_meters` and
+`guide_human_progress_meters`.
+
+    python -m app.harness.test_guide                  # stereo accuracy + two rollouts
+    python -m app.harness.runtime --world flat_0 --duration 20 --hold-w --guide --no-render
+
+**Measured, and worth knowing before you demo it.** The stereo reads −5% at 2 m
+and +7% at 4 m against the simulator's own answer. The *walker*, not the
+follower, is the limit: its real ground speed is about **0.15 m/s** whatever
+`lin_vel_x` says, and the guide walks at 0.5 m/s, so holding W indefinitely just
+opens the gap. The demo that works is **hold W for a few seconds, then let go**
+— the robot closes the gap and stops (measured on `flat_0`: 3.8 m → WAIT at
+1.1 m). Yaw authority is also nearly nil while the palm is gripping the rope
+(commanding +1 rad/s and −1 rad/s for 3 s ends up 10° apart), so the follower
+steers much better on rope-off worlds.
+
+The guide is available on the **ClimbScene** worlds only. The four `legacy_*`
+worlds hand back a compiled model with no `MjSpec`, so there is nothing to add
+the body and the cameras to, and the feature turns itself off there.
+
+## Snow, and footprints in it (`app/harness/snow.py`)
+
+The terrain wears a procedurally generated snow texture -- metre-scale drifts,
+centimetre-scale wind grain, the odd sparkling crystal -- instead of a flat grey
+sheet. Every time a foot lands, an elliptical print (26 x 12 cm, turned to the
+foot's own yaw, soft-edged) is painted into that texture's pixels and pushed to
+the GPU with `mjr_uploadTexture`, so the robot leaves a trail behind it that
+fades away over about half a minute.
+
+**None of it touches physics.** The heightfield is never edited; what changes is
+a texture, a material and the terrain geom's `matid`, none of which the solver
+reads. Proven, not asserted: two 6 s same-seed runs with and without
+`--no-snow` come back **bit-identical across all 39 recorded arrays** (PARITY.md).
+
+The same landing detection does three jobs, which is why they cannot disagree:
+it stamps the print, it increments `step_count`, and it puts a `foot_steps`
+event on the websocket -- `[{"foot": "left"|"right", "impact_speed_mps": f}]`,
+empty on almost every tick -- so the page can play one snow crunch per step at a
+volume set by how hard the foot came down. A landing is a foot gaining terrain
+contact after at least two ticks in the air; without that debounce a scuffing
+foot machine-guns. `hud.json` records `step_count`, so a replay counts the same
+steps the live session heard.
+
+Costs, measured: painting 0.04 ms per control tick, the fade 0.002 ms, the GPU
+upload 0.75 ms (6 Hz, a 4.6 MB texture, pushed to both the main and the eye
+contexts). `--no-snow` turns the texture and the prints off; the step events
+stay, because the sound does not depend on the picture.
 
 ## The ClimbScene worlds
 

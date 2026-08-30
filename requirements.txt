@@ -1,0 +1,16 @@
+# GPU requirements for the RTX 4070 (CUDA 12.x driver 580+).
+# Install with:  pip install -r requirements.txt
+#
+# jax[cuda12] pulls jax-cuda12-pjrt / jax-cuda12-plugin plus the NVIDIA
+# wheels (cublas, cudnn, cusolver, ...). Match the jaxlib version exactly.
+
+jax[cuda12]==0.11.1
+jaxlib==0.11.1
+
+mujoco-playground==0.2.0
+mujoco==3.12.0
+mujoco-mjx==3.12.0
+mediapy
+tensorboardX
+# Optional: only needed for --use_wandb
+# wandb

@@ -226,7 +226,7 @@
 </div>
 <aside>
   <div class="topbar">
-    <div class="segmented"><div class="tab active" data-mode="live">Live</div><div class="tab" data-mode="replay">Replay</div></div>
+    <div class="segmented"><div class="tab active" data-mode="live">Live</div><div class="tab" data-mode="replay">Replay</div><a href="/app/web/render3d.html" title="the WebGL third-person view" style="padding:4px 13px;border-radius:6px;font-size:12px;color:var(--ink-2);text-decoration:none;line-height:1.5">3D</a></div>
     <div id="status"><i></i><span id="statusText">offline</span><span id="realtime"></span></div>
   </div>
 
@@ -384,6 +384,7 @@ function paintHud(frame) {
   noteWindSpeed(state.windNow.speed);
   paintBatteryCard(frame);
   paintGuideCard(frame);
+  playFootStepEvents(frame);
   // one status line replaces the old motion badge: climbing (green) / holding / hanging (red)
   const climbing = Number(command[0]) > 0;
   const fell = Boolean(frame.fell);
@@ -533,6 +534,158 @@ function setBatteryRow(rowElementId, valueElementId, text, mutedNote = null) {
   value.appendChild(note);
 }
 
+
+// ---------- FOOTSTEPS IN POWDER SNOW ----------
+// Synthesised per step, sharing the wind synth's AudioContext (so the same first click
+// starts it and the same mute silences it). One step = a short noise burst through two
+// paths: a band of noise sliding DOWN from ~3 kHz to ~1.2 kHz (the crunch of snow
+// compacting) and the same noise under ~150 Hz (the thud of the foot landing).
+const FOOTSTEP_SAMPLE_URL = '/app/web/sounds/snow_step.mp3';   // the user's own recording
+const FOOTSTEP_PLAYBACK_RATE_JITTER = 0.10;  // +/-10% on the sample, so no two are alike
+const FOOTSTEP_BASE_SECONDS = 0.15;          // +/-15% jitter -> ~128..173 ms (fallback synth)
+const FOOTSTEP_JITTER = 0.15;
+const FOOTSTEP_ATTACK_SECONDS = 0.005;
+const FOOTSTEP_PAN_BY_FOOT = { left: -0.3, right: 0.3 };
+// impact speed -> loudness: 0.6 m/s is a scuff, 2 m/s and up is a stamp
+const FOOTSTEP_SPEED_FOR_FULL_VOLUME = 2.0;
+const FOOTSTEP_MINIMUM_VOLUME = 0.35, FOOTSTEP_MAXIMUM_VOLUME = 1.0;
+// overlapping steps are WANTED (a step must never cut the one before it off); this cap is
+// only a runaway guard for a wedged stream, well above any real cadence
+const FOOTSTEP_MAXIMUM_OVERLAPPING = 12;
+const FOOTSTEP_MAXIMUM_PER_REPLAY_TICK = 4;  // nor a video seek machine-gun them
+const footstepSound = { bus: null, noiseBuffer: null, activeCount: 0, playCount: 0,
+                        lastStepCount: null, nextFoot: 'left', lastVoice: null };
+// The recording, decoded once. `state` is idle -> loading -> ready | failed; `failed`
+// is not fatal, it just means the synthesised step below does the work instead.
+const footstepSample = { buffer: null, state: 'idle' };
+async function loadFootstepSample(context) {
+  if (footstepSample.state === 'loading' || footstepSample.state === 'ready') return;
+  footstepSample.state = 'loading';
+  try {
+    const response = await fetch(FOOTSTEP_SAMPLE_URL);
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    footstepSample.buffer = await context.decodeAudioData(await response.arrayBuffer());
+    footstepSample.state = 'ready';
+  } catch (error) {
+    footstepSample.state = 'failed';
+    console.warn('footstep sample unavailable, synthesising instead:', error);
+  }
+}
+// One playback of the recording. Kept separate from playSnowStep, exactly like the synth
+// below, so the same graph can be rendered offline and measured.
+function scheduleSampleStep(context, destination, buffer, foot, impactSpeedMetersPerSecond) {
+  const now = context.currentTime;
+  const volume = footstepVolume(impactSpeedMetersPerSecond);
+  const source = context.createBufferSource();
+  source.buffer = buffer;
+  source.playbackRate.value = 1 + (Math.random() * 2 - 1) * FOOTSTEP_PLAYBACK_RATE_JITTER;
+  // The recording does not necessarily begin on a zero crossing, and playing from offset 0
+  // at full gain would snap the speaker. Five milliseconds of fade is inaudible and enough.
+  const envelope = context.createGain();
+  envelope.gain.setValueAtTime(0, now);
+  envelope.gain.linearRampToValueAtTime(volume, now + FOOTSTEP_ATTACK_SECONDS);
+  source.connect(envelope);
+  if (context.createStereoPanner) {
+    const panner = context.createStereoPanner();
+    panner.pan.value = FOOTSTEP_PAN_BY_FOOT[foot] !== undefined ? FOOTSTEP_PAN_BY_FOOT[foot] : 0;
+    envelope.connect(panner); panner.connect(destination);
+  } else {
+    envelope.connect(destination);
+  }
+  source.start(now, 0);
+  return { source, envelope, volume, playbackRate: source.playbackRate.value };
+}
+function footstepVolume(impactSpeedMetersPerSecond) {
+  const speed = finiteOrNull(impactSpeedMetersPerSecond);
+  return Math.max(FOOTSTEP_MINIMUM_VOLUME, Math.min(FOOTSTEP_MAXIMUM_VOLUME,
+    (speed === null ? 1.0 : speed) / FOOTSTEP_SPEED_FOR_FULL_VOLUME));
+}
+
+function makeWhiteNoiseBuffer(context) {
+  const buffer = context.createBuffer(1, Math.floor(context.sampleRate * 0.5), context.sampleRate);
+  const samples = buffer.getChannelData(0);
+  for (let index = 0; index < samples.length; index++) samples[index] = Math.random() * 2 - 1;
+  return buffer;
+}
+// Kept separate from playSnowStep so the exact same graph can be rendered offline and
+// measured -- which is how "the envelope starts at zero" is checked rather than asserted.
+function scheduleSnowStep(context, destination, noiseBuffer, foot, impactSpeedMetersPerSecond) {
+  const jitter = 1 + (Math.random() * 2 - 1) * FOOTSTEP_JITTER;
+  const duration = FOOTSTEP_BASE_SECONDS * jitter;
+  const volume = footstepVolume(impactSpeedMetersPerSecond);
+  const now = context.currentTime;
+  const source = context.createBufferSource();
+  source.buffer = noiseBuffer;
+  source.loop = true;
+  const crunch = context.createBiquadFilter();
+  crunch.type = 'bandpass';
+  crunch.Q.value = 1.2;
+  crunch.frequency.setValueAtTime(3000 * jitter, now);
+  crunch.frequency.exponentialRampToValueAtTime(1200 * jitter, now + duration);
+  const thud = context.createBiquadFilter();
+  thud.type = 'lowpass';
+  thud.frequency.value = 150 * jitter;
+  const thudLevel = context.createGain();
+  thudLevel.gain.value = 0.6;
+  // THE ENVELOPE STARTS AT ZERO. A noise burst that begins at full amplitude is a click,
+  // and a click is the one thing a snow step must never sound like.
+  const envelope = context.createGain();
+  envelope.gain.setValueAtTime(0, now);
+  envelope.gain.linearRampToValueAtTime(volume, now + FOOTSTEP_ATTACK_SECONDS);
+  envelope.gain.exponentialRampToValueAtTime(0.0008, now + duration);
+  source.connect(crunch); crunch.connect(envelope);
+  source.connect(thud); thud.connect(thudLevel); thudLevel.connect(envelope);
+  // left foot to the left ear; a browser without StereoPanner just gets it centred
+  if (context.createStereoPanner) {
+    const panner = context.createStereoPanner();
+    panner.pan.value = FOOTSTEP_PAN_BY_FOOT[foot] !== undefined ? FOOTSTEP_PAN_BY_FOOT[foot] : 0;
+    envelope.connect(panner); panner.connect(destination);
+  } else {
+    envelope.connect(destination);
+  }
+  source.start(now, Math.random() * 0.3);     // a different slice of noise every step
+  source.stop(now + duration + 0.02);
+  return { source, envelope, duration, volume };
+}
+function playSnowStep(foot, impactSpeedMetersPerSecond) {
+  const context = windSound.context;
+  if (!context || windSound.muted || weatherIsFrozen()) return;
+  if (!footstepSound.bus || footstepSound.activeCount >= FOOTSTEP_MAXIMUM_OVERLAPPING) return;
+  const useSample = footstepSample.state === 'ready' && footstepSample.buffer;
+  const step = useSample
+    ? scheduleSampleStep(context, footstepSound.bus, footstepSample.buffer,
+                         foot, impactSpeedMetersPerSecond)
+    : scheduleSnowStep(context, footstepSound.bus, footstepSound.noiseBuffer,
+                       foot, impactSpeedMetersPerSecond);
+  footstepSound.lastVoice = useSample ? 'sample' : 'synth';
+  footstepSound.activeCount++;
+  footstepSound.playCount++;
+  step.source.onended = () => { footstepSound.activeCount--; step.envelope.disconnect(); };
+}
+// LIVE: the tick's events are authoritative, one sound each.
+function playFootStepEvents(frame) {
+  const events = frame.foot_steps;
+  if (!Array.isArray(events)) return;
+  for (const event of events) {
+    if (!event || typeof event !== 'object') continue;
+    playSnowStep(event.foot === 'left' ? 'left' : 'right', event.impact_speed_mps);
+  }
+}
+// REPLAY: no events were recorded, only a running total, so fire on its INCREASES.
+// A total that went backwards means the viewer scrubbed; re-seed, do not replay history.
+function playFootStepsFromCount(stepCount) {
+  const total = finiteOrNull(stepCount);
+  if (total === null) return;
+  const previous = footstepSound.lastStepCount;
+  footstepSound.lastStepCount = total;
+  if (previous === null || total <= previous) return;
+  const steps = Math.min(FOOTSTEP_MAXIMUM_PER_REPLAY_TICK, total - previous);
+  for (let index = 0; index < steps; index++) {
+    playSnowStep(footstepSound.nextFoot, null);
+    footstepSound.nextFoot = footstepSound.nextFoot === 'left' ? 'right' : 'left';
+  }
+}
+
 // ---------- GUIDE (the human the robot follows) ----------
 // The switch is an INTENT, like the pause button: clicking it sends the knob, and the
 // displayed state prefers the runtime's own `guide.enabled` echo, so a runtime that
@@ -543,6 +696,12 @@ const EYE_FRAME_STALE_MILLISECONDS = 2000;
 const guideState = { on: false, mode: null, lastEyeFrameMilliseconds: 0 };
 const eyeCanvas = $('eyeView'), eyeContext = eyeCanvas.getContext('2d');
 
+// null / undefined / NaN all mean "no reading"; Number(null) is 0, which would lie.
+function finiteOrNull(value) {
+  if (value === null || value === undefined) return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
 function paintGuideSwitch() {
   $('guideSwitch').setAttribute('aria-checked', String(guideState.on));
   // the keys drive the guide instead of the robot while it is on
@@ -582,14 +741,14 @@ paintGuideCard({});
   pill.className = 'pill ' + (GUIDE_MODE_CLASSES[mode] || '');
   // the stereo reading, and beside it the sim's own answer -- a LABELLED CHEAT, which is
   // why it is muted and named: it is not something a real robot could measure
-  const distance = Number(guide.distance_meters);
-  const truth = Number(guide.true_distance_meters);
-  $('guideDistance').textContent = Number.isFinite(distance) ? distance.toFixed(1) + ' m' : '—';
+  const distance = finiteOrNull(guide.distance_meters);
+  const truth = finiteOrNull(guide.true_distance_meters);
+  $('guideDistance').textContent = distance === null ? '—' : distance.toFixed(1) + ' m';
   const truthNote = document.createElement('em');
-  truthNote.textContent = Number.isFinite(truth) ? 'truth ' + truth.toFixed(2) + ' m' : '';
+  truthNote.textContent = truth === null ? '' : 'truth ' + truth.toFixed(2) + ' m';
   $('guideDistance').appendChild(truthNote);
-  const bearing = Number(guide.bearing_degrees);
-  $('guideBearing').textContent = Number.isFinite(bearing) ? bearing.toFixed(0) + '°' : '—';
+  const bearing = finiteOrNull(guide.bearing_degrees);
+  $('guideBearing').textContent = bearing === null ? '—' : bearing.toFixed(0) + '°';
   paintEyeViewVisibility();
 }
 
@@ -910,6 +1069,12 @@ function startWindSound() {
   lowPass.connect(master); master.connect(context.destination);
   source.start(); lfo.start();
   Object.assign(windSound, { context, master, bandPass, lowPass });
+  // the footsteps share this context, so they share the first-click gate for free
+  footstepSound.bus = context.createGain();
+  footstepSound.bus.gain.value = 1;
+  footstepSound.bus.connect(context.destination);
+  footstepSound.noiseBuffer = makeWhiteNoiseBuffer(context);   // only used if the fetch fails
+  loadFootstepSample(context);
   updateWindSound();
 }
 // Everything is a setTargetAtTime, whose time constant IS the smoothing: the gain uses
@@ -939,6 +1104,9 @@ function noteWindSpeed(speedMetersPerSecond) {
 }
 function setWindSoundMuted(muted) {
   windSound.muted = muted;
+  // the wind fades through its own gain; the footstep bus is switched, so a step that is
+  // already sounding when the toggle is hit stops with it
+  if (footstepSound.bus) footstepSound.bus.gain.value = muted ? 0 : 1;
   $('soundToggle').classList.toggle('muted', muted);
   $('soundToggle').setAttribute('aria-pressed', String(!muted));
   writeWindSoundMuted(muted);
@@ -1275,6 +1443,7 @@ $('episodeSelect').onchange = async e => {
   const name = e.target.value;
   const [header, hud] = await Promise.all([fetch(`${EPISODES_URL_PREFIX}/${name}/header.json`).then(r => r.json()), fetch(`${EPISODES_URL_PREFIX}/${name}/hud.json`).then(r => r.json())]);
   state.hud = hud;
+  footstepSound.lastStepCount = null;      // a fresh episode re-seeds the counter
   state.slopeDegrees = header.slope_degrees !== undefined ? header.slope_degrees : hud.slope_degrees;
   video.src = `${EPISODES_URL_PREFIX}/${name}/episode.mp4`; video.play();
   const outcome = header.outcome || {};
@@ -1292,6 +1461,7 @@ video.addEventListener('timeupdate', () => {
   const controlHz = Number(hud.control_hz || 50);
   const tick = Math.min(hud.time_seconds.length - 1, Math.floor(video.currentTime * controlHz));
   const at = (name, fallback) => (hud[name] && hud[name][tick] !== undefined) ? hud[name][tick] : fallback;
+  playFootStepsFromCount(at('step_count', null));
   const outcome = hud.outcome || {};
   const fell = (hud.fell && hud.fell[tick] !== undefined)
     ? Boolean(hud.fell[tick])
@@ -1316,11 +1486,26 @@ video.addEventListener('timeupdate', () => {
   });
 });
 // hud.json has no ambient, winding, joint or time-to-empty: those rows simply hide.
-// a recording that carried a guide has guide_mode / guide_distance columns; no eye frames
+// A recording that carried a guide has the four columns app/harness/guide.py stacks.
+// Two traps, both taken from that file rather than assumed: `guide_mode` is a numeric
+// CODE (GUIDE_MODE_CODES), not the string the live message sends, and every distance
+// column carries -1.0 (NO_MEASUREMENT) rather than NaN when there is nothing to report.
+const GUIDE_MODE_NAMES_BY_CODE = { 0: 'WAIT', 1: 'FOLLOW', 2: 'LOST' };
+const GUIDE_NO_MEASUREMENT = -1.0;
+function guideMeasurement(value) {
+  const number = Number(value);
+  return (!Number.isFinite(number) || number === GUIDE_NO_MEASUREMENT) ? null : number;
+}
 function guideFromReplayArrays(at) {
-  const mode = at('guide_mode', undefined);
-  if (mode === undefined || mode === null) return undefined;
-  return { enabled: true, mode, distance_meters: at('guide_distance', null) };
+  const code = at('guide_mode', undefined);
+  if (code === undefined || code === null) return undefined;
+  return {
+    enabled: true,
+    mode: GUIDE_MODE_NAMES_BY_CODE[Number(code)] || null,
+    distance_meters: guideMeasurement(at('guide_distance_meters', null)),
+    true_distance_meters: guideMeasurement(at('guide_true_distance_meters', null)),
+    human_progress_meters: at('guide_human_progress_meters', undefined),
+  };
 }
 function batteryFromReplayArrays(at) {
   const stateOfCharge = at('bms_soc_pct', undefined);
@@ -1344,7 +1529,7 @@ document.querySelectorAll('.tab').forEach(tab => tab.onclick = () => {
   canvas.style.display = state.mode === 'live' ? 'block' : 'none';
   video.style.display = state.mode === 'replay' ? 'block' : 'none';
   if (state.mode === 'replay') {
-    clearHeldKeys(); state.slopeDegrees = null;
+    clearHeldKeys(); state.slopeDegrees = null; footstepSound.lastStepCount = null;
     if (pointerIsLocked() && document.exitPointerLock) document.exitPointerLock();
     listEpisodes();
   } else video.pause();

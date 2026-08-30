@@ -354,7 +354,7 @@ def describe_climb_scene(scene, definition) -> dict:
         "joint_names": joint_names,
         "adapt_report": dict(scene.adapt_report),
         # --- training-time facts, for the header ------------------------------
-        # The trainer (rl/environment/climb_env.py) still uses the OLD flat
+        # The trainer (rl/environment/the joystick env) still uses the OLD flat
         # tilted plane and slide joint -- his doc's "Not yet done: training".
         # So wind and this terrain are both demo-only, and the state message
         # keeps saying so.
@@ -476,7 +476,7 @@ class ClimbSceneEpisode:
 
         Safe to write directly here: this merged scene compiles with `npair 0`,
         so no explicit contact pair overrides the geoms. That is exactly the
-        trap his doc records for `climb_env.py`, whose `<pair>` elements pin the
+        trap his doc records for `the joystick env`, whose `<pair>` elements pin the
         real coefficient at 0.6 no matter what `geom_friction` says. Verified
         on the built model, not assumed.
         """

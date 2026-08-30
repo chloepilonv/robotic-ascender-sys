@@ -763,6 +763,224 @@ and freezes (never slips back), and the palm stays on the line to 0.18 mm.
 
 ---
 
+## Guide follower — what is vision, what is stand-in, what is cheat
+
+`app/harness/guide.py`. A human guide walks ahead along the rope; the robot
+measures its distance with two head cameras and drives itself. Reproduce every
+number below with `python -m app.harness.test_guide`.
+
+### The ledger
+
+| piece | status | what it actually is |
+|---|---|---|
+| the two eye images | **REAL** | 320×240 RGB renders of the scene from two MuJoCo cameras 6 cm apart, copied from the `d435i` mount already in `assets/robots/mujoco/g1_unitree_ascender.xml` (pos `0.0789635 0 0.386` on `torso_link`, fovy 58°). Cameras are visual-only; MuJoCo integrates nothing from them. |
+| the DISTANCE | **REAL passive stereo** | OpenCV `StereoSGBM` on that pair → disparity → `depth = focal_pixels × baseline / disparity`, `focal_pixels = (height/2)/tan(fovy/2) = 216.5 px`, `baseline = 0.06 m`. Sub-pixel from SGBM's own 1/16-px fixed point. **No simulator state is read anywhere in this path.** |
+| the BEARING | **REAL** | the matched pixels' centroid column through the same intrinsics. |
+| WHICH PIXELS ARE THE HUMAN | **STAND-IN** | an HSV colour threshold on the guide's deliberately distinctive orange-red (hue 4–16, measured off a render: the guide lands at hue 5–12 / value 236, the rope at hue 0–1 / value 56), largest connected component. A person detector goes here; the seam is `guide.detect_guide(image) -> (box, mask)`. It is not vision in any interesting sense — it knows the answer's colour. |
+| `true_distance_meters` | **LABELLED CHEAT** | read straight out of `data.cam_xpos` and the guide's own pose. HUD and grading only; the follower never sees it. Recorded as `guide_true_distance_meters`. |
+| the guide's motion | **not physics, and says so** | a mocap body (zero DOF, `nq`/`nv` untouched) driven along `RopeRoute` arc length, height snapped to `terrain.surface_z` every tick. It cannot fall, be pushed, or be walked into: every geom is `contype=0, conaffinity=0`. |
+| the command | ours, as everything in the app layer is | the follower writes the same 3-vector the keyboard writes. No new policy, no retraining, no change to `rl/`. |
+
+### The model surgery, and why it is safe
+
+`guide.attach_guide(scene)` adds one mocap body (3 geoms) and two cameras to
+**his** `MjSpec` and recompiles — the same mechanism `graphics.add_skybox` uses,
+with the same refusal rule. Every joint qpos/dof address, every actuator target,
+every existing body's mass and name, and `nq nv nu njnt neq nsite nsensor nkey`
+are compared before and after; if any of them moves the swap is **refused** and
+the scene is left exactly as it was. Measured on `flat_0`: bodies 32→33, geoms
+101→104, cameras 1→3, mocap 0→1, **all 13 structural fields unchanged**. The new
+body is appended after the existing tree, so no existing id shifts.
+
+TWO ORDERING RULES, both learned by breaking them:
+
+1. **The surgery runs before the graphics dressing.** `apply_alpine_look` writes
+   to the COMPILED model (lights, fog, the snow colour) and a recompile throws
+   that away; doing it the other way round gives a dark, unlit picture.
+2. **The camera orientation is read off the compiled model, not the spec.** The
+   MJCF writes `d435i` as `xyaxes="0 -1 0  0 0 1"`, and MjSpec keeps that in the
+   element's `alt` field while leaving `quat` at IDENTITY. Copying `source.quat`
+   produced two cameras pointing straight down — a black picture and zero
+   detections at every range. `model.cam_quat` is the compiler's resolved answer.
+
+### Stereo accuracy vs the simulator's own answer
+
+Two truths are printed because the measurement sits between them, and neither
+alone is the whole story: a dense matcher's median disparity over a convex body
+reads its **near face**, so the surface column is the like-for-like comparison,
+while the axis column is the literal "distance to the human" the HUD reports.
+
+`flat_0`:
+
+| true to axis | true to surface | measured | err vs axis | err vs surface | disparity |
+|---|---|---|---|---|---|
+| 1.000 m | 0.820 m | 0.841 m | −15.9% | +2.5% | 16.69 px |
+| 2.000 m | 1.820 m | 1.899 m | **−5.1%** | **+4.3%** | 7.00 px |
+| 4.000 m | 3.820 m | 4.270 m | +6.8% | +11.8% | 3.06 px |
+| 8.000 m | 7.820 m | 8.028 m | +0.4% | +2.7% | 1.62 px |
+
+`terrain_free_10`, against the axis: −9.2% / **−4.2%** / +9.2% / +33.5%. The 8 m
+row is the honest limit of a 6 cm baseline at this focal length: the whole
+disparity there is 1.25 px, so one quantisation step is metres.
+
+### The decision, and its hysteresis
+
+`FOLLOW` above 1.3 m (1.0 m once already following), `WAIT` at or below 1.0 m
+(1.3 m once already waiting), `LOST` after a second with no detection. Both WAIT
+and LOST command zero, so a lost human and a close human stop the robot alike —
+the conservative direction. `ang_vel_yaw = clamp(2 × bearing, ±1)`, 2° deadband.
+
+### One notion of "a human is there"
+
+`human-safety/human_gate.py` already owns the auditable rule "no climbing UP
+while a human is in front", with a SIM ORACLE detector. Running the follower's
+vision alongside that oracle would give the demo two detectors free to disagree.
+So while the guide is on, the gate is driven from the same measurement
+(`guide.GuideVisionDetector` returns *her* `Detection` type, with `seen` true
+exactly when the follower says WAIT) and its own hysteresis is set to 0.0,
+because the follower already has two. Her file is imported, not edited.
+**ASK (low priority):** if the oracle-driven `--human` spawns and the guide are
+ever wanted at once, the two gates need merging rather than switching.
+
+### Cost, measured
+
+Per stereo pair on this machine: two 320×240 renders 10.9 ms, SGBM 1.1 ms,
+detection 0.7 ms, annotate + JPEG 1.2 ms. At one vision tick in five that is
+**2.8 ms per control tick**. Dropping to 256×192 saves 0.1 ms — the cost is the
+GL round trip, not the pixels, so the resolution dial is not the lever.
+
+One real win found on the way: `mujoco.Renderer` sizes its offscreen buffer from
+`model.vis.global_`, so a second small renderer on a model whose `offwidth` was
+raised to 1920×1080 for the main view allocates a **1920×1080 8×-MSAA** buffer to
+read 320×240 out of. Per pair: 17.07 ms that way, 13.23 ms with the buffer at
+320×240, 11.09 ms with MSAA off too. `StereoEyes` sets those three fields around
+the context creation and restores them immediately.
+
+Realtime factor on `lhotse_B`, live, W held (this machine, three agents running):
+
+| viewport | guide off | guide on |
+|---|---|---|
+| 960×540 (the page's default) | 1.00 | **1.00** |
+| 1280×720 | 1.00 | **1.00** |
+| 1920×1080 | 0.90–0.99 | 0.79 |
+| 1920×1080, `--no-shadows` | 1.00 | **1.00** |
+
+At 1920×1080 with shadows the main render alone already fills the 20 ms tick
+(0.90–0.99 with the guide OFF, load-dependent), so there is no headroom there
+with or without the eyes; `--no-shadows` (a documented 5.7 ms at that size)
+restores it and holds 1.00 with the guide on.
+
+### What the follower cannot fix, because it is the plant
+
+Both measured with `test_guide` and a direct command sweep, and both are
+properties of the team's walking policy in these scenes, not of this layer:
+
+* **Ground speed is ~0.15 m/s whatever `lin_vel_x` says.** `flat_0`, 20 s,
+  straight-ahead command: 3.15 m at cmd 0.5, 4.18 m at cmd 0.8, 4.22 m at
+  cmd 1.0. The guide walks at 0.5 m/s, so holding W indefinitely simply opens
+  the gap — the demo that works is a few seconds of W and then release, after
+  which the robot closes and stops (`flat_0`, human stops at t = 5 s: gap 3.8 m
+  → WAIT at 1.08 m by t = 32 s).
+* **Yaw authority is nearly nil while the palm grips the rope.** `flat_0`, 3 s
+  of a constant yaw command on top of `lin_vel_x` 0.5: +1.0 → −23.6°, +0.5 →
+  −24.2°, 0.0 → −29.6°, −0.5 → −15.1°, −1.0 → −13.4°. The robot yaws about −25°
+  regardless of what is asked. `HeadingController`'s docstring already warned
+  about this for the mouse-look controller; the follower inherits it, and the
+  visible symptom is FOLLOW→LOST flapping when the human ends up outside the
+  ±36° horizontal field of view.
+* On `terrain_free_10` the walker drifts **−50° of yaw in 3 s with a zero yaw
+  command** and walks backwards (−2.12 m in 20 s at cmd 0.5), which is why the
+  follower cannot hold a gap there at all. **ASK:** if the follower is to be
+  demoed *steering*, it wants a world where the walker tracks its command — a
+  rope-off gentle slope with a retuned policy would be the fix, and that lives
+  in `rl/`.
+
+---
+
+## Snow and footprints -- visual only, and here is the proof
+
+`app/harness/snow.py`. The terrain wears a procedural snow texture and keeps the
+footprints the robot leaves in it.
+
+**THE PHYSICS CLAIM.** Three things change on the compiled model: one texture is
+added, one material is added, and the terrain geom's `matid` points at it. None
+of the three is read by the solver -- MuJoCo's contact model knows about
+`geom_friction`, `geom_solref`, `condim` and the collision bitmasks, not about
+what a surface looks like -- and the HEIGHTFIELD IS NEVER EDITED, so the ground
+the feet actually touch is the same ground. The spec recompile is guarded the
+same way `graphics.add_skybox` and the guide's surgery are: `nq nv nu nbody njnt
+neq ngeom nsite nsensor nkey`, every joint address, every actuator target, every
+body mass, and additionally every geom's `friction`, `contype` and `conaffinity`
+are compared before and after, and the swap is refused if any of them moved.
+Measured on `flat_0`: **all 17 fields unchanged**.
+
+MEASURED, not asserted. Two 6 s runs, same seed, same world, `--hold-w`, one
+with the snow and one with `--no-snow`:
+
+    python -m app.harness.runtime --world flat_0 --duration 6 --hold-w \
+        --no-render --keep-going --seed 0 --output-name paritytest_snow
+    python -m app.harness.runtime --world flat_0 --duration 6 --hold-w \
+        --no-render --keep-going --seed 0 --no-snow --output-name paritytest_nosnow
+
+300 ticks, **39 recorded arrays compared, max absolute difference 0.000e+00** --
+bit-identical, joint angles, contact forces, rope force and all. Both runs also
+counted the same 18 footsteps.
+
+**Which footprint path was used.** The TEXTURE path, not the geom-pool fallback.
+`mujoco.Renderer` exposes `_mjr_context` and `_gl_context`, and
+`mjr_uploadTexture` replaces a texture in a live context, so a print is written
+into `model.tex_data` (through a reshaped numpy VIEW of it -- a slice of that
+buffer is a view, which turns a repaint into one vectorised assignment instead of
+a loop over rows) and pushed. The world-to-texel map is exact rather than
+approximate: the material carries `texrepeat 1 1` with `texuniform` off, so the
+texture maps once across the heightfield, and world x is de-sloped by the same
+three fixed-point passes `terrain.surface_z` uses before it is normalised. It was
+verified by painting a marker at a computed texel and rendering top-down before a
+single footprint was written.
+
+**The fade, and why it is cheap.** A separate alpha channel holds the prints;
+`live = base blended toward the shadow colour by alpha` is recomputed from
+`base` every time, never from the previous frame, so repeated fading cannot
+ratchet the snow grey. Fading is one multiply of the alpha over the union
+rectangle of the live prints, every 3 seconds. A ring buffer caps the live
+prints at 400 and erases the oldest outright.
+
+**Costs, per 50 Hz control tick, measured on this machine** (`lhotse_B`,
+25 x 15 m, texture 1600 x 960 = 4.6 MB):
+
+| step | cost |
+|---|---|
+| paint a print (only on a landing) | 0.04 ms mean, 0.90 ms worst |
+| the fade pass (every 3 s) | 0.002 ms mean, 0.22 ms worst |
+| `mjr_uploadTexture`, main context only | 3.69 ms per upload -> 0.44 ms/tick at 6 Hz |
+| `mjr_uploadTexture`, main + the guide's eye context | 6.28 ms per upload -> **0.75 ms/tick** at 6 Hz |
+
+The upload is the whole cost of the feature, and it is the RESOLUTION that sets
+it, because `mjr_uploadTexture` replaces the entire texture: at 80 texels/m the
+same patch is a 7.2 MB texture and 6.52 ms for the pair of contexts. 64 texels/m
+still gives a 17 x 8 texel footprint, which reads as a print at demo distance,
+and 6 Hz instead of 10 means a print appears at most 170 ms after the foot lands.
+`--no-snow` removes all of it.
+
+**A note on the realtime numbers.** The live realtime factor could not be
+measured cleanly for this change: three agents were running on this laptop and
+the SAME configuration measured 0.99 and 0.85 an hour apart with no code change
+at all. The per-tick costs above are the reproducible statement; against them,
+the snow is +0.8 ms on a 20 ms tick.
+
+**The `foot_steps` protocol.** A landing is a foot geom gaining contact with the
+terrain geom after at least two ticks with none -- the debounce matters, because
+a scuffing foot makes and breaks contact several times a second and would
+machine-gun both the sound and the paint. Feet are identified by geom id from
+`meta["foot_geom_ids"]`, grouped by owning body, and labelled left/right off the
+body name (falling back to the sign of its y offset), so nothing here breaks when
+the robot's foot contacts change from four spheres to one box. Impact speed is
+the foot's own downward speed on the last tick it was still airborne, differenced
+from its world height -- the number a sound engine wants, and one that no longer
+exists once contact does.
+
+---
+
 ## GAPS / ASKS
 
 Everything below is either something we could **not** guarantee, or something
@@ -920,6 +1138,8 @@ The four worlds and their slope/rope split; the model cache; `W` →
 `lin_vel_x = 0.5` (`--command-speed` to change it); the camera-heading yaw controller (gain 2.0/rad,
 ±1.0 rad/s, 2° deadband); the third-person orbit and its half-turn azimuth
 offset; the wind dial; the friction slider; pause/reset/record/replay; the
+guide follower and its two head cameras (`app/harness/guide.py` — a mocap body
+and two visual-only cameras added to his spec, nothing else); the
 websocket protocol and the page. None of it exists on their side, and none of it
 touches the physics except through the command 3-vector, `xfrc_applied` (wind)
 and `geom_friction` (the slider) — both clearly marked in the state message and
