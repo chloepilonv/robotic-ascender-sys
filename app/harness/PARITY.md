@@ -1481,6 +1481,184 @@ exists once contact does.
 
 ---
 
+## Chloe's ascender worlds (`chloe_20`, `chloe_25`) — a SECOND plant, on purpose
+
+Every parity claim above this line is about ONE plant: `climb_scene.build_scene`
+with the walking policy on it. `chloe_20` / `chloe_25` are a second plant and a
+second brain, built in `app/harness/chloe_worlds.py` around
+`assets/robots/mujoco/rope_rail.py` and driven by
+`rl/chloe/policies/g1_ascender_slope20_v3_2026-08-30_04-35-59.onnx`. They exist
+because her policy CANNOT be run on the plant above — measured, both directions,
+below.
+
+### The divergence ledger, D1–D14
+
+The numbering is established HERE (the harness had no such list before). Each
+row is one way the harness's walking plant differs from the plant Chloe's
+network was trained in, and what the new worlds do about it.
+
+| # | divergence | the walking worlds | Chloe's training plant | `chloe_*` |
+|---|---|---|---|---|
+| D1 | actuator stiffness / damping | `robot.adapt`'s retune (kp 75 / kd 2 on the big joints, kp 2 on the wrists) | mjlab `G1_ARTICULATION`, per motor group (40.2/2.56, 99.1/6.31, 28.5/1.81, 14.3/0.91, 16.8/1.07) | **sidestepped** — hers, verbatim |
+| D2 | joint armature | the harness's retune | mjlab, per motor group (0.0036–0.0251) | **sidestepped** |
+| D3 | action scale | one flat 0.5 for all 29 | per joint: 0.5476 / 0.3507 / 0.4386 / 0.0745 | **sidestepped** |
+| D4 | default pose the action deltas are about | `robot.KNEES_BENT_QPOS[7:36]`, a constant | whatever `rope_rail.add_rope_rail` IK-solves for this slope and rope height | **sidestepped** — solved, never transcribed |
+| D5 | foot contact geometry | `_swap_feet_for_boxes` — one Playground box per foot | the XML's four spheres per foot | **sidestepped** — no swap |
+| D6 | `policy_compat` | on, for the walking policy's sake | off | **sidestepped** — off |
+| D7 | the observation | 103-d: linvel, gyro, projected gravity, **command (3)**, joints, last action, **gait phase (4)** | 96-d: pelvis angular velocity, projected gravity, joints, last action, **carriage − pelvis in the pelvis frame (3)**. No command, no phase, no linear velocity | **sidestepped** — her layout |
+| D8 | the ascender mechanism | a mocap bead projected onto a draped polyline every substep, arc-length ratchet | a real 1-DoF prismatic `rope_carriage`, mjEQ_WELD to the wrist, ratchet = the joint's moving lower limit | **sidestepped** — `rope_rail.py`, the shared file |
+| D9 | rope shape | a 9-waypoint polyline draped over the terrain, weaving ±0.35 m, colliding | ONE straight non-colliding line, 0.60 m above the ground | **sidestepped** |
+| D10 | terrain roughness | patch B's measured micro-roughness, RMS 0.114 m, on a heightfield | a plane. No roughness at all | **REMAINS.** Her network has never seen a rough surface, so it is not run on one. Putting her on `lhotse_B` is the open experiment, not a claim |
+| D11 | slope | 0.4°–50°, whatever the patch is | 20° (one task per slope: 0/10/20/30/40) | **sidestepped** at 20; `chloe_25` is one rung INSIDE the measured 10–30° band but is not a slope she was trained at |
+| D12 | rates | 500 Hz physics, 10 substeps, 50 Hz control | 200 Hz physics, 4 substeps, 50 Hz control | **sidestepped** — 5 ms / 4 |
+| D13 | how the slope is expressed | terrain geom quaternion; gravity vertical | flat plane, gravity tilted | **sidestepped by a rotation** — see below; both frames run and both are printed |
+| D14 | the `ClimbScene` carrier and its per-substep projection | present on every Lhotse world, and part of what those numbers mean | absent | **REMAINS as a difference between the two world families.** `rope_travel_meters` on a Chloe world is the slide joint's own coordinate; on a Lhotse world it is `RopeCarrier.progress` along a draped polyline. The two are not the same measurement and must never be pooled |
+
+D1 and D3 are not bookkeeping. Each one, swapped alone for the harness's
+value, turns +5.3 m of climbing into a fall inside two seconds. That
+measurement is why this is a second plant and not a flag on the first.
+
+### D13 — the frame rotation, measured
+
+The shipped worlds rotate the whole world by −slope about +y and restore
+vertical gravity, so the page shows a slope that rises and a robot standing on
+it. Her observation is invariant under a world rotation term by term, and the
+weld's relative pose and the slide's axis are expressed in the carriage frame,
+which rotates with everything else — so the numbers in the model never change.
+
+`python -m app.harness.chloe_worlds --equivalence`, 15 s, v3, no wind:
+
+| slope | frame | uphill m | rope m | outcome | |difference| |
+|---|---|---|---|---|---|
+| 20° | `tilted_gravity` (hers) | +5.301 | +5.504 | STANDING | — |
+| 20° | `tilted_plane` (shipped) | +5.300 | +5.502 | STANDING | 0.0018 m (0.03 %) |
+| 25° | `tilted_gravity` | +4.208 | +4.495 | STANDING | — |
+| 25° | `tilted_plane` | +4.218 | +4.506 | STANDING | 0.0100 m (0.24 %) |
+
+Floating point, over 750 control steps of a contact-rich sim. Nothing else.
+
+The `tilted_gravity` arm also reproduces the from-scratch plain-MuJoCo
+reproduction of her sim2sim loop **exactly** — +5.30 m uphill, +5.50 m of rope,
+standing — which is what makes the whole plant claim checkable rather than
+asserted.
+
+### THE ROPE RAIL MOVED UNDER THE POLICY (2026-08-30)
+
+`rope_rail.py` changed the ascender channel from the mesh hull's Ø16 mm bore
+(centre x = −21 mm, pitch −6.4°) to a channel set from renders (x = +15 mm,
+pitch +5°). v3 was trained against the old one. Same policy, same seed, 15 s at
+20°:
+
+| rope_rail | uphill m | rope m | outcome |
+|---|---|---|---|
+| before (v3's own) | +5.61 | +5.82 | STANDING |
+| after (current, shipped) | +5.30 | +5.50 | STANDING |
+
+About 5 % of climb rate, and no change in stability. The harness runs the
+CURRENT rail, because the rail is a shared file and forking it would be worse.
+**The team should know that v3 and the rail have drifted apart**; the fix is the
+retrain already in flight (v7), not a harness change.
+
+### Straight climb — slope × wind, 15 s
+
+`python -m app.harness.chloe_worlds --matrix`. Wind blows straight DOWN the
+slope, through the same `climb_scene.WindParams` law and the same torso body as
+every other world.
+
+| slope | wind m/s | uphill m | rope m | height m | torso up_z | outcome |
+|---|---|---|---|---|---|---|
+| 20° | 0 | 5.30 | 5.50 | 1.81 | +0.94 | STANDING |
+| 20° | 6 | 4.78 | 4.99 | 1.63 | +0.95 | STANDING |
+| 20° | 12 | 3.02 | 3.23 | 1.03 | +0.93 | STANDING |
+| 25° | 0 | 4.22 | 4.51 | 1.78 | +0.96 | STANDING |
+| 25° | 6 | 3.78 | 4.02 | 1.60 | +0.95 | STANDING |
+| 25° | 12 | 1.90 | 2.17 | 0.80 | +0.96 | STANDING |
+
+No falls anywhere in the band. Wind costs climb rate and nothing else, which is
+consistent with her training randomisation (wind 0–15 m/s, random heading).
+
+### THE ONE-WAY STOP — the finding this feature turned up
+
+W released freezes the PD targets and keeps stepping (`AscenderController.go =
+False`). 5 s of climbing, 10 s stopped, 10 s with the gate back on:
+
+| slope | wind | stood 10 s? | rope slide while stopped | uphill drift | pelvis sag | uphill in the 10 s after | total |
+|---|---|---|---|---|---|---|---|
+| 20° | 0 | yes | +0.105 | +0.116 | −0.354 | **−0.04** | 1.65 |
+| 20° | 6 | yes | +0.319 | +0.196 | −0.250 | **+0.22** | 1.80 |
+| 20° | 12 | yes | +0.036 | −0.112 | −0.445 | **+0.06** | 0.68 |
+| 25° | 0 | yes | +0.150 | −0.014 | −0.356 | **+0.07** | 1.23 |
+| 25° | 6 | yes | +0.051 | −0.130 | −0.435 | **+0.10** | 0.98 |
+| 25° | 12 | yes | +0.005 | −0.090 | −0.442 | **+0.08** | 0.30 |
+
+Read it in two halves.
+
+**The stop works.** She never falls, `torso up_z` stays positive in all six
+cells, and the rope slide is **never negative** — the cam does exactly what a
+cam is for, and she cannot slide back down. The pelvis sags 25–45 cm: the
+frozen targets are a mid-stride pose, so she settles into a lean on the line
+rather than standing to attention.
+
+**The resume does not.** In the 10 s after the gate comes back on she climbs
+between −0.04 m and +0.22 m, against the ~3.7 m the same 10 s buys from a clean
+start. She is not stuck in the mechanism — she is stuck in the POLICY: the
+settled lean (torso up_z ~0.55, pelvis ~45 cm below standing height) is a state
+her network never saw. v3 was trained on 15 s episodes that always start from a
+clean reset and always climb; it has no recovery behaviour because it was never
+asked for one.
+
+Three things were tried, and all three change nothing:
+
+1. **The one variant asked for** — blend the frozen targets toward the
+   `rope_rail` reset pose over 0.5 s (`--chloe-hold-blend 0.5`). Resume:
+   −0.07 to +1.41 m; five of six cells still stuck, one (25° / 12 m/s)
+   recovers 1.41 m. Not a fix.
+2. **A shorter stop.** 1 s of hold already costs it: resume +0.19 m. 2 s:
+   −0.06 m. The door closes almost immediately.
+3. **Zeroing `last_action` on resume** instead of feeding the frozen one:
+   identical to four decimal places. The stale action is not the problem; the
+   stale POSE is.
+
+So `--chloe-hold-blend` stays at 0.0 (a pure freeze) because the variant does
+not earn its extra moving part, and the honest description of W on these worlds
+is: **it stops her, and R is what starts her again.** The ask on the `rl/` side
+is a recovery term or a stand-still mode in the training distribution — v7's
+SLIDE/WALK mode bit is the shape that would fix it.
+
+### What the harness does NOT do to her
+
+* **No steering.** `yaw_command_available` is forced False on these worlds and
+  the guide's waist-yaw "neck" hook is NOT registered, whatever `--policy`
+  says. The follower's eyes still render and its stereo range and bearing are
+  real measurements; the guide card's mode pill carries `no steering` beside
+  the mode so the page cannot imply otherwise.
+* **No observation noise, no command.** Her 96-vector is built from `MjData`
+  and the frozen `last_action`, nothing else.
+* **No second ratchet.** `rope_rail.ratchet` is `max(lower_limit, qpos)`, so
+  the controller and the scene may both call it (they do — the controller
+  before the `mj_step` it precedes, the scene before its own) and the result is
+  the same as calling it once. A scene stepped without a controller still
+  ratchets.
+
+### The existing worlds are untouched — measured, same session
+
+| test | worst difference |
+|---|---|
+| `test_search` (guide SEARCH vs the same run without it) | 0.000e+00 — bit-identical |
+| `test_guide` (guide OFF vs guide ON, human walking) | 0.000e+00 — bit-identical |
+| `test_storm` (visibility off vs on) | 0.000e+00 — bit-identical |
+| `test_parity` observation parity vs the JAX env | 1.835e-07 (tolerance 1e-4), PASS |
+
+The only file in the shared path that changed behaviour is
+`export_scene.py`, twice, and both changes are additive: a PLANE geom now
+reports itself as terrain (so a world whose ground is one flat geom still gets
+the page's snow shader and its footprint canvas — no `climb_scene` world has a
+plane, its floor is a heightfield), and `index.json` is now MERGED rather than
+rewritten, so exporting one world no longer empties the map dropdown of the
+other twenty-one.
+
+---
+
 ## GAPS / ASKS
 
 Everything below is either something we could **not** guarantee, or something

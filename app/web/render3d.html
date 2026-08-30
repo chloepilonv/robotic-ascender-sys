@@ -378,6 +378,22 @@ const state = {
   windNow: null, actuatorNames: null, worldKey: 0,
 };
 
+// CHLOE'S WORLDS ARE AUTONOMOUS (`autonomous` in the state message, set by
+// app/harness/chloe_worlds.py). Her mjlab ascender network has no command
+// port: W gates it -- held, the network runs; released, the PD targets freeze
+// and the ascender's cam holds her on the line -- and A, D and the mouse do
+// nothing at all. The key legend has to say so, because a key that looks live
+// and is not is worse than no key.
+let autonomousKeysShown = null;
+function paintAutonomyKeys(frame) {
+  const autonomous = Boolean(frame.autonomous);
+  if (autonomous === autonomousKeysShown) return;
+  autonomousKeysShown = autonomous;
+  $('turnLeftKey').style.display = autonomous ? 'none' : '';
+  $('turnRightKey').style.display = autonomous ? 'none' : '';
+  $('turnLabel').textContent = autonomous ? ' she steers herself ' : ' turn ';
+}
+
 // ---------- HUD (ported verbatim from the retired index.html) ----------
 function paintHud(frame) {
   const climb = Number(frame.rope_travel_meters !== undefined ? frame.rope_travel_meters : (frame.climb_meters || 0));
@@ -402,6 +418,7 @@ function paintHud(frame) {
   noteVisibility(frame.visibility_meters);
   paintBatteryCard(frame);
   paintGuideCard(frame);
+  paintAutonomyKeys(frame);
   const climbing = Number(command[0]) > 0;
   const fell = Boolean(frame.fell);
   const motion = $('motionBadge');
@@ -574,6 +591,15 @@ function paintGuideCard(frame) {
     const phase = document.createElement('em');
     phase.textContent = guide.search_phase;
     pill.appendChild(phase);
+  }
+  // CHLOE'S WORLDS: the follower still SEES -- the distance and bearing below
+  // are a real stereo measurement -- but her ascender network has no command
+  // port, so nothing here aims the robot. The mode is honest about what the
+  // follower wants; this says what it is allowed to do about it.
+  if (frame.autonomous) {
+    const inert = document.createElement('em');
+    inert.textContent = 'no steering';
+    pill.appendChild(inert);
   }
   const distance = Number(guide.distance_meters);
   const truth = Number(guide.true_distance_meters);

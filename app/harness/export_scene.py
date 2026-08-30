@@ -492,7 +492,22 @@ def geom_geometry(model, geom_id, maximum_terrain_triangles):
     size = np.asarray(model.geom_size[geom_id], np.float64)
     types = mujoco.mjtGeom
     if geom_type == types.mjGEOM_PLANE:
-        return plane_mesh(size[0], size[1]) + (None,)
+        # A PLANE IS A TERRAIN TOO. The report is what tells the page which
+        # nodes are ground -- it is what earns the snow/rock/ice shader and
+        # the footprint decal canvas -- and a world whose ground is one flat
+        # geom (Chloe's rope worlds) would otherwise get an untextured slab
+        # and no footprints. Two rows and two columns, no relief: honest for a
+        # plane, and the same shape `heightfield_mesh` returns.
+        half_x = float(size[0]) or INFINITE_PLANE_HALF_EXTENT_METERS
+        half_y = float(size[1]) or INFINITE_PLANE_HALF_EXTENT_METERS
+        report = {
+            "rows": 2, "columns": 2, "stride": 1,
+            "sampled_rows": 2, "sampled_columns": 2, "triangles": 2,
+            "resolution_meters": [2.0 * half_x, 2.0 * half_y],
+            "half_extent_meters": [half_x, half_y],
+            "elevation_meters": 0.0,
+        }
+        return plane_mesh(size[0], size[1]) + (report,)
     if geom_type == types.mjGEOM_HFIELD:
         positions, normals, indices, report = heightfield_mesh(
             model, int(model.geom_dataid[geom_id]), maximum_terrain_triangles)
@@ -558,8 +573,18 @@ def open_world(world_name, plain_graphics=False, with_guide=True):
                        f" have {worlds_module.world_names()}")
     definition = worlds_module.WORLD_DEFINITIONS[world_name]
     look = None
-    if definition["kind"] == "climb_scene":
-        scene, meta, definition = climb_worlds_module.ClimbSceneLibrary().load(world_name)
+    if definition["kind"] in ("climb_scene", "chloe_ascender"):
+        # Chloe's worlds build a different plant behind the same scene surface
+        # (app/harness/chloe_worlds.py), so everything below -- the guide
+        # surgery, the alpine look, the reset, the rope -- is shared verbatim.
+        # Her ground is one PLANE rather than a heightfield; `geom_geometry`
+        # reports a plane as terrain for exactly this reason, so the page still
+        # gets its snow shader and its footprint canvas.
+        if definition["kind"] == "chloe_ascender":
+            from app.harness import chloe_worlds as chloe_worlds_module
+            scene, meta, definition = chloe_worlds_module.ChloeSceneLibrary().load(world_name)
+        else:
+            scene, meta, definition = climb_worlds_module.ClimbSceneLibrary().load(world_name)
         # THE GUIDE'S SURGERY GOES FIRST, exactly as `runtime.open_world` does
         # it. It recompiles the spec and appends the guide's mocap body, which
         # takes nbody from 32 to 33 -- so an export that skipped it would hand
@@ -797,10 +822,40 @@ def main(argv=None):
                       "json": f"/app/harness/scene_assets/{name}.json",
                       "triangles": sidecar["statistics"]["triangles"],
                       "bytes": sidecar["statistics"]["glb_bytes"]})
+    # THE INDEX IS THE MAP DROPDOWN. `render3d.html:listWorlds` shows a world
+    # only if `index.json` names it, so an index rewritten from scratch by a
+    # one-world export silently empties the selector of every other world --
+    # which is exactly what `--world chloe_20` used to do. Merge instead:
+    # worlds exported now replace their row, worlds exported earlier keep
+    # theirs as long as their .glb is still on disk, and a world whose file
+    # has been deleted drops out. `--all` is then a convenience, not a
+    # requirement.
     index_path = os.path.join(arguments.output_directory, "index.json")
     os.makedirs(arguments.output_directory, exist_ok=True)
+    merged = {entry["world"]: entry for entry in index}
+    kept = 0
+    if os.path.exists(index_path):
+        try:
+            with open(index_path) as handle:
+                for entry in json.load(handle).get("scenes", []):
+                    name = entry.get("world")
+                    if name in merged or not name:
+                        continue
+                    if not os.path.exists(os.path.join(arguments.output_directory,
+                                                       f"{name}.glb")):
+                        print(f"[export] index: dropping {name}, its .glb is gone",
+                              flush=True)
+                        continue
+                    merged[name] = entry
+                    kept += 1
+        except (ValueError, OSError) as error:
+            print(f"[export] index unreadable ({error}); writing a fresh one",
+                  flush=True)
     with open(index_path, "w") as handle:
-        json.dump({"scenes": index}, handle, indent=1)
+        json.dump({"scenes": [merged[name] for name in sorted(merged)]},
+                  handle, indent=1)
+    print(f"[export] index.json: {len(index)} written now, {kept} kept from"
+          f" earlier runs, {len(merged)} worlds in the map dropdown", flush=True)
     total = sum(entry["bytes"] for entry in index)
     print(f"[export] {len(index)}/{len(names)} worlds ->"
           f" {arguments.output_directory}  ({total / 1e6:.1f} MB total)", flush=True)
