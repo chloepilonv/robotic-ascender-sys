@@ -234,6 +234,7 @@ _RL_ENV_ALIASES = {
     "G1JoystickWalkDR": "G1JoystickFlatTerrain",
     # 103/216-dim obs, 29 actions: same recipe as G1Joystick.
     "G1ClimbAscender": "G1JoystickFlatTerrain",
+    "G1ClimbTerrain": "G1JoystickFlatTerrain",
 }
 
 def get_rl_config(env_name: str) -> config_dict.ConfigDict:

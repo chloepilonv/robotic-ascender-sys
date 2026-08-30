@@ -25,8 +25,11 @@ PLAYGROUND_IMPORT_ERROR: ImportError | None = None
 
 try:
     from rl.environment import climb_env  # noqa: F401  registers the climb env
+    from rl.environment import climb_terrain_env  # noqa: F401
     from rl.environment import walk_dr_env  # noqa: F401  registers the DR walk env on import
     from rl.environment import wind_env  # noqa: F401  registers the wind envs
+
+    climb_terrain_env.register()  # registers G1ClimbTerrain
 
     # Domain randomizer for --domain_randomization training of G1JoystickWalkDR.
     # The partial pins the DEFAULT dr_config; per-run `--config_overrides` on
