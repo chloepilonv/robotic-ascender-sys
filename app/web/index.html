@@ -42,6 +42,8 @@
   #snow { position: absolute; left: 0; top: 0; display: none; pointer-events: none;
           max-width: none; max-height: none; }
 
+  /* F = fullscreen: only the picture. Overlays go; the paused card and the FELL banner stay so a judge knows what to click. */
+  #stage:fullscreen .hud, #stage:fullscreen .badges, #stage:fullscreen #lookHint, #stage:fullscreen #worldToast { display: none !important; }
   .hud { position: absolute; left: 16px; right: 16px; bottom: 16px; display: flex; gap: 10px; align-items: flex-end;
          pointer-events: none; flex-wrap: wrap; }
   .card { background: rgba(7,12,19,.72); backdrop-filter: blur(7px); border: 1px solid var(--line); border-radius: 11px;
