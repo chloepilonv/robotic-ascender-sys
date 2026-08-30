@@ -642,11 +642,13 @@ function paintGuideSwitch() {
   // boom and the first-person eye are HERS; guide off, they are the robot's again.
   // Set here rather than in the click handler so the runtime's own echo moves the
   // camera too -- a run started with `--guide` opens framed on the hiker.
-  stage.setFollowGuide(guideState.on);
+  stage.setFollowGuide(guideState.on && viewState.onGuide);
+  paintViewMode();
   paintEyeViewVisibility();
 }
 $('guideSwitch').addEventListener('click', () => {
   guideState.on = !guideState.on;
+  viewState.onGuide = true;   // fresh guide session opens framed on her
   paintGuideSwitch();
   paintGuideCard({});
   send({ type: 'knob', name: 'guide', value: guideState.on ? 1 : 0 });
@@ -846,16 +848,69 @@ async function loadClip(name) {
   hearingState.clips.set(name, decoded);
   return decoded;
 }
+// LISTENER-SIDE LOUDNESS: what YOU hear rides the camera (user's ruling,
+// 2026-08-30). Riding the guide you are at the mouth; riding the robot the
+// same shout arrives faint with distance -- which is the point: press P again
+// to stack shouts, or shout louder into the mic. The SIM-side loudness is the
+// clip itself either way; the ear model owns the robot's physics.
+const SHOUT_SOURCE_GAIN = 0.45;       // the guide's voice, quieter than before
+const SHOUT_REFERENCE_METERS = 1.5;   // full loudness inside this radius
+function shoutListenerGain() {
+  try {
+    if (!guideState.on || stage.followGuide) return SHOUT_SOURCE_GAIN;
+    const bodies = stage.world && stage.world.bodies;
+    const guide = (bodies && stage.world.guideIndex >= 0)
+      ? bodies[stage.world.guideIndex] : null;
+    const pelvis = bodies ? bodies[stage.world.pelvisIndex] : null;
+    if (!guide || !pelvis) return SHOUT_SOURCE_GAIN;
+    const distance = guide.position.distanceTo(pelvis.position);
+    return SHOUT_SOURCE_GAIN
+      * Math.min(1, SHOUT_REFERENCE_METERS / Math.max(distance, SHOUT_REFERENCE_METERS));
+  } catch (error) { return SHOUT_SOURCE_GAIN; }
+}
+// SHOUTS STACK (user's ruling): every press adds a voice. ONE mixer owns the
+// MIC0 stream -- overlapping clips are SUMMED into each block, because two
+// independent senders would interleave chunks and garble the word instead of
+// doubling it. The sum is what the ear model hears, so stacked shouts are
+// genuinely louder at the robot's ears. Paced by elapsed time, not tick count
+// (background tabs clamp setInterval to 1 Hz; the runtime's two-second ring
+// absorbs the burst).
+const activeShouts = [];   // { name, mono, cursor, sampleRate }
+let shoutMixerTimer = null, shoutMixerStart = 0, shoutMixerSent = 0;
+function pumpShoutMixer() {
+  const rate = activeShouts.length ? activeShouts[0].sampleRate : MICROPHONE_SAMPLE_RATE_HZ;
+  const owed = Math.floor((performance.now() - shoutMixerStart) / 1000 * rate);
+  while (shoutMixerSent < owed && activeShouts.length) {
+    const block = new Float32Array(MICROPHONE_BLOCK_SAMPLES);
+    for (const shout of activeShouts) {
+      const end = Math.min(shout.cursor + MICROPHONE_BLOCK_SAMPLES, shout.mono.length);
+      for (let source = shout.cursor, target = 0; source < end; source++, target++) {
+        block[target] += shout.mono[source];
+      }
+      shout.cursor = end;
+    }
+    for (let index = 0; index < block.length; index++) {
+      block[index] = Math.max(-1, Math.min(1, block[index]));
+    }
+    shoutMixerSent += MICROPHONE_BLOCK_SAMPLES;
+    sendMicrophoneBlock(block, rate);
+    for (let index = activeShouts.length - 1; index >= 0; index--) {
+      if (activeShouts[index].cursor >= activeShouts[index].mono.length) {
+        activeShouts.splice(index, 1);
+      }
+    }
+  }
+  if (!activeShouts.length) {
+    clearInterval(shoutMixerTimer);
+    shoutMixerTimer = null;
+    paintShoutButtons();
+  }
+}
 async function playShout(name) {
-  if (hearingState.playing) return;
-  hearingState.playing = name;
-  paintShoutButtons();
   let buffer;
   try { buffer = await loadClip(name); }
-  catch (error) { hearingState.playing = null; paintShoutButtons(); return; }
-  // The shout is AUDIBLE in the room at full quality -- this is the guide
-  // speaking, for the judges' ears. The EAR monitor stays the other channel:
-  // the same clip after distance and wind, i.e. what the ROBOT hears.
+  catch (error) { return; }
+  // Audible in the room, from the camera's seat.
   try {
     if (!hearingState.shoutContext) {
       hearingState.shoutContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -863,51 +918,30 @@ async function playShout(name) {
     const shoutSource = hearingState.shoutContext.createBufferSource();
     shoutSource.buffer = buffer;
     const shoutGain = hearingState.shoutContext.createGain();
-    shoutGain.gain.value = 0.8;
+    shoutGain.gain.value = shoutListenerGain();
     shoutSource.connect(shoutGain).connect(hearingState.shoutContext.destination);
     shoutSource.start();
   } catch (error) { /* no speakers is no reason to lose the sim shout */ }
-  // Mixed to mono and PACED IN REAL TIME. Dumping the whole clip in one frame
-  // would overrun the runtime's two-second ring and most of the word would be
-  // dropped before the ear model ever saw it -- and a clip that arrives faster
-  // than real time is not a person speaking.
   const channels = buffer.numberOfChannels;
   const mono = new Float32Array(buffer.length);
   for (let channel = 0; channel < channels; channel++) {
     const data = buffer.getChannelData(channel);
     for (let index = 0; index < mono.length; index++) mono[index] += data[index] / channels;
   }
-  // PACED BY ELAPSED TIME, NOT BY TICK COUNT. A browser clamps setInterval to
-  // 1 Hz in a background or occluded tab, and a one-block-per-tick sender then
-  // takes a hundred and sixty seconds to play a two-second clip -- which is
-  // exactly what a headless screenshot run does, and it wedged the buttons
-  // disabled for the whole session. Sending whatever the wall clock says is
-  // owed puts up to a second of audio into the runtime's two-second ring at
-  // once, which is what the ring is for: the runtime still consumes it 320
-  // samples at a time, so it is heard at the right speed either way.
-  const startedAt = performance.now();
-  let cursor = 0;
-  hearingState.playTimer = setInterval(() => {
-    const owed = Math.floor(
-      (performance.now() - startedAt) / 1000 * buffer.sampleRate);
-    while (cursor < Math.min(owed, mono.length)) {
-      const block = mono.subarray(cursor, cursor + MICROPHONE_BLOCK_SAMPLES);
-      cursor += MICROPHONE_BLOCK_SAMPLES;
-      sendMicrophoneBlock(block, buffer.sampleRate);
-    }
-    if (cursor >= mono.length) {
-      clearInterval(hearingState.playTimer);
-      hearingState.playTimer = null;
-      hearingState.playing = null;
-      paintShoutButtons();
-    }
-  }, 1000 * MICROPHONE_BLOCK_SAMPLES / buffer.sampleRate);
+  if (!activeShouts.length) { shoutMixerStart = performance.now(); shoutMixerSent = 0; }
+  activeShouts.push({ name, mono, cursor: 0, sampleRate: buffer.sampleRate });
+  paintShoutButtons();
+  if (!shoutMixerTimer) {
+    shoutMixerTimer = setInterval(
+      pumpShoutMixer, 1000 * MICROPHONE_BLOCK_SAMPLES / MICROPHONE_SAMPLE_RATE_HZ);
+  }
 }
 function paintShoutButtons() {
-  const busy = Boolean(hearingState.playing);
-  $('shoutPemba').disabled = busy;
-  $('shoutStop').disabled = busy;
-  $('shoutNow').textContent = busy ? '▸ ' + hearingState.playing : '';
+  // Never disabled: stacking is the feature.
+  $('shoutPemba').disabled = false;
+  $('shoutStop').disabled = false;
+  $('shoutNow').textContent = activeShouts.length
+    ? '▸ ' + activeShouts.map(shout => shout.name).join(' + ') : '';
 }
 $('shoutPemba').addEventListener('click', () => playShout(
   PEMBA_CLIPS[Math.floor(Math.random() * PEMBA_CLIPS.length)]));
@@ -1343,7 +1377,16 @@ document.addEventListener('keydown', event => {
     if (document.fullscreenElement) document.exitFullscreen();
     else stageElement.requestFullscreen?.();
   } else if (key === 'v' && !event.repeat) {
-    setViewMode(stage.toggleFirstPerson());
+    if (guideState.on) {
+      // V SWITCHES WHO YOU RIDE (user's ruling, 2026-08-30): guide <-> robot,
+      // spring snapped by setFollowGuide. The 1P/3P pill still toggles first
+      // person on whichever one you are riding.
+      viewState.onGuide = !viewState.onGuide;
+      stage.setFollowGuide(viewState.onGuide);
+      paintViewMode();
+    } else {
+      setViewMode(stage.toggleFirstPerson());
+    }
   } else if (key === 'p' && !event.repeat) {
     triggerShout('shoutPemba');
   } else if (key === 'x' && !event.repeat) {
@@ -1359,8 +1402,15 @@ function triggerShout(identifier) {
 // THIRD PERSON <-> FIRST PERSON. Nothing is sent: the camera the SERVER steers
 // by is the chase camera either way (stage.cameraAzimuthDegrees), so W/S/A/D,
 // the recorded mp4 and the guide follower all carry on exactly as before.
-function setViewMode(firstPerson) {
-  $('viewMode').textContent = firstPerson ? '· 1P' : '· 3P';
+// WHO the camera rides is page state, not stage state: the runtime echoes the
+// guide knob five times a second, and a bare stage flag would be overwritten
+// on the next state frame. The echo path above composes guideState.on with
+// this choice instead.
+const viewState = { onGuide: true };
+function setViewMode(firstPerson) { paintViewMode(); }
+function paintViewMode() {
+  const who = guideState.on ? (stage.followGuide ? ' · guide' : ' · robot') : '';
+  $('viewMode').textContent = (stage.firstPersonEnabled ? '· 1P' : '· 3P') + who;
 }
 $('viewMode').addEventListener('click', () => setViewMode(stage.toggleFirstPerson()));
 
