@@ -26,6 +26,7 @@ wall_x1      = 41.5;      // outer face of the end wall
 hole_d       = 38.95;     // opening in the end wall
 hole_c       = [-3, 0];   // opening centre (y, z)
 include <wrist_outline_x34.scad>
+include <filler_origin.scad>   // conformal filler between the flange face and the curved Petzl back (filler.dat heightfield from the scan)
 outline      = wrist_outline;   // D-outline of the shell at x = 34 (y, z)
 collar_x0    = 30;        // straight part of the shell
 clearance    = 0.3;       // per side, printed part on a plastic shell
@@ -49,7 +50,7 @@ cheek_w      = 26;
 bar_t        = 8;
 arm_y        = 1.2;       // arm centred on the outer cheek (wrist y +1.2); the Petzl plate occupies wrist y −7..−2
 // tool pose in the wrist frame (from g1_unitree_ascender.usd, +8 mm X so the tool clears the flange)
-tool_pos     = [51.11, 0, -51.43];   // USD pose + 12.5 mm X: tool clears the 6 mm flange by 1 mm
+tool_pos     = [50.33, 0, -51.43];   // USD pose + 11.72 mm X: the Petzl head sits 0.2 mm off the flange face
 tool_axis    = [0.22453, 0, 0.97447];   // USD quat (w≈0, xyz=tool_axis) = 180° about this axis
 tool_ang     = 180;
 eye_tool     = [-9, 4.9, 19.4];   // eye centre in the tool frame (plate mid-plane at y = +4.9)
@@ -67,7 +68,11 @@ module along_x(x0, len, pts) { translate([x0, 0, 0]) rotate([90, 0, 90]) linear_
 
 // ── Modules ──────────────────────────────────────────────────────────────────────────────────
 module plug()   { translate([wall_x1 - plug_l, hole_c[0], hole_c[1]]) rotate([0, 90, 0]) cyl(d = plug_d, l = plug_l + 0.5, anchor = BOTTOM); }
-module flange() { along_x(wall_x1, flange_t, outline_out); }
+module flange() {
+    along_x(wall_x1, flange_t, outline_out);
+    // conformal filler: heightfield (mm) sampled from the Petzl scan, surface base 1 mm inside the flange
+    translate([wall_x1 + flange_t - 1, filler_y0, filler_z0]) rotate([90, 0, 90]) surface(file = "filler.dat", convexity = 8);
+}
 module collar() {
     difference() {
         along_x(collar_x0, wall_x1 - collar_x0, outline_out);

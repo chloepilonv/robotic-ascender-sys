@@ -40,7 +40,7 @@ HOLE_TOOL = np.array([-9.0, 4.9, 19.4])     # attachment eye centre in the tool 
 CHEEK_T, CHEEK_W, BAR_T = 6.0, 26.0, 8.0
 ARM_W = 12.0
 ARM_Y = 1.2                   # arm centred on the outer cheek; the Petzl plate occupies wrist y -7..-2
-TOOL_SHIFT_X = PLATE_T + 6.5                 # push the tool out so it clears the face plate
+TOOL_SHIFT_X = PLATE_T + 5.72          # Petzl head 0.2 mm off the flange face                 # push the tool out so it clears the face plate
 
 
 def shell_outline(x_mm=34.0):
