@@ -554,7 +554,7 @@ def run(arguments) -> str:
     # HUMAN GATE (app/safety/human_gate.py). Deterministic, outside the policy:
     # the forward (= up-rope) command is clamped to <= 0 while a human is in the
     # d435i frustum. Humans are virtual (no physics; THEIR model is untouched).
-    human_world = HumanWorld()
+    human_world = HumanWorld.from_model(model)   # virtual unless the model has human_* bodies
     human_gate = HumanGate(
         VirtualFrustumDetector(model, human_world, arguments.human_range),
         clear_after_seconds=arguments.human_clear_seconds)

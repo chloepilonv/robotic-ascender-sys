@@ -72,3 +72,24 @@ def test_torso_fallback_matches_real_camera(sim):
     p_fake, r_fake = fallback.camera_pose(data)
     assert np.allclose(p_real, p_fake, atol=1e-6)
     assert np.allclose(r_real, r_fake, atol=1e-6)
+
+
+def test_model_backed_humans_are_moved_and_seen():
+    from assets.humans.humans import build_scene_with_humans
+    path = os.path.join(os.path.dirname(__file__), "..", "..",
+                        "assets", "robots", "mujoco", "g1_unitree.xml")
+    model, body_ids = build_scene_with_humans(os.path.abspath(path), 1)
+    data = mujoco.MjData(model)
+    mujoco.mj_resetDataKeyframe(model, data, 0)
+    mujoco.mj_forward(model, data)
+    world = HumanWorld.from_model(model)
+    human = world.spawn_ahead_of(data.qpos[0:3], _yaw(data.qpos[3:7]), 1.3)
+    assert human.body_id == body_ids[0]
+    gate = HumanGate(VirtualFrustumDetector(model, world))
+    gate.update(data, 0.0)                       # sync() writes mocap_pos
+    mujoco.mj_forward(model, data)
+    assert np.allclose(data.xpos[body_ids[0]], human.position_world)
+    assert not gate.allow_up()
+    mujoco.mj_resetDataKeyframe(model, data, 0)  # reset parks the body...
+    gate.update(data, 0.1)                       # ...sync puts it back
+    assert np.allclose(data.mocap_pos[model.body_mocapid[body_ids[0]]], human.position_world)

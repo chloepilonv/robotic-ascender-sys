@@ -1,0 +1,36 @@
+<!-- A human to be DETECTED, not simulated: assets/humans/README.md.
+     One mocap body (set data.mocap_pos / mocap_quat to place it), capsule
+     limbs sized to a 1.70 m adult, all geoms in group 3 with the `human`
+     class. Collision is OFF (contype/conaffinity 0): the robot may not walk
+     into a person in the first place -- that is the gate's job -- so a
+     contact response would only hide gate failures behind a physics wall.
+     Detectable by: geom group 3, geom names human_*, body name human. -->
+<mujoco model="human">
+  <compiler angle="degree" />
+  <default>
+    <default class="human">
+      <geom type="capsule" contype="0" conaffinity="0" group="3" rgba="0.85 0.15 0.15 1" />
+    </default>
+  </default>
+  <worldbody>
+    <body name="human" mocap="true" pos="0 0 0">
+      <!-- z origin = ground contact; the torso capsule runs 0.85 -> 1.45 m -->
+      <geom name="human_torso" class="human" fromto="0 0 0.85 0 0 1.45" size="0.16" />
+      <geom name="human_head" class="human" type="sphere" pos="0 0 1.60" size="0.11"
+            rgba="0.9 0.7 0.55 1" />
+      <geom name="human_upper_arm_l" class="human" fromto="0 0.24 1.40 0 0.28 1.10" size="0.05" />
+      <geom name="human_upper_arm_r" class="human" fromto="0 -0.24 1.40 0 -0.28 1.10" size="0.05" />
+      <geom name="human_forearm_l" class="human" fromto="0 0.28 1.10 0.05 0.30 0.82" size="0.045" />
+      <geom name="human_forearm_r" class="human" fromto="0 -0.28 1.10 0.05 -0.30 0.82" size="0.045" />
+      <geom name="human_thigh_l" class="human" fromto="0 0.10 0.85 0 0.11 0.45" size="0.075"
+            rgba="0.15 0.2 0.35 1" />
+      <geom name="human_thigh_r" class="human" fromto="0 -0.10 0.85 0 -0.11 0.45" size="0.075"
+            rgba="0.15 0.2 0.35 1" />
+      <geom name="human_shin_l" class="human" fromto="0 0.11 0.45 0 0.11 0.05" size="0.055"
+            rgba="0.15 0.2 0.35 1" />
+      <geom name="human_shin_r" class="human" fromto="0 -0.11 0.45 0 -0.11 0.05" size="0.055"
+            rgba="0.15 0.2 0.35 1" />
+      <site name="human_center" pos="0 0 0.85" size="0.01" group="5" />
+    </body>
+  </worldbody>
+</mujoco>

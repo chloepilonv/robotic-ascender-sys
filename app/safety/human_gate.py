@@ -7,10 +7,12 @@ cannot live inside a probabilistic network.
 
 Three pieces, kept apart so the sim oracle and the real detector are swappable:
 
-    HumanWorld        the humans we spawn in simulation (positions + a capsule
-                      drawn into the render scene). The compiled MjModel comes
-                      from THEIR env and is never edited, so humans are virtual:
-                      no physics, no collision, only a position and a picture.
+    HumanWorld        the humans we spawn in simulation. If the model carries
+                      mocap humans from assets/humans/human.xml (attached with
+                      assets/humans/humans.py) they are moved into place; if it
+                      does not (THEIR compiled model cannot be re-specced from
+                      here) the humans are virtual: a position and a capsule
+                      drawn into the render scene. Either way: no physics.
     HumanDetector     `detect(data) -> Detection`. Two implementations:
                         VirtualFrustumDetector  sim oracle: projects each human
                                                 into the `d435i` camera frustum
@@ -58,18 +60,36 @@ class Detection:
 class Human:
     position_world: np.ndarray             # (3,) feet on the ground
     name: str = "human"
+    body_id: int = -1                      # >= 0: backed by a mocap body
 
 
 @dataclass
 class HumanWorld:
     """The virtual humans. Positions are world frame, z = ground contact."""
     humans: list = field(default_factory=list)
+    free_body_ids: list = field(default_factory=list)   # unspawned mocap humans
+    model: object = None
+
+    @classmethod
+    def from_model(cls, model: mujoco.MjModel) -> "HumanWorld":
+        """Pick up every `human_*` mocap body the model carries."""
+        ids = [i for i in range(model.nbody)
+               if model.body(i).name.startswith("human_") and model.body_mocapid[i] >= 0]
+        return cls(free_body_ids=ids, model=model)
 
     def spawn(self, position_world, name=None) -> Human:
+        body_id = self.free_body_ids.pop(0) if self.free_body_ids else -1
         human = Human(np.asarray(position_world, dtype=float),
-                      name or f"human_{len(self.humans)}")
+                      name or f"human_{len(self.humans)}", body_id)
         self.humans.append(human)
         return human
+
+    def sync(self, data: mujoco.MjData) -> None:
+        """Write model-backed humans into mocap_pos. Called every tick by the
+        detector, so a reset (mj_resetData parks them) cannot lose them."""
+        for human in self.humans:
+            if human.body_id >= 0:
+                data.mocap_pos[self.model.body_mocapid[human.body_id]] = human.position_world
 
     def spawn_ahead_of(self, root_position_world, root_yaw_radians,
                        distance_meters, lateral_meters=0.0, name=None) -> Human:
@@ -82,6 +102,9 @@ class HumanWorld:
         return self.spawn(position, name)
 
     def clear(self) -> None:
+        for human in self.humans:
+            if human.body_id >= 0:
+                self.free_body_ids.append(human.body_id)
         self.humans.clear()
 
     def centers_world(self) -> np.ndarray:
@@ -93,9 +116,12 @@ class HumanWorld:
         return centers
 
     def draw(self, scene: mujoco.MjvScene, rgba=(0.9, 0.2, 0.2, 0.8)) -> None:
-        """Add one capsule per human to a renderer scene (call after
-        `renderer.update_scene`, before `renderer.render`)."""
-        for center in self.centers_world():
+        """Add one capsule per VIRTUAL human to a renderer scene (call after
+        `renderer.update_scene`, before `renderer.render`). Model-backed humans
+        are already in the scene."""
+        for human, center in zip(self.humans, self.centers_world()):
+            if human.body_id >= 0:
+                continue
             if scene.ngeom >= scene.maxgeom:
                 break
             geom = scene.geoms[scene.ngeom]
@@ -149,6 +175,7 @@ class VirtualFrustumDetector(HumanDetector):
                 body_rot @ CAMERA_OFFSET_ROTATION)
 
     def detect(self, data: mujoco.MjData) -> Detection:
+        self.world.sync(data)
         centers = self.world.centers_world()
         if len(centers) == 0:
             return Detection(seen=False)
