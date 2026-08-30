@@ -737,7 +737,11 @@ const LEVEL_METER_FLOOR_DB = -60;
 // bearing. MANUAL is the default because it needs no permission and a demo
 // should work the moment the page opens.
 const VOICE_CLIP_DIRECTORY = '/app/web/sounds/voice/';
-const PEMBA_CLIPS = ['pemba_1.mp3', 'pemba_2.mp3', 'pemba_3.mp3', 'pemba_4.mp3'];
+// Only the takes the ear model hears with margin (measured 2026-08-30 at
+// 6 m / 45deg through hear_clip: bearing confidence 0.52 and 0.66 vs the 0.25
+// gate; pemba_1/pemba_3 sit at 0.07/0.21 in calm air and would leave the robot
+// in LISTENING). The quiet takes stay in the corpus and the tests.
+const PEMBA_CLIPS = ['pemba_2.mp3', 'pemba_4.mp3'];
 const STOP_CLIP = 'stop_1.mp3';
 const hearingState = { on: false, mode: 'manual', micLive: false, context: null,
                        stream: null, node: null, source: null,
