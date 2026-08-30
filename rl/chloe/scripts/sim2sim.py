@@ -71,6 +71,7 @@ def main() -> None:
   slide = m.joint("robot/rope_slide").id
   s_q, s_d = m.jnt_qposadr[slide], m.jnt_dofadr[slide]
   carrier = m.body("robot/rope_carriage").id
+  anchor = m.site("robot/ascender_anchor").id
   torso = m.body("robot/torso_link").id
   g_dir = m.opt.gravity / np.linalg.norm(m.opt.gravity)
   wind_f = 0.5 * 0.55 * 1.0 * 0.45 * args.wind**2
@@ -102,7 +103,8 @@ def main() -> None:
       d.qpos[s_q] = max(d.qpos[s_q], prev)
     step += 1
     if step % 50 == 0:
-      print(f"t={d.time:5.1f}s x={d.qpos[0]:+.2f} z={d.qpos[2]:.2f} rope={d.qpos[s_q]:+.2f} m")
+      gap = np.linalg.norm(d.site_xpos[anchor] - d.xpos[carrier])
+      print(f"t={d.time:5.1f}s x={d.qpos[0]:+.2f} z={d.qpos[2]:.2f} rope={d.qpos[s_q]:+.2f} m  channel-rope gap={gap*100:.1f} cm")
     if viewer is not None:
       viewer.sync()
       time.sleep(max(0.0, d.time - (time.time() - t0)))

@@ -49,11 +49,36 @@ CARRIER_MASS = 0.05
 BASE_JOINT_POS = dict(g1.KNEES_BENT_KEYFRAME.joint_pos)
 
 
-def _wrist_pos_in_reset_pose(spec: mujoco.MjSpec, slope_deg: float) -> np.ndarray:
-  """World position of the wrist origin in the reset pose used by get_robot_cfg."""
-  model = spec.compile()
-  data = mujoco.MjData(model)
-  init = get_robot_cfg(slope_deg).init_state
+ASCENDER_MESH = REPO_ROOT / "assets/robots/mujoco/meshes/ascender_collision.obj"
+RIGHT_WRIST = ("right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint")
+
+
+def ascender_channel(model: mujoco.MjModel) -> tuple[np.ndarray, np.ndarray]:
+  """(channel centre, channel axis) of the ascender in the wrist-link frame.
+
+  The rope runs through the middle of the tool: bounding-box centre of the
+  collision mesh, mapped through the mount pose on `right_wrist_yaw_link`
+  (same definition as app/harness/robot_variants.py). The channel axis is the
+  tool-frame Z (cam head up).
+  """
+  wb = model.body(WRIST_BODY).id
+  gid = next(
+    i for i in range(model.ngeom)
+    if model.geom_bodyid[i] == wb
+    and model.geom_type[i] == mujoco.mjtGeom.mjGEOM_MESH
+    and "ascender_collision" in model.mesh(model.geom_dataid[i]).name
+  )
+  verts = np.array(
+    [list(map(float, l.split()[1:4])) for l in open(ASCENDER_MESH) if l.startswith("v ")]
+  )
+  centre_mesh = (verts.min(0) + verts.max(0)) / 2
+  rot = np.zeros(9)
+  mujoco.mju_quat2Mat(rot, model.geom_quat[gid])
+  rot = rot.reshape(3, 3)
+  return model.geom_pos[gid] + rot @ centre_mesh, rot @ np.array([0.0, 0.0, 1.0])
+
+
+def _set_pose(model, data, init) -> None:
   data.qpos[:3] = init.pos
   data.qpos[3:7] = init.rot
   for j in range(model.njnt):
@@ -64,7 +89,42 @@ def _wrist_pos_in_reset_pose(spec: mujoco.MjSpec, slope_deg: float) -> np.ndarra
       if re.fullmatch(pat, name):
         data.qpos[model.jnt_qposadr[j]] = val
   mujoco.mj_forward(model, data)
-  return data.xpos[model.body(WRIST_BODY).id].copy()
+
+
+def _solve_wrist(model, data, base_joint_pos: dict) -> dict:
+  """Wrist roll/pitch/yaw that make the channel axis parallel to the rope (+x)."""
+  from scipy.optimize import minimize
+
+  wb = model.body(WRIST_BODY).id
+  _, axis_link = ascender_channel(model)
+  adr = [model.jnt_qposadr[model.joint(n).id] for n in RIGHT_WRIST]
+  lo = [model.jnt_range[model.joint(n).id][0] * 0.9 for n in RIGHT_WRIST]
+  hi = [model.jnt_range[model.joint(n).id][1] * 0.9 for n in RIGHT_WRIST]
+
+  def cost(q):
+    data.qpos[adr] = q
+    mujoco.mj_forward(model, data)
+    axis_w = data.xmat[wb].reshape(3, 3) @ axis_link
+    return (1.0 - axis_w[0]) + 0.02 * float(np.sum(q**2))
+
+  res = minimize(cost, np.zeros(3), bounds=list(zip(lo, hi)), method="L-BFGS-B")
+  data.qpos[adr] = res.x
+  mujoco.mj_forward(model, data)
+  return {n: float(v) for n, v in zip(RIGHT_WRIST, res.x)}
+
+
+def _channel_pose_in_reset(spec: mujoco.MjSpec, slope_deg: float):
+  """World position of the ascender channel centre in the reset pose (wrist solved)."""
+  model = spec.compile()
+  data = mujoco.MjData(model)
+  init = get_robot_cfg(slope_deg).init_state
+  _set_pose(model, data, init)
+  wb = model.body(WRIST_BODY).id
+  grip_link, axis_link = ascender_channel(model)
+  rot = data.xmat[wb].reshape(3, 3)
+  grip_w = data.xpos[wb] + rot @ grip_link
+  axis_w = rot @ axis_link
+  return grip_link, grip_w, axis_w
 
 
 def get_spec(slope_deg: float = 0.0) -> mujoco.MjSpec:
@@ -85,11 +145,13 @@ def get_spec(slope_deg: float = 0.0) -> mujoco.MjSpec:
         geom.name = f"{side}_foot_{k}"
         k += 1
 
-  spec.body(WRIST_BODY).add_site(name="ascender_anchor", pos=[0, 0, 0], group=5)
-  wrist0 = _wrist_pos_in_reset_pose(spec, slope_deg)
+  grip_link, wrist0, axis_w = _channel_pose_in_reset(spec, slope_deg)
+  assert axis_w[0] > 0.99, f"ascender channel not aligned with the rope: {axis_w}"
+  # Anchor = the ascender's rope channel (not the wrist origin).
+  spec.body(WRIST_BODY).add_site(name="ascender_anchor", pos=grip_link.tolist(), group=5)
   wb = spec.worldbody
 
-  # Visual rope: a static cylinder along +x through the rest wrist position.
+  # Visual rope: a static cylinder along +x through the ascender channel at reset.
   rope = wb.add_body(name=ROPE_BODY, pos=wrist0)
   rope_geom = rope.add_geom(
     name="rope_geom",
@@ -150,11 +212,30 @@ def gravity_for_slope(slope_deg: float) -> tuple[float, float, float]:
   return (-9.81 * math.sin(s), 0.0, -9.81 * math.cos(s))
 
 
+_WRIST_CACHE: dict[float, dict] = {}
+
+
+def _wrist_pose(slope_deg: float, joint_pos: dict, rot) -> dict:
+  if slope_deg not in _WRIST_CACHE:
+    spec = mujoco.MjSpec.from_file(str(G1_ASCENDER_XML))
+    for act in list(spec.actuators):
+      spec.delete(act)
+    for key in list(spec.keys):
+      spec.delete(key)
+    model = spec.compile()
+    data = mujoco.MjData(model)
+    _set_pose(model, data, EntityCfg.InitialStateCfg(pos=(0, 0, 0.8), rot=rot, joint_pos=joint_pos))
+    _WRIST_CACHE[slope_deg] = _solve_wrist(model, data, joint_pos)
+  return _WRIST_CACHE[slope_deg]
+
+
 def get_robot_cfg(slope_deg: float) -> EntityCfg:
   joint_pos = dict(BASE_JOINT_POS)
   # Facing uphill the ankles dorsiflex by the slope angle (soft limit -0.87 rad).
   joint_pos[".*_ankle_pitch_joint"] = max(-0.85, -0.363 - math.radians(slope_deg))
   joint_pos[SLIDE_JOINT] = 0.0
+  # Wrist angles that put the ascender channel parallel to the rope.
+  joint_pos.update(_wrist_pose(slope_deg, dict(joint_pos), slope_quat(slope_deg)))
   init = EntityCfg.InitialStateCfg(
     pos=(0.0, 0.0, 0.80),
     rot=slope_quat(slope_deg),

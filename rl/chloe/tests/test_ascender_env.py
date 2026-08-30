@@ -29,8 +29,8 @@ def main() -> None:
   assert act_dim == 29, act_dim
 
   m = env.sim.mj_model
-  wrist = m.body("robot/right_wrist_yaw_link").id
-  carrier = m.body("robot/rope_carriage").id
+  anchor = m.site("robot/ascender_anchor").id  # the ascender's rope channel
+  carrier = m.site("robot/carrier_anchor").id
   sp = jn.index("right_shoulder_pitch_joint")
   hist, gaps, resets = [], [], []
   for t in range(150):
@@ -40,7 +40,7 @@ def main() -> None:
     resets.append(bool(term[0] | trunc[0]))
     d = env.sim.data
     hist.append(float(d.qpos[0, env._slide_qadr]))
-    gaps.append((d.xpos[0, wrist] - d.xpos[0, carrier]).norm().item())
+    gaps.append((d.site_xpos[0, anchor] - d.site_xpos[0, carrier]).norm().item())
     if t in (0, 30, 59, 90, 149):
       print(
         f"t={t:3d} slide={hist[-1]:+.3f} gap={gaps[-1]:.4f} "
