@@ -897,6 +897,90 @@ properties of the team's walking policy in these scenes, not of this layer:
 
 ---
 
+## Snow and footprints -- visual only, and here is the proof
+
+`app/harness/snow.py`. The terrain wears a procedural snow texture and keeps the
+footprints the robot leaves in it.
+
+**THE PHYSICS CLAIM.** Three things change on the compiled model: one texture is
+added, one material is added, and the terrain geom's `matid` points at it. None
+of the three is read by the solver -- MuJoCo's contact model knows about
+`geom_friction`, `geom_solref`, `condim` and the collision bitmasks, not about
+what a surface looks like -- and the HEIGHTFIELD IS NEVER EDITED, so the ground
+the feet actually touch is the same ground. The spec recompile is guarded the
+same way `graphics.add_skybox` and the guide's surgery are: `nq nv nu nbody njnt
+neq ngeom nsite nsensor nkey`, every joint address, every actuator target, every
+body mass, and additionally every geom's `friction`, `contype` and `conaffinity`
+are compared before and after, and the swap is refused if any of them moved.
+Measured on `flat_0`: **all 17 fields unchanged**.
+
+MEASURED, not asserted. Two 6 s runs, same seed, same world, `--hold-w`, one
+with the snow and one with `--no-snow`:
+
+    python -m app.harness.runtime --world flat_0 --duration 6 --hold-w \
+        --no-render --keep-going --seed 0 --output-name paritytest_snow
+    python -m app.harness.runtime --world flat_0 --duration 6 --hold-w \
+        --no-render --keep-going --seed 0 --no-snow --output-name paritytest_nosnow
+
+300 ticks, **39 recorded arrays compared, max absolute difference 0.000e+00** --
+bit-identical, joint angles, contact forces, rope force and all. Both runs also
+counted the same 18 footsteps.
+
+**Which footprint path was used.** The TEXTURE path, not the geom-pool fallback.
+`mujoco.Renderer` exposes `_mjr_context` and `_gl_context`, and
+`mjr_uploadTexture` replaces a texture in a live context, so a print is written
+into `model.tex_data` (through a reshaped numpy VIEW of it -- a slice of that
+buffer is a view, which turns a repaint into one vectorised assignment instead of
+a loop over rows) and pushed. The world-to-texel map is exact rather than
+approximate: the material carries `texrepeat 1 1` with `texuniform` off, so the
+texture maps once across the heightfield, and world x is de-sloped by the same
+three fixed-point passes `terrain.surface_z` uses before it is normalised. It was
+verified by painting a marker at a computed texel and rendering top-down before a
+single footprint was written.
+
+**The fade, and why it is cheap.** A separate alpha channel holds the prints;
+`live = base blended toward the shadow colour by alpha` is recomputed from
+`base` every time, never from the previous frame, so repeated fading cannot
+ratchet the snow grey. Fading is one multiply of the alpha over the union
+rectangle of the live prints, every 3 seconds. A ring buffer caps the live
+prints at 400 and erases the oldest outright.
+
+**Costs, per 50 Hz control tick, measured on this machine** (`lhotse_B`,
+25 x 15 m, texture 1600 x 960 = 4.6 MB):
+
+| step | cost |
+|---|---|
+| paint a print (only on a landing) | 0.04 ms mean, 0.90 ms worst |
+| the fade pass (every 3 s) | 0.002 ms mean, 0.22 ms worst |
+| `mjr_uploadTexture`, main context only | 3.69 ms per upload -> 0.44 ms/tick at 6 Hz |
+| `mjr_uploadTexture`, main + the guide's eye context | 6.28 ms per upload -> **0.75 ms/tick** at 6 Hz |
+
+The upload is the whole cost of the feature, and it is the RESOLUTION that sets
+it, because `mjr_uploadTexture` replaces the entire texture: at 80 texels/m the
+same patch is a 7.2 MB texture and 6.52 ms for the pair of contexts. 64 texels/m
+still gives a 17 x 8 texel footprint, which reads as a print at demo distance,
+and 6 Hz instead of 10 means a print appears at most 170 ms after the foot lands.
+`--no-snow` removes all of it.
+
+**A note on the realtime numbers.** The live realtime factor could not be
+measured cleanly for this change: three agents were running on this laptop and
+the SAME configuration measured 0.99 and 0.85 an hour apart with no code change
+at all. The per-tick costs above are the reproducible statement; against them,
+the snow is +0.8 ms on a 20 ms tick.
+
+**The `foot_steps` protocol.** A landing is a foot geom gaining contact with the
+terrain geom after at least two ticks with none -- the debounce matters, because
+a scuffing foot makes and breaks contact several times a second and would
+machine-gun both the sound and the paint. Feet are identified by geom id from
+`meta["foot_geom_ids"]`, grouped by owning body, and labelled left/right off the
+body name (falling back to the sign of its y offset), so nothing here breaks when
+the robot's foot contacts change from four spheres to one box. Impact speed is
+the foot's own downward speed on the last tick it was still airborne, differenced
+from its world height -- the number a sound engine wants, and one that no longer
+exists once contact does.
+
+---
+
 ## GAPS / ASKS
 
 Everything below is either something we could **not** guarantee, or something

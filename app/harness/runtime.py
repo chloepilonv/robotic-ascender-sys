@@ -65,6 +65,7 @@ from app.harness import worlds as worlds_module  # noqa: E402
 from app.harness import climb_worlds as climb_worlds_module  # noqa: E402
 from app.harness import graphics as graphics_module  # noqa: E402
 from app.harness import guide as guide_module  # noqa: E402
+from app.harness import snow as snow_module  # noqa: E402
 from app.harness.natural_wind import NaturalWind  # noqa: E402
 sys.path.insert(0, os.path.join(  # human-safety/ is a program, not a package
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "human-safety"))
@@ -425,6 +426,11 @@ def run(arguments) -> str:
             # back dark. `add_skybox` survives either order because a texture
             # lives in the spec, but the ordering rule is the same for both.
             guide_module.attach_guide(scene)
+            # Snow next, and for the same reason: it adds a texture and a
+            # material to the spec and recompiles, so it has to happen before
+            # anything writes to the compiled model.
+            if not (arguments.plain_graphics or arguments.no_snow):
+                snow_module.attach_snow(scene, seed=arguments.seed)
             # Dress the scene BEFORE the episode binds to it: `add_skybox`
             # recompiles the spec, so it must happen while nothing holds a
             # reference to the old model or data. It verifies the swap and
@@ -515,6 +521,31 @@ def run(arguments) -> str:
         return system, gate
 
     guide_system, guide_gate = make_guide(scene, model, episode)
+
+    # SNOW AND FOOTPRINTS (app/harness/snow.py). Visual only: the texture is
+    # painted, the heightfield never is. The touchdown detector that stamps the
+    # prints is the SAME one that counts steps and feeds the page's `foot_steps`
+    # events, so a sound, a print and the counter can never disagree about what
+    # a step is -- and it runs even when the snow texture is off, because the
+    # audio does not depend on the picture.
+    def make_snow(current_scene, current_model, current_meta):
+        ground = (snow_module.SnowGround(current_scene, seed=arguments.seed,
+                                         verbose=False)
+                  if current_scene is not None else None)
+        if ground is not None and not ground.available:
+            ground = None
+        detector = None
+        if current_meta.get("foot_geom_ids") is not None and \
+                "terrain_geom_id" in current_meta:
+            detector = snow_module.TouchdownDetector(
+                current_model, current_meta["foot_geom_ids"],
+                current_meta["terrain_geom_id"])
+            print(f"[snow] touchdowns from {detector.describe()};"
+                  f" footprints {'ON' if ground is not None else 'OFF'}",
+                  flush=True)
+        return ground, detector
+
+    snow_ground, touchdowns = make_snow(scene, model, meta)
     if server is not None:
         server.knobs["guide"] = 1.0 if arguments.guide else 0.0
     print(f"[guide] {'available' if guide_system.available else 'NOT available'}"
@@ -641,6 +672,7 @@ def run(arguments) -> str:
                     # of the new spawn.
                     guide_system.close()
                     guide_system, guide_gate = make_guide(scene, model, episode)
+                    snow_ground, touchdowns = make_snow(scene, model, meta)
                     if not arguments.no_render and model is not rendered_model:
                         # The GL context is NOT garbage collected, and it is
                         # bound to the model it was made for. Two worlds that
@@ -666,6 +698,8 @@ def run(arguments) -> str:
                 server.reset_requested = False
                 episode.reset()
                 guide_system.place(episode.spawn_position_world)
+                if snow_ground is not None:
+                    snow_ground.reset()
                 wall_start = time.time()
                 continue
         else:
@@ -705,8 +739,28 @@ def run(arguments) -> str:
             header["wind"].append({"time_seconds": row["time_seconds"],
                                    "wind_velocity_world_meters_per_second": wind_list})
             last_logged_wind = wind_list
+        # TOUCHDOWNS. Read after the step, from the solver's own contacts:
+        # each landing stamps a print, counts a step, and becomes one
+        # `foot_steps` event on the wire. Painting is ~0.06 ms and only happens
+        # on a landing; the GPU upload is throttled and lives below, next to
+        # the renderers it has to push to.
+        foot_steps = []
+        if touchdowns is not None:
+            for landing in touchdowns.update(episode.data, 1.0 / episode.control_hz):
+                foot_steps.append({"foot": landing["foot"],
+                                   "impact_speed_mps": landing["impact_speed_mps"]})
+                if snow_ground is not None:
+                    snow_ground.paint_footprint(
+                        float(landing["position_world"][0]),
+                        float(landing["position_world"][1]),
+                        landing["yaw_radians"])
+        if snow_ground is not None:
+            snow_ground.decay(row["time_seconds"])
+
         recorder.append(**{k: v for k, v in row.items() if k != "observation"})
         recorder.append(**guide_system.recorded())
+        recorder.append(step_count=float(
+            touchdowns.step_count if touchdowns is not None else 0))
         recorder.append_bms(episode.latest_bms)
 
         jpeg = None
@@ -737,6 +791,15 @@ def run(arguments) -> str:
                           " numeric rows keep recording, episode.mp4 stops here",
                           flush=True)
 
+        # One upload per changed texture per context, at most UPLOAD_HZ. Each
+        # renderer holds its own GPU copy, so the eye cameras need it too or the
+        # robot would look at snow with no prints in it.
+        if snow_ground is not None:
+            contexts = [renderer] if renderer is not None else []
+            if guide_system.available and guide_system.eyes.renderer is not None:
+                contexts.append(guide_system.eyes.renderer)
+            snow_ground.upload(contexts, row["time_seconds"])
+
         elapsed = max(time.time() - wall_start, 1e-9)
         realtime_factor = row["time_seconds"] / elapsed
 
@@ -764,6 +827,11 @@ def run(arguments) -> str:
                 # either way, so the page needs no new case.
                 **gate.state(),
                 "guide": guide_system.state(),
+                # Landings that happened on THIS tick (usually none), and the
+                # running total. The page plays one crunch per event, at a
+                # volume set by the impact speed.
+                "foot_steps": foot_steps,
+                "step_count": int(touchdowns.step_count) if touchdowns else 0,
                 "fell": bool(row["fell"]),
                 "fall_reason": episode.fall_reason,
                 "root_position_world": row["root_position_world"].tolist(),
@@ -850,6 +918,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--randomise-reset-velocity", action="store_true",
                         help="reproduce their reset base-velocity draw U(-0.5, 0.5)")
     parser.add_argument("--no-render", action="store_true")
+    parser.add_argument("--no-snow", action="store_true",
+                        help="skip the procedural snow texture and its"
+                             " footprints. Visual only either way; physics is"
+                             " identical, and PARITY.md has the same-seed diff"
+                             " that says so.")
     parser.add_argument("--guide", action="store_true",
                         help="start with the human guide ON: a guide walks the"
                              " rope route and the robot follows it by stereo"

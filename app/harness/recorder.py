@@ -41,6 +41,11 @@ HUD_FIELD_NAMES = [
     # `JSON.parse` in the browser rejects outright.
     "guide_mode", "guide_distance_meters", "guide_true_distance_meters",
     "guide_human_progress_meters",
+    # The running number of foot landings (app/harness/snow.py's touchdown
+    # detector -- the same one that stamps footprints and fires the page's
+    # `foot_steps` sound events, so a replay's step count is the same count the
+    # live session heard).
+    "step_count",
 ]
 
 

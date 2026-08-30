@@ -125,6 +125,34 @@ The guide is available on the **ClimbScene** worlds only. The four `legacy_*`
 worlds hand back a compiled model with no `MjSpec`, so there is nothing to add
 the body and the cameras to, and the feature turns itself off there.
 
+## Snow, and footprints in it (`app/harness/snow.py`)
+
+The terrain wears a procedurally generated snow texture -- metre-scale drifts,
+centimetre-scale wind grain, the odd sparkling crystal -- instead of a flat grey
+sheet. Every time a foot lands, an elliptical print (26 x 12 cm, turned to the
+foot's own yaw, soft-edged) is painted into that texture's pixels and pushed to
+the GPU with `mjr_uploadTexture`, so the robot leaves a trail behind it that
+fades away over about half a minute.
+
+**None of it touches physics.** The heightfield is never edited; what changes is
+a texture, a material and the terrain geom's `matid`, none of which the solver
+reads. Proven, not asserted: two 6 s same-seed runs with and without
+`--no-snow` come back **bit-identical across all 39 recorded arrays** (PARITY.md).
+
+The same landing detection does three jobs, which is why they cannot disagree:
+it stamps the print, it increments `step_count`, and it puts a `foot_steps`
+event on the websocket -- `[{"foot": "left"|"right", "impact_speed_mps": f}]`,
+empty on almost every tick -- so the page can play one snow crunch per step at a
+volume set by how hard the foot came down. A landing is a foot gaining terrain
+contact after at least two ticks in the air; without that debounce a scuffing
+foot machine-guns. `hud.json` records `step_count`, so a replay counts the same
+steps the live session heard.
+
+Costs, measured: painting 0.04 ms per control tick, the fade 0.002 ms, the GPU
+upload 0.75 ms (6 Hz, a 4.6 MB texture, pushed to both the main and the eye
+contexts). `--no-snow` turns the texture and the prints off; the step events
+stay, because the sound does not depend on the picture.
+
 ## The ClimbScene worlds
 
 `app/harness/climb_worlds.py` calls `climb_scene.build_scene(...)` and drives
