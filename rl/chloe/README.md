@@ -122,6 +122,16 @@ Name = `<task>_<version>_<HF run timestamp>`; the timestamp is the run folder on
 | `g1_ascender_slope20_SMOKE_2026-08-30_02-46-13` | 20 iterations | old | random, falls | plumbing tests only |
 | `g1_ascender_slope20_v1_2026-08-30_02-47-06` | 3000 iterations | **old** (rope at the wrist joint, soft attachment) | climbed in its own world; **falls on the fixed rope** | record only — do not demo |
 | **`g1_ascender_slope20_v3_2026-08-30_04-35-59`** | 3000 iterations | **final** = `assets/robots/mujoco/rope_rail.py` | climbs: ~0.3 m/s uphill, ascender pushed 3–4 m in 10 s, no falls (4/4 envs with wind+ice DR); sim2sim +4.4 m in 12 s, standing | **the demo policy** → `sim2sim.py`, deployment |
+| `g1_ascender_slope20_v7_2026-08-30_17-16-35` | 3000 iterations | final | mode FSM (SLIDE → WALK); obs carries the mode bit, so it is **not** interchangeable with the 96-dim policies | the rhythm experiment |
+| `g1_ascender_slope20_dr_probe_2026-08-30_21-01-04` | 4400 iterations (resumed from Mrinal's 3900) | final | first policy trained on the **wider sensor-error model** — per-episode observation bias, randomised joint friction, split PD gains. Holds 718/750 mean episode length with the harder randomisation on | comparing against v3 to see what the guardrails cost |
+
+Rendering one to video without a display (`play_mjlab` opens a viewer and blocks
+headless):
+
+```bash
+python -m rl.chloe.scripts.render_video Himalayas-Ascender-Slope20-G1 \
+    rl/chloe/policies/g1_ascender_slope20_dr_probe_2026-08-30_21-01-04.pt climb.mp4 --seconds 12
+```
 
 **Rule: a policy is only valid with the rope model it was trained on.** The network's inputs (wrist
 position, joint angles) change meaning when the rope/anchor moves, so any change to `rope_rail.py`
