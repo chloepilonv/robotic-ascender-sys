@@ -143,7 +143,7 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
     "ascender_pos_b": ObservationTermCfg(
       func=mdp.ascender_pos_b, params={"asset_cfg": mdp.CARRIER}
     ),
-    "climb_mode": ObservationTermCfg(func=mdp.climb_mode),
+    # "climb_mode": ObservationTermCfg(func=mdp.climb_mode),  # disabled: no mode FSM
   }
   critic_terms = {
     **actor_terms,
@@ -253,10 +253,10 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
 
   rewards = {
     "uphill_velocity": RewardTermCfg(
-      func=mdp.mode_uphill_velocity, weight=4.0, params={"target": 0.3, "std": 0.3}
+      func=mdp.uphill_velocity, weight=4.0, params={"target": 0.3, "std": 0.3}
     ),
     "ascender_progress": RewardTermCfg(  # rope = support, not propulsion (weight < uphill)
-      func=mdp.mode_ascender_progress, weight=0.5, params={"asset_cfg": mdp.SLIDE}
+      func=mdp.ascender_progress, weight=0.5, params={"asset_cfg": mdp.SLIDE}
     ),
     "rope_tension": RewardTermCfg(
       func=mdp.rope_tension_band, weight=0.5, params={"lo": 20.0, "hi": 150.0}
@@ -269,9 +269,9 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
       weight=0.2,
       params={"targets": mdp.HIKE_POSE, "std": 0.4},
     ),
-    "stillness": RewardTermCfg(
-      func=mdp.stillness, weight=-0.01, params={"asset_cfg": G1_JOINTS}
-    ),
+    # "stillness": RewardTermCfg(  # mode-dependent, disabled with climb_mode
+    #   func=mdp.stillness, weight=-0.01, params={"asset_cfg": G1_JOINTS}
+    # ),
     "upright": RewardTermCfg(
       func=vel_mdp.upright,
       weight=1.0,
