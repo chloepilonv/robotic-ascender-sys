@@ -31,7 +31,7 @@ fi
 
 .venv/bin/python -m rl.chloe.scripts.train_mjlab_ppo "$TASK" --agent.max-iterations "$ITERS" ${EXTRA_ARGS:-} "${RESUME_ARGS[@]}"
 
-RUN=$(ls -d logs/rsl_rl/g1_ascender_slope*/*/ | sort | tail -1)
+RUN=$(ls -d logs/rsl_rl/*/*/ | sort | tail -1)
 CKPT=$(ls "$RUN"/model_*.pt | sort -V | tail -1)
 .venv/bin/python -m rl.chloe.scripts.export_onnx "$TASK" "$CKPT" "$RUN/policy.onnx" || echo "export failed (non-fatal)"
 hf upload "$HF_REPO" "$RUN" "$TASK/$(basename "$RUN")" --include "model_*.pt" --include "policy.onnx" --include "*.tfevents*"
