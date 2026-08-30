@@ -7,6 +7,7 @@ to `MjData`, never to their model.
 
     name        slope   rope   what it shows
     climb_30    30 deg  on     the training task: slope + fixed line
+    climb_5/8/10/12     on     the gentle ladder, same env at smaller slope_deg
     free_30     30 deg  OFF    can the walker handle the slope WITHOUT the rope?
     free_0       0 deg  OFF    the stock mels flat-walking baseline
     climb_0      0 deg  on     what the grip alone costs a walker, no slope
@@ -56,6 +57,34 @@ WORLD_DEFINITIONS = {
         "config_overrides": {"climb_config.slope_deg": 30.0},
         "description": "The training task: 30 degree slope, right palm on the"
                        " fixed line through the ascender.",
+    },
+    "climb_5": {
+        "label": "Climb 5° · rope",
+        "slope_degrees": 5.0,
+        "rope": True,
+        "config_overrides": {"climb_config.slope_deg": 5.0},
+        "description": "5 degree slope with the fixed line: the gentle end of the ladder.",
+    },
+    "climb_8": {
+        "label": "Climb 8° · rope",
+        "slope_degrees": 8.0,
+        "rope": True,
+        "config_overrides": {"climb_config.slope_deg": 8.0},
+        "description": "8 degree slope with the fixed line: the gentle end of the ladder.",
+    },
+    "climb_10": {
+        "label": "Climb 10° · rope",
+        "slope_degrees": 10.0,
+        "rope": True,
+        "config_overrides": {"climb_config.slope_deg": 10.0},
+        "description": "10 degree slope with the fixed line: the gentle end of the ladder.",
+    },
+    "climb_12": {
+        "label": "Climb 12° · rope",
+        "slope_degrees": 12.0,
+        "rope": True,
+        "config_overrides": {"climb_config.slope_deg": 12.0},
+        "description": "12 degree slope with the fixed line: the gentle end of the ladder.",
     },
     "free_30": {
         "label": "Free walk 30° · no rope",
