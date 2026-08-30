@@ -721,14 +721,48 @@ def _add_eye_cameras(spec, model, verbose=True) -> bool:
     source_id = mujoco.mj_name2id(
         model, mujoco.mjtObj.mjOBJ_CAMERA, SOURCE_CAMERA_NAME)
     if source is None or source_id < 0:
-        print(f"[guide] no {SOURCE_CAMERA_NAME!r} camera in the model: the eyes"
-              " cannot be mounted, the guide stays off", flush=True)
-        return False
-
-    parent = source.parent
-    position = np.asarray(model.cam_pos[source_id], dtype=float)
-    quaternion = np.asarray(model.cam_quat[source_id], dtype=float)
-    fovy = float(model.cam_fovy[source_id])
+        # The BARE playground G1 (menagerie) ships without the RealSense the
+        # real robot carries. Mount one at the jacketed model's exact pose
+        # (assets/robots/mujoco/g1_unitree_ascender.xml: pos 0.0789635 0 0.386,
+        # xyaxes "0 -1 0  0 0 1", fovy 58) so the eyes -- and with them the
+        # guide and the hearing demo -- work on the stock robot too
+        # (user ruling 2026-08-30: flat_free carries the stock G1). A camera
+        # is visual-only: MuJoCo integrates nothing from it.
+        torso = None
+        for body in spec.bodies:
+            if body.name == "torso_link":
+                torso = body
+                break
+        if torso is None:
+            print(f"[guide] no {SOURCE_CAMERA_NAME!r} camera and no"
+                  " 'torso_link' to mount one on: the guide stays off",
+                  flush=True)
+            return False
+        # xyaxes "0 -1 0  0 0 1": camera x (image right) = -world-y of the
+        # torso, y (image up) = +z, so z (out the back) = x cross y = -x.
+        rotation_columns = np.array([[0.0, 0.0, -1.0],
+                                     [-1.0, 0.0, 0.0],
+                                     [0.0, 1.0, 0.0]])
+        fallback_quaternion = np.zeros(4)
+        mujoco.mju_mat2Quat(fallback_quaternion, rotation_columns.reshape(9))
+        source = torso.add_camera(name=SOURCE_CAMERA_NAME)
+        source.pos = [0.0789635, 0.0, 0.386]
+        source.quat = fallback_quaternion.tolist()
+        source.fovy = 58.0
+        if verbose:
+            print(f"[guide] bare robot: mounted the {SOURCE_CAMERA_NAME!r}"
+                  " RealSense at the jacketed model's pose on 'torso_link'"
+                  " (the real G1 carries one; the menagerie file omits it)",
+                  flush=True)
+        parent = torso
+        position = np.array([0.0789635, 0.0, 0.386])
+        quaternion = fallback_quaternion
+        fovy = 58.0
+    else:
+        parent = source.parent
+        position = np.asarray(model.cam_pos[source_id], dtype=float)
+        quaternion = np.asarray(model.cam_quat[source_id], dtype=float)
+        fovy = float(model.cam_fovy[source_id])
 
     # The camera's x axis in the PARENT body's frame -- the first column of the
     # rotation matrix the quaternion stands for.
