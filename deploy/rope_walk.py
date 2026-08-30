@@ -288,6 +288,10 @@ def main():
     ap.add_argument("--speed", type=float, default=0.3, help="walk speed m/s (start at 0.2)")
     ap.add_argument("--cycles", type=int, default=CYCLES, help="re-grip + walk repetitions")
     ap.add_argument("--release", action="store_true", help="give the arm back to the loco controller at the end")
+    ap.add_argument("--grip-only", action="store_true",
+                    help="arm_sdk + GRIP only, never call SetVelocity. Use when the robot "
+                         "is not weight-bearing: tests whether arm_sdk works at all without "
+                         "asking a suspended robot to step.")
     a = ap.parse_args()
 
     # sanity: is the rope reachable?
@@ -300,6 +304,17 @@ def main():
     bot = DryRun() if a.dry_run else G1(a.iface)
     if not a.dry_run:
         input("G1 standing, area clear, e-stop in hand. ENTER to start / Ctrl-C to quit ")
+    w = RopeWalker(bot, a.speed)
+    if a.grip_only:
+        print("GRIP-ONLY: arm_sdk + one grip, no walking, no SetVelocity")
+        w.bot.start(); w.take_arm(); w.grip(first=True)
+        print("== grip done: holding the pose 5 s so you can see it")
+        for _ in range(int(5 * CTRL_HZ)):
+            w.bot.send_arm(w.cur); w.bot.sleep(w.dt)
+        if a.release:
+            for i in range(50, -1, -1):
+                w.bot.set_arm_weight(i / 50); w.bot.send_arm(w.cur); w.bot.sleep(0.02)
+        return
     RopeWalker(bot, a.speed).run(a.cycles, a.release)
 
 
