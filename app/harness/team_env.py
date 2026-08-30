@@ -93,24 +93,35 @@ def sensor_names_by_role(constants):
     }
 
 
-def load_team_environment(config_overrides=None, slope_degrees=None):
+def load_team_environment(config_overrides=None, slope_degrees=None,
+                          robot="bare"):
     """Instantiate their `G1ClimbAscender` (JAX/MJX object).
+
+    `robot="pemba"` runs THEIR env class, THEIR `_build_model`, THEIR surgery --
+    on the team's real demo robot, by redirecting the one line that chooses the
+    starting scene (`consts.task_to_xml`) for the duration of the constructor.
+    See app/harness/robot_variants.py.
 
     Costs a full __init__ -- JAX import plus `mjx.put_model` -- even when only
     the plain MjModel is wanted. Measured warm: 1.64 s for the first in a
     process, 0.21 s for each additional. Slower on a cold venv (the first run
     also clones mujoco_menagerie).
     """
-    import rl.environment  # noqa: F401  registers G1ClimbAscender
-    from mujoco_playground import registry
+    from rl.environment.climb_env import G1ClimbAscender
 
     overrides = dict(config_overrides or {})
     if slope_degrees is not None:
         overrides["climb_config.slope_deg"] = float(slope_degrees)
-    return registry.load("G1ClimbAscender", config_overrides=overrides)
+    if robot == "bare":
+        return G1ClimbAscender(config_overrides=overrides)
+    if robot != "pemba":
+        raise ValueError(f"unknown robot variant {robot!r}; have bare, pemba")
+    from app.harness import robot_variants
+    with robot_variants.pemba_task_to_xml():
+        return G1ClimbAscender(config_overrides=overrides)
 
 
-def load_team_model(config_overrides=None, slope_degrees=None,
+def load_team_model(config_overrides=None, slope_degrees=None, robot="bare",
                     write_fingerprint=True, print_fingerprint=True,
                     fingerprint_path=None):
     """(mujoco.MjModel, meta dict). See the module docstring for the contract.
@@ -119,9 +130,11 @@ def load_team_model(config_overrides=None, slope_degrees=None,
     library) give each one its own file instead of having the last build
     overwrite the evidence for the others. Defaults to FINGERPRINT_PATH.
     """
-    environment = load_team_environment(config_overrides, slope_degrees)
+    environment = load_team_environment(config_overrides, slope_degrees, robot)
     model, meta = describe_team_environment(environment)
+    meta["robot"] = robot
     fingerprint = build_fingerprint(environment, model, meta)
+    fingerprint["robot"] = robot
     if print_fingerprint:
         print(format_fingerprint(fingerprint), flush=True)
     if write_fingerprint:
