@@ -144,6 +144,20 @@ def face_uphill(env: ManagerBasedRlEnv) -> torch.Tensor:
   """Reward: 1 when the torso faces uphill, -1 when it faces downhill."""
   return _forward_x(env)
 
+def facing_forward(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = TORSO) -> torch.Tensor:
+  """Reward: mean of pelvis and torso forward-axis alignment with uphill (+x).
+
+  Both the hips (pelvis/root) and the torso should face uphill. Returns the
+  average cosine of each body's forward axis with world +x: +1 = both facing
+  uphill, -1 = both facing downhill.
+  """
+  pelvis_fwd = _forward_x(env)
+  asset: Entity = env.scene[asset_cfg.name]
+  torso_quat = asset.data.body_link_quat_w[:, asset_cfg.body_ids, :].reshape(env.num_envs, 4)
+  fwd = torch.tensor([1.0, 0.0, 0.0], device=env.device).expand(env.num_envs, 3)
+  torso_fwd = quat_apply(torso_quat, fwd)[:, 0]
+  return 0.5 * (pelvis_fwd + torso_fwd)
+
 
 def facing_downhill(env: ManagerBasedRlEnv) -> torch.Tensor:
   """Termination: turned more than 90 deg away from uphill."""

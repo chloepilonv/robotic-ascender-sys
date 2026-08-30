@@ -34,6 +34,7 @@ from . import robot as R
 G1_JOINTS = SceneEntityCfg("robot", joint_names=(".*_joint",))
 # Joints that get reset noise: everything except the right arm, which is on the
 # rope at reset (noise there would start the weld violated and yank the tool).
+RIGHT_ARM = SceneEntityCfg("robot", joint_names=("right_(shoulder|elbow|wrist).*_joint",))
 NOISY_JOINTS = SceneEntityCfg("robot", joint_names=(r"(?!right_(shoulder|elbow|wrist)).*_joint",))
 FEET = SceneEntityCfg("robot", geom_names=(R.FOOT_GEOM_REGEX,))
 SLIDE_JOINT_CFG = SceneEntityCfg("robot", joint_names=(R.SLIDE_JOINT,))
@@ -185,6 +186,15 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
         "position_range": (-0.05, 0.05),
         "velocity_range": (0.0, 0.0),
         "asset_cfg": NOISY_JOINTS,
+      },
+    ),
+    "reset_right_arm": EventTermCfg(
+      func=base_mdp.reset_joints_by_offset,
+      mode="reset",
+      params={
+        "position_range": (0.0, 0.0),  # exact solved IK pose — no noise on the rope arm
+        "velocity_range": (0.0, 0.0),
+        "asset_cfg": RIGHT_ARM,
       },
     ),
     "reset_slide": EventTermCfg(

@@ -191,9 +191,9 @@ def add_rope_rail(
   eq.solref = [0.004, 1.0]
   eq.solimp = [0.99, 0.999, 0.001, 0.5, 2.0]
 
-  out = dict(joint_pos)
-  out.update(wrist_q)
-  out[SLIDE_JOINT] = 0.0
+  # Specific right-arm keys must precede wildcard keys (e.g. .*_elbow_joint)
+  # so resolve_expr's first-match picks the solved IK value, not the base 0.6.
+  out = {**wrist_q, **joint_pos, SLIDE_JOINT: 0.0}
   return out
 
 
