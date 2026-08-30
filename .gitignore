@@ -18,3 +18,8 @@ assets/environments/lhotse_face/data/*.tif
 build/
 MUJOCO_LOG.TXT
 app/harness/scene_assets/
+
+# mjlab venv + training logs
+.venv-mjlab/
+logs/
+assets/robots/g1/_menagerie

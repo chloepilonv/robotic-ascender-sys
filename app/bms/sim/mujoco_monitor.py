@@ -34,6 +34,8 @@ class SimMonitor:
         self.log = open(log, "a") if log else None
         self.dist, self.last = 0.0, None
 
+        self.rope_joint = next((p for p in ("", "robot/") if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, p + "rope_slide") >= 0), None)
+
     def _sensor(self, name):
         i = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SENSOR, name)
         return None if i < 0 else slice(self.m.sensor_adr[i], self.m.sensor_adr[i] + self.m.sensor_dim[i])
@@ -61,6 +63,9 @@ class SimMonitor:
                "contact_force_N": float(sum(np.linalg.norm(self._cf(data, i)[:3]) for i in range(data.ncon))),
                "time_to_empty_min": EnergyEstimator.time_to_empty_min(b["soc_pct"], e["power_avg_W"], self.bat.t_bat),
                **self.env.as_dict()}
+        if self.rope_joint is not None:  # ascender rail present (rl/chloe/task)
+            from rl.chloe.task.rope_state import rope_state
+            out.update(rope_state(self.m, data, prefix=self.rope_joint))
         if self.log:
             self.log.write(json.dumps(out) + "\n"); self.log.flush()
         return out

@@ -193,3 +193,7 @@ env = registry.load("G1JoystickWalkDR")
 
 `rl/scripts/train_jax_ppo.py` does this bootstrap itself when `--env_name`
 starts with `G1JoystickWind`, `G1JoystickWalkDR`, or `G1Climb`.
+
+## `chloe/` — mjlab ascender climb (PPO)
+
+See `rl/chloe/README.md`.
