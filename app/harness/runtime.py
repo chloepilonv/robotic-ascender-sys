@@ -557,7 +557,7 @@ def run(arguments) -> str:
         path, _, at_seconds = specification.partition("@")
         hearing_system.add_injector(path, float(at_seconds or 0.5))
     if server is not None:
-        server.knobs["hearing"] = 1.0 if arguments.hearing else 0.0
+        server.knobs["hearing"] = 1.0   # ears ON by default (user ruling 2026-08-30); --hearing kept for headless
         server.microphone = hearing_system.microphone
     print(f"[hearing] starts {'ON' if arguments.hearing else 'OFF'}"
           f" (knob `hearing`); it needs the GUIDE on, because the voice comes"
