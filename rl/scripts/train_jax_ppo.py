@@ -20,6 +20,41 @@ import json
 import os
 import time
 import warnings
+from typing import Any, Tuple
+
+def _bootstrap_pip_cuda():
+  """Preload the pip NVIDIA wheels before jax initializes its CUDA plugin.
+
+  On systems with a system CUDA toolkit (e.g. /usr/local/cuda 12.6) on the
+  ldconfig cache, pip's libcusparse resolves the SYSTEM libnvJitLink, which
+  lacks symbols the pip cuSPARSE 12.9 needs
+  (__nvJitLinkGetErrorLogSize_12_9), and the jax plugin falls back to CPU.
+  Loading pip's libnvJitLink first fixes the resolution. No-op on systems
+  where jax already sees a GPU or the pip wheels are absent.
+  """
+  import ctypes
+  import glob
+  try:
+    import jaxlib  # noqa: F401
+    # jaxlib sits in site-packages; the NVIDIA wheels install to ./nvidia.
+    nvidia = os.path.join(
+        os.path.dirname(os.path.dirname(jaxlib.__file__)), "nvidia"
+    )
+  except ImportError:
+    return
+  nvjitlink = sorted(
+      glob.glob(os.path.join(nvidia, "nvjitlink", "lib", "libnvJitLink.so.*"))
+  )
+  if not nvjitlink:
+    return
+  try:
+    ctypes.CDLL(nvjitlink[-1], mode=ctypes.RTLD_GLOBAL)
+  except OSError:
+    pass  # Let jax fall back to its own resolution.
+
+
+_bootstrap_pip_cuda()
+
 
 from absl import app
 from absl import flags
@@ -54,6 +89,9 @@ xla_flags = os.environ.get("XLA_FLAGS", "")
 xla_flags += " --xla_gpu_triton_gemm_any=True"
 os.environ["XLA_FLAGS"] = xla_flags
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+# Keep the desktop compositor alive on a shared laptop GPU: cap XLA's
+# allocation fraction (MJX training still works well within ~80%).
+os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.80")
 os.environ["MUJOCO_GL"] = "egl"
 
 # Ignore the info logs from brax
@@ -83,6 +121,12 @@ _PLAYGROUND_CONFIG_OVERRIDES = flags.DEFINE_string(
 _VISION = flags.DEFINE_boolean("vision", False, "Use vision input")
 _LOAD_CHECKPOINT_PATH = flags.DEFINE_string(
     "load_checkpoint_path", None, "Path to load checkpoint from"
+)
+_INIT_FROM_POLICY = flags.DEFINE_string(
+    "init_from_policy",
+    None,
+    "Initialize (fine-tune from) a policy npz in brax param layout;"
+    " 'mels' resolves to rl/policies/mels_g1_joystick.npz.",
 )
 _SUFFIX = flags.DEFINE_string("suffix", None, "Suffix for the experiment name")
 _PLAY_ONLY = flags.DEFINE_boolean(
@@ -186,6 +230,10 @@ _LOGDIR = flags.DEFINE_string(
 _RL_ENV_ALIASES = {
     "G1JoystickWindFlatTerrain": "G1JoystickFlatTerrain",
     "G1JoystickWindRoughTerrain": "G1JoystickRoughTerrain",
+    # Same task/obs as upstream G1Joystick (fine-tune compatible).
+    "G1JoystickWalkDR": "G1JoystickFlatTerrain",
+    # 103/216-dim obs, 29 actions: same recipe as G1Joystick.
+    "G1ClimbAscender": "G1JoystickFlatTerrain",
 }
 
 def get_rl_config(env_name: str) -> config_dict.ConfigDict:
@@ -205,6 +253,90 @@ def get_rl_config(env_name: str) -> config_dict.ConfigDict:
     return dm_control_suite_params.brax_ppo_config(env_name, _IMPL.value)
 
   raise ValueError(f"Env {env_name} not found in {registry.ALL_ENVS}.")
+
+def _restore_params_from_npz(
+    npz_path: str, env: Any
+) -> Tuple[Any, Any, Any]:
+  """Convert a brax-layout policy npz (mels export) to ppo.train
+  `restore_params`.
+
+  The npz holds a flax MLP with `hidden_{i}_kernel/bias` entries (last
+  layer = 2*action_size distribution params) plus `obs_mean`/`obs_std`
+  normalizer stats. The value network is absent from the export, so the
+  caller must pass `restore_value_fn=False` (fresh value init is
+  correct for fine-tuning: the value function must be re-learned for
+  the new domain anyway).
+
+  Returns:
+    (normalizer_params, policy_params, None) — the value slot is None
+    and is ignored when brax restores with restore_value_fn=False.
+  """
+  import numpy as _np  # pylint: disable=import-outside-toplevel
+
+  z = _np.load(npz_path)
+  n_layers = 0
+  while f"hidden_{n_layers}_kernel" in z.files:
+    n_layers += 1
+  if n_layers == 0:
+    raise ValueError(f"no hidden_* layers found in {npz_path}")
+  last_out = z[f"hidden_{n_layers - 1}_kernel"].shape[1]
+  if last_out != 2 * env.action_size:
+    raise ValueError(
+        f"policy output {last_out} != 2*action_size"
+        f" {2 * env.action_size}: {npz_path} is not compatible with"
+        f" {type(env).__name__}"
+    )
+
+  policy_params = {
+      "params": {
+          f"hidden_{i}": {
+              "kernel": jp.asarray(z[f"hidden_{i}_kernel"]),
+              "bias": jp.asarray(z[f"hidden_{i}_bias"]),
+          }
+          for i in range(n_layers)
+      }
+  }
+
+  # Seed the running-statistics normalizer with the npz stats so the
+  # restored policy normalizes observations exactly as it was trained.
+  # The state nest is built from a real reset observation (correct
+  # structure/dtype); Welford's summed_variance is chosen so the stored
+  # std recompute holds: sv = count * (std^2), with a large count so
+  # the first fine-tune batches nudge rather than jump the statistics.
+  from brax.training.acme import running_statistics  # pylint: disable=import-outside-toplevel
+  from brax.training import types as brax_types  # pylint: disable=import-outside-toplevel
+
+  obs_nest = jax.jit(env.reset)(jax.random.PRNGKey(0)).obs
+  zeros_state = running_statistics.init_state(obs_nest)
+  count = brax_types.UInt64(hi=0, lo=1_000_000)
+  obs_size = env.observation_size
+  state_mean = jp.asarray(z["obs_mean"])
+  if state_mean.shape != tuple(obs_size["state"]):
+    raise ValueError(
+        f"obs_mean shape {state_mean.shape} != env state obs"
+        f" {tuple(obs_size['state'])}: {npz_path} incompatible with"
+        f" {type(env).__name__}"
+    )
+  mean = {
+      "state": state_mean,
+      "privileged_state": jp.zeros(obs_size["privileged_state"]),
+  }
+  # std is stored (not recomputed from summed_variance in-place), so set
+  # it directly; summed_variance is kept consistent (sv = count*std^2)
+  # so any later Welford update stays numerically sane.
+  std = {
+      "state": jp.asarray(z["obs_std"]),
+      "privileged_state": jp.ones(obs_size["privileged_state"]),
+  }
+  summed_variance = {
+      "state": 1e6 * jp.square(jp.asarray(z["obs_std"])),
+      "privileged_state": 1e6 * jp.ones(obs_size["privileged_state"]),
+  }
+  normalizer_params = zeros_state.replace(
+      count=count, mean=mean, std=std, summed_variance=summed_variance
+  )
+
+  return normalizer_params, policy_params, None
 
 
 def rscope_fn(full_states, obs, rew, done):
@@ -230,15 +362,11 @@ def main(argv):
 
   del argv
 
-  if _WARP_KERNEL_CACHE_DIR.value is not None:
-    import warp as wp  # pylint: disable=g-import-not-at-top
-    wp.config.kernel_cache_dir = _WARP_KERNEL_CACHE_DIR.value
-
   # Load environment configuration
-  if _ENV_NAME.value.startswith("G1JoystickWind"):
+  if _ENV_NAME.value.startswith(("G1JoystickWind", "G1JoystickWalkDR", "G1Climb")):
     import sys
     sys.path.insert(0, str(epath.Path(__file__).parent.parent.parent.resolve()))
-    import rl.environment  # noqa: F401  registers G1JoystickWind* in the registry
+    import rl.environment  # noqa: F401  registers the rl envs in the registry
 
   env_cfg = registry.get_default_config(_ENV_NAME.value)
 
@@ -362,6 +490,29 @@ def main(argv):
     print("No checkpoint path provided, not restoring from checkpoint")
     restore_checkpoint_path = None
 
+  # Fine-tune initialization from a brax-layout policy npz (e.g. the
+  # mels export). Mutually exclusive with --load_checkpoint_path; the
+  # value network is freshly initialized (the export has no value head,
+  # and the value function must be re-learned for the randomized domain).
+  restore_params = None
+  if _INIT_FROM_POLICY.value is not None:
+    if restore_checkpoint_path is not None:
+      raise ValueError(
+          "--init_from_policy and --load_checkpoint_path are mutually"
+          " exclusive."
+      )
+    if _INIT_FROM_POLICY.value == "mels":
+      npz_path = (
+          epath.Path(__file__).parent.parent / "policies" / "mels_g1_joystick.npz"
+      )
+    else:
+      npz_path = epath.Path(_INIT_FROM_POLICY.value)
+    npz_path = npz_path.resolve()
+    if not npz_path.exists():
+      raise FileNotFoundError(f"policy npz not found: {npz_path}")
+    restore_params = _restore_params_from_npz(npz_path.as_posix(), env)
+    print(f"Fine-tuning: policy initialized from {npz_path}")
+
   # Set up checkpoint directory
   ckpt_path = logdir / "checkpoints"
   ckpt_path.mkdir(parents=True, exist_ok=True)
@@ -388,9 +539,22 @@ def main(argv):
     network_factory = network_fn
 
   if _DOMAIN_RANDOMIZATION.value:
-    training_params["randomization_fn"] = registry.get_domain_randomizer(
-        _ENV_NAME.value
-    )
+    randomizer = registry.get_domain_randomizer(_ENV_NAME.value)
+    if randomizer is None:
+      raise ValueError(
+          f"--domain_randomization: env {_ENV_NAME.value} has no"
+          " registered domain randomizer."
+      )
+    if hasattr(env_cfg, "dr_config"):
+      # Bind the randomizer to the LOADED env config so
+      # --config_overrides on dr_config.* fields (slope/wind ranges)
+      # reach the randomizer.
+      from rl.environment import walk_dr_env as _walk_dr_env  # pylint: disable=import-outside-toplevel
+
+      randomizer = functools.partial(
+          _walk_dr_env.domain_randomize, dr_cfg=env_cfg.dr_config
+      )
+    training_params["randomization_fn"] = randomizer
 
   num_eval_envs = ppo_params.get("num_eval_envs", 128)
 
@@ -403,6 +567,9 @@ def main(argv):
       network_factory=network_factory,
       seed=_SEED.value,
       restore_checkpoint_path=restore_checkpoint_path,
+      restore_params=restore_params,
+      # The npz export has no value head: keep the fresh value init.
+      restore_value_fn=restore_params is None,
       save_checkpoint_path=ckpt_path,
       wrap_env_fn=wrapper.wrap_for_brax_training,
       num_eval_envs=num_eval_envs,

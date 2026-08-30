@@ -38,6 +38,11 @@ import time  # noqa: E402
 
 import numpy as np  # noqa: E402
 
+# Preload pip NVIDIA wheels so jax sees the GPU (see train_jax_ppo).
+from rl.scripts.train_jax_ppo import _bootstrap_pip_cuda  # noqa: E402
+
+_bootstrap_pip_cuda()
+
 import jax  # noqa: E402
 import jax.numpy as jp  # noqa: E402
 import mujoco  # noqa: E402
@@ -150,6 +155,10 @@ def main():
   overrides = {"impl": args.impl}
   if "Climb" in args.env_name:
     overrides["climb_config.slope_deg"] = args.slope_deg
+  elif "WalkDR" in args.env_name:
+    # Domain-randomized slope+wind env: wind is sampled per episode from
+    # dr_config (no live keys); optionally pin the slope range here.
+    pass
   else:
     overrides.update({
         "wind_config.enable": True,
@@ -216,16 +225,23 @@ def main():
     )
 
   mj_data = mujoco.MjData(env.mj_model)
-  handle = mujoco.viewer.launch_passive(
-      env.mj_model, mj_data, key_callback=on_key
-  )
 
+  # JIT-compile reset/step/policy BEFORE opening the window: first calls
+  # can take tens of seconds (especially the climb env's substep scan),
+  # during which the viewer would look frozen and ignore keys.
+  print("JIT compiling (one-time; can take ~1 min for the climb env)...")
   jit_reset = jax.jit(env.reset)
   jit_step = jax.jit(env.step)
   rng = jax.random.PRNGKey(0)
   state = jit_reset(rng)
   zero_action = jp.zeros(env.action_size)
+  if policy is not None:
+    _ = policy(state.obs["state"], jax.random.PRNGKey(0))[0]
+  state = jit_step(state, zero_action)
 
+  handle = mujoco.viewer.launch_passive(
+      env.mj_model, mj_data, key_callback=on_key
+  )
   print(
       "viewer running - WASD/QE/X/R commands, arrows/0 wind,"
       " close window to quit"
