@@ -858,6 +858,7 @@ async function loadClip(name) {
 // to stack shouts, or shout louder into the mic. The SIM-side loudness is the
 // clip itself either way; the ear model owns the robot's physics.
 const SHOUT_SOURCE_GAIN = 0.45;       // the guide's voice, quieter than before
+const SHOUT_SIM_GAIN = 0.35;          // what enters the SIM per press; stacking sums
 const SHOUT_REFERENCE_METERS = 1.5;   // full loudness inside this radius
 function shoutListenerGain() {
   try {
@@ -932,6 +933,14 @@ async function playShout(name) {
     const data = buffer.getChannelData(channel);
     for (let index = 0; index < mono.length; index++) mono[index] += data[index] / channels;
   }
+  // QUIETER INTO THE SIM (user's ruling, 2026-08-30: "still a little too easy
+  // for the robot to hear"). One press is one modest shout; STACKING presses
+  // sums waveforms, so each doubling is +6 dB at the robot's ears. Measured
+  // through hear_clip before choosing: at x0.35 the two demo takes still clear
+  // the bearing gate at every demo distance in calm and 6 m/s air -- the
+  // detectors are level-robust until wind actually eats the SNR, so the wind
+  // slider remains the real difficulty dial.
+  for (let index = 0; index < mono.length; index++) mono[index] *= SHOUT_SIM_GAIN;
   if (!activeShouts.length) { shoutMixerStart = performance.now(); shoutMixerSent = 0; }
   activeShouts.push({ name, mono, cursor: 0, sampleRate: buffer.sampleRate });
   paintShoutButtons();
