@@ -954,8 +954,8 @@ renders 0 px in these poses, so it is out of frame rather than absent.
 | maximum detection range, `terrain_free_10` | 10.00 m | **15.87 m** |
 | stereo error at 2 m / 5 m | -5.8% / -6.0% | -7.0% / -4.4% |
 | standing at 2 m, back turned | 100% detected, WAIT at 0.89 m | 87.0% detected, WAIT at 0.78 m |
-| standing at 5 m, back turned | 79.5% detected, ends in SEARCH | **99.0% detected, ends in FOLLOW** |
-| off-axis re-acquire (`test_search` J) | 0.20 s / 0.40 s | 0.20 s / 0.60 s |
+| standing at 5 m, back turned | 79.5% detected, ends LOST | **99.0% detected, ends in FOLLOW** |
+| off-axis re-acquire (the retired `test_search` J) | 0.20 s / 0.40 s | 0.20 s / 0.60 s |
 
 The range went UP: the pack is small but it is a solid, uniformly-lit box, where
 the jacket's thin limbs anti-aliased into the snow. Detected is not the same as
@@ -966,7 +966,7 @@ usable, though -- past about 10 m the disparity is 1-1.5 px and the range wander
 A1, A2, A2b):
 
 * **She is invisible facing the robot.** 0 mask pixels at 2 m and at 5 m, and
-  the follower sits in SEARCH rather than inventing a range -- 0.0% of ticks for
+  the follower goes LOST rather than inventing a range -- 0.0% of ticks for
   a whole 20 s run at 5 m on both worlds, and at 2 m on `terrain_free_10`. The
   one exception is printed as a first-detection range: at 2 m on `flat_0` the
   robot walks BLIND from 2.00 m down to 1.01 m with 0 mask pixels the whole way,
@@ -974,13 +974,11 @@ A1, A2, A2b):
 * **A close-range hole on the approach.** She walks 0.6 m left of the rope, so
   inside about 1.5 m the bearing to her crosses the +/-29 deg frame edge and a
   narrow marker on her back goes with it, where a whole jacket still filled the
-  picture. The follower recovers through SEARCH (WAIT at 13.7 s from a 2 m
-  start), but on `flat_0` it is what stops `test_search`'s REALIGN handing over
-  to the ordinary follower, which the jacket managed at 0.24 s. On
-  `terrain_free_10` the hand-over still completes, at 1.10 s with a
-  camera-bearing error of 0.8 deg.
+  picture. The retired camera sweep used to recover from this (WAIT at 13.7 s
+  from a 2 m start); with the sweep gone the follower goes LOST at close range
+  and the ear layer's `LISTENING` waits to be called again.
 
-Physics is untouched by all of it: `test_guide` D and `test_search` M both come
+Physics is untouched by all of it: `test_guide` D and `test_hearing` 5 both come
 back **0.000e+00 across every array**.
 
 ### The model surgery, and why it is safe
@@ -1705,8 +1703,8 @@ run these two worlds with the guide OFF if what you want is a climb.
 
 | test | worst difference |
 |---|---|
-| `test_search` (guide SEARCH vs the same run without it) | 0.000e+00 — bit-identical |
 | `test_guide` (guide OFF vs guide ON, human walking) | 0.000e+00 — bit-identical |
+| `test_hearing` (hearing OFF vs hearing ON, utterance decoded) | 0.000e+00 — bit-identical |
 | `test_storm` (visibility off vs on) | 0.000e+00 — bit-identical |
 | `test_parity` observation parity vs the JAX env | 1.835e-07 (tolerance 1e-4), PASS |
 

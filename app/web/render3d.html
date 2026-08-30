@@ -195,10 +195,18 @@
   .pill.stopped { background: rgba(239,68,68,.14); border-color: rgba(239,68,68,.4); color: var(--bad); }
   .pill.listening { background: rgba(245,158,11,.14); border-color: rgba(245,158,11,.35); color: var(--warn); }
   #hearingReadout .kv { margin-top: 9px; }
-  #micToggle { width: auto; padding: 2px 9px; font-size: 10px; font-weight: 600; letter-spacing: .08em;
-               border-radius: 999px; color: var(--ink-3); }
-  #micToggle.live { color: var(--good); border-color: rgba(34,197,94,.4); }
-  #micToggle.denied { color: var(--bad); border-color: rgba(239,68,68,.4); }
+  .segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 999px;
+               overflow: hidden; background: var(--elevated); }
+  .segmented button { width: auto; border: none; border-radius: 0; padding: 3px 9px;
+                      font-size: 10px; font-weight: 600; letter-spacing: .08em;
+                      color: var(--ink-3); background: none; }
+  .segmented button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+  .segmented button.denied { color: var(--bad); }
+  .shoutrow { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+  .shoutrow button { padding: 7px 0; font-size: 11px; font-weight: 600; letter-spacing: .08em; }
+  .shoutrow button:disabled { opacity: .45; }
+  #shoutNow { margin-top: 7px; font-size: 10.5px; color: var(--ink-3);
+              font-family: ui-monospace, SFMono-Regular, Menlo, monospace; min-height: 13px; }
   .hearingtools { display: flex; align-items: center; gap: 6px; margin-left: auto; }
   #earMonitorToggle { width: auto; padding: 2px 9px; font-size: 10px; font-weight: 600;
                       letter-spacing: .08em; border-radius: 999px; color: var(--ink-3); }
@@ -337,7 +345,10 @@
   <section class="card" id="hearingCard">
     <div class="head"><h2>Hearing</h2>
       <span class="hearingtools">
-        <button class="iconbtn" id="micToggle" title="stream the Mac microphone">MIC</button>
+        <span class="segmented" id="sourceMode">
+          <button id="modeMic" aria-pressed="false" title="stream the Mac microphone, raw">MIC</button>
+          <button id="modeManual" aria-pressed="true" title="shout at the robot with the buttons below">MANUAL</button>
+        </span>
         <button class="iconbtn" id="earMonitorToggle" title="listen to what the robot hears">EAR</button>
       </span>
       <button class="switchrow" id="hearingSwitch" role="switch" aria-checked="false" title="the robot listens"><i class="switch"></i></button></div>
@@ -348,6 +359,11 @@
         <span>Heard</span><b id="hearingHeard">—</b>
         <span>Bearing</span><b id="hearingBearing">—</b>
       </div>
+      <div class="shoutrow" id="shoutRow">
+        <button id="shoutPemba">PEMBA</button>
+        <button id="shoutStop">STOP</button>
+      </div>
+      <div id="shoutNow"></div>
     </div>
   </section>
 
@@ -678,13 +694,25 @@ const EAR_FRAME_MAGIC = [0x45, 0x41, 0x52, 0x30];      // "EAR0"
 const HEARING_MODE_CLASSES = { IDLE: '', LISTENING: 'listening', COMING_BY_EYES: 'coming',
                                COMING_BY_EARS: 'coming', STOPPED: 'stopped', WAIT: 'wait' };
 const LEVEL_METER_FLOOR_DB = -60;
-const hearingState = { on: false, micWanted: false, micLive: false, context: null,
+// TWO SOURCE MODES, ONE EAR MODEL (user's ruling, 2026-08-30). MIC streams the
+// Mac microphone; MANUAL plays a recorded shout from app/web/sounds/voice/.
+// BOTH go down the socket as `MIC0` + 16 kHz int16 PCM, block by block, in real
+// time -- so the runtime cannot tell them apart and there is no shortcut past
+// the ear synthesis, the wind noise, the VAD, the keyword spotter or the
+// bearing. MANUAL is the default because it needs no permission and a demo
+// should work the moment the page opens.
+const VOICE_CLIP_DIRECTORY = '/app/web/sounds/voice/';
+const PEMBA_CLIPS = ['pemba_1.mp3', 'pemba_2.mp3', 'pemba_3.mp3', 'pemba_4.mp3'];
+const STOP_CLIP = 'stop_1.mp3';
+const hearingState = { on: false, mode: 'manual', micLive: false, context: null,
                        stream: null, node: null, source: null,
-                       monitorOn: false, monitorContext: null, monitorTime: 0 };
+                       monitorOn: false, monitorContext: null, monitorTime: 0,
+                       clips: new Map(), playing: null, playTimer: null };
 
 function paintHearingSwitch() {
   $('hearingSwitch').setAttribute('aria-checked', String(hearingState.on));
 }
+
 $('hearingSwitch').addEventListener('click', () => {
   hearingState.on = !hearingState.on;
   paintHearingSwitch();
@@ -717,12 +745,13 @@ async function startMicrophone() {
     silence.gain.value = 0;
     node.connect(silence); silence.connect(context.destination);
     Object.assign(hearingState, { context, stream, node, source, micLive: true });
-    $('micToggle').classList.remove('denied');
-    $('micToggle').classList.add('live');
+    $('modeMic').classList.remove('denied');
   } catch (error) {
+    // Permission refused, or no input device. Say so and fall back to MANUAL,
+    // which needs neither.
     hearingState.micLive = false;
-    $('micToggle').classList.remove('live');
-    $('micToggle').classList.add('denied');
+    $('modeMic').classList.add('denied');
+    setSourceMode('manual');
   }
 }
 function stopMicrophone() {
@@ -732,10 +761,10 @@ function stopMicrophone() {
   if (hearingState.context) hearingState.context.close();
   Object.assign(hearingState, { context: null, stream: null, node: null,
                                 source: null, micLive: false });
-  $('micToggle').classList.remove('live');
 }
 function sendMicrophoneBlock(samples, sampleRate) {
   if (!state.socket || state.socket.readyState !== 1 || !hearingState.on) return;
+  if (samples.length === 0) return;
   let source = samples;
   if (Math.abs(sampleRate - MICROPHONE_SAMPLE_RATE_HZ) > 1) {
     const count = Math.round(samples.length * MICROPHONE_SAMPLE_RATE_HZ / sampleRate);
@@ -757,10 +786,87 @@ function sendMicrophoneBlock(samples, sampleRate) {
   }
   state.socket.send(frame.buffer);
 }
-$('micToggle').addEventListener('click', () => {
-  hearingState.micWanted = !hearingState.micWanted;
-  if (hearingState.micWanted) startMicrophone(); else stopMicrophone();
-});
+function paintSourceMode() {
+  $('modeMic').setAttribute('aria-pressed', String(hearingState.mode === 'mic'));
+  $('modeManual').setAttribute('aria-pressed', String(hearingState.mode === 'manual'));
+  $('shoutRow').style.display = hearingState.mode === 'manual' ? 'grid' : 'none';
+  $('shoutNow').style.display = hearingState.mode === 'manual' ? 'block' : 'none';
+}
+function setSourceMode(mode) {
+  if (hearingState.mode === mode) return;
+  hearingState.mode = mode;
+  paintSourceMode();
+  if (mode === 'mic') startMicrophone(); else stopMicrophone();
+}
+$('modeMic').addEventListener('click', () => setSourceMode('mic'));
+$('modeManual').addEventListener('click', () => setSourceMode('manual'));
+
+// ---- MANUAL: a recorded shout, streamed exactly like the microphone ----
+async function loadClip(name) {
+  if (hearingState.clips.has(name)) return hearingState.clips.get(name);
+  if (!hearingState.context) {
+    hearingState.context = new (window.AudioContext || window.webkitAudioContext)(
+      { sampleRate: MICROPHONE_SAMPLE_RATE_HZ });
+  }
+  const response = await fetch(VOICE_CLIP_DIRECTORY + name);
+  const decoded = await hearingState.context.decodeAudioData(await response.arrayBuffer());
+  hearingState.clips.set(name, decoded);
+  return decoded;
+}
+async function playShout(name) {
+  if (hearingState.playing) return;
+  hearingState.playing = name;
+  paintShoutButtons();
+  let buffer;
+  try { buffer = await loadClip(name); }
+  catch (error) { hearingState.playing = null; paintShoutButtons(); return; }
+  // Mixed to mono and PACED IN REAL TIME. Dumping the whole clip in one frame
+  // would overrun the runtime's two-second ring and most of the word would be
+  // dropped before the ear model ever saw it -- and a clip that arrives faster
+  // than real time is not a person speaking.
+  const channels = buffer.numberOfChannels;
+  const mono = new Float32Array(buffer.length);
+  for (let channel = 0; channel < channels; channel++) {
+    const data = buffer.getChannelData(channel);
+    for (let index = 0; index < mono.length; index++) mono[index] += data[index] / channels;
+  }
+  // PACED BY ELAPSED TIME, NOT BY TICK COUNT. A browser clamps setInterval to
+  // 1 Hz in a background or occluded tab, and a one-block-per-tick sender then
+  // takes a hundred and sixty seconds to play a two-second clip -- which is
+  // exactly what a headless screenshot run does, and it wedged the buttons
+  // disabled for the whole session. Sending whatever the wall clock says is
+  // owed puts up to a second of audio into the runtime's two-second ring at
+  // once, which is what the ring is for: the runtime still consumes it 320
+  // samples at a time, so it is heard at the right speed either way.
+  const startedAt = performance.now();
+  let cursor = 0;
+  hearingState.playTimer = setInterval(() => {
+    const owed = Math.floor(
+      (performance.now() - startedAt) / 1000 * buffer.sampleRate);
+    while (cursor < Math.min(owed, mono.length)) {
+      const block = mono.subarray(cursor, cursor + MICROPHONE_BLOCK_SAMPLES);
+      cursor += MICROPHONE_BLOCK_SAMPLES;
+      sendMicrophoneBlock(block, buffer.sampleRate);
+    }
+    if (cursor >= mono.length) {
+      clearInterval(hearingState.playTimer);
+      hearingState.playTimer = null;
+      hearingState.playing = null;
+      paintShoutButtons();
+    }
+  }, 1000 * MICROPHONE_BLOCK_SAMPLES / buffer.sampleRate);
+}
+function paintShoutButtons() {
+  const busy = Boolean(hearingState.playing);
+  $('shoutPemba').disabled = busy;
+  $('shoutStop').disabled = busy;
+  $('shoutNow').textContent = busy ? '▸ ' + hearingState.playing : '';
+}
+$('shoutPemba').addEventListener('click', () => playShout(
+  PEMBA_CLIPS[Math.floor(Math.random() * PEMBA_CLIPS.length)]));
+$('shoutStop').addEventListener('click', () => playShout(STOP_CLIP));
+paintSourceMode();
+paintShoutButtons();
 $('earMonitorToggle').addEventListener('click', () => {
   hearingState.monitorOn = !hearingState.monitorOn;
   $('earMonitorToggle').classList.toggle('live', hearingState.monitorOn);
@@ -824,7 +930,7 @@ function paintHearingCard(frame) {
   // is not the one supplying the voice (a `--inject-voice` run).
   const microphoneDb = Number(hearing.microphone_level_db);
   const earDb = Number(hearing.level_db);
-  const shown = hearingState.micLive && Number.isFinite(microphoneDb) ? microphoneDb : earDb;
+  const shown = Number.isFinite(microphoneDb) && microphoneDb > -80 ? microphoneDb : earDb;
   const share = Number.isFinite(shown)
     ? Math.max(0, Math.min(1, (shown - LEVEL_METER_FLOOR_DB) / -LEVEL_METER_FLOOR_DB)) : 0;
   $('levelBarFill').style.width = (100 * share).toFixed(1) + '%';

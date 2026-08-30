@@ -89,6 +89,15 @@ EAR_MESSAGE_PREFIX = b"EAR0"      # runtime -> page, what the robot hears
 # exactly one control tick's worth per tick and does not care what size the
 # chunks arrived in.
 MICROPHONE_QUEUE_SECONDS = 2.0    # ring buffer; a page that runs ahead is capped
+# HOW MUCH AUDIO MUST BE IN THE RING BEFORE IT IS DRAINED. The page and the
+# simulation both run at nominally 16000 samples a second and neither runs at
+# exactly that, so a ring drained the instant anything arrives punches SILENT
+# HOLES into the middle of words -- and a `stop` with a hole in it is not a
+# `stop`. MEASURED through the browser before this existed: the clip that
+# decodes at confidence 1.000 offline came back as an ordinary `voice`. Priming
+# converts jitter into a fixed 150 ms of latency, which nobody can hear and the
+# behaviour does not care about.
+MICROPHONE_PRIME_SECONDS = 0.15
 
 # --------------------------------------------------------------- the array
 # FOUR MICS ON THE HEAD, in the TORSO body's own frame: +x forward, +y left,
@@ -234,7 +243,7 @@ VOSK_GRAMMAR = '["stop", "[unk]"]'
 # threshold the test prints and the runtime uses; re-run the test if the ear
 # model, the corpus or the wind law changes, and move this line to whatever the
 # table says.
-STOP_CONFIDENCE_THRESHOLD = 0.85
+STOP_CONFIDENCE_THRESHOLD = 0.93
 
 # ------------------------------------------------------------- the behaviour
 HEARING_MODES = ("IDLE", "LISTENING", "COMING_BY_EYES", "COMING_BY_EARS",
@@ -387,6 +396,7 @@ class MicrophoneStream:
         # the page draws the meter from `level_db`, because the whole point of
         # turning AGC off in the browser is that a SHOUT must arrive as a shout:
         # nothing between the capsule and the ear model may normalise it.
+        self.primed = False
         self.recent_rms = 0.0
         self.recent_peak = 0.0
         # (sample_count, sum_of_squares, peak) per push, trimmed to one second,
@@ -424,12 +434,25 @@ class MicrophoneStream:
         return int(samples.size)
 
     def take(self, count: int) -> np.ndarray:
-        """The next `count` samples, zero-padded if the page has not kept up."""
+        """The next `count` samples, zero-padded if the page has not kept up.
+
+        PRIMED, not eager: see `MICROPHONE_PRIME_SECONDS`. Until the ring holds
+        a prime's worth this returns silence and takes nothing, and once it
+        empties it goes back to waiting -- so a gap lands BETWEEN utterances,
+        where it is silence anyway, instead of inside one.
+        """
         count = int(count)
+        prime = int(MICROPHONE_PRIME_SECONDS * SAMPLE_RATE_HZ)
         with self.lock:
+            if not self.primed:
+                if self.buffer.size < prime:
+                    return np.zeros(count, dtype=np.float32)
+                self.primed = True
             available = min(count, self.buffer.size)
             chunk = self.buffer[:available].copy()
             self.buffer = self.buffer[available:]
+            if self.buffer.size == 0:
+                self.primed = False
         if available < count:
             self.samples_starved += count - available
             chunk = np.concatenate((chunk, np.zeros(count - available,
@@ -439,6 +462,7 @@ class MicrophoneStream:
     def clear(self) -> None:
         with self.lock:
             self.buffer = np.zeros(0, dtype=np.float32)
+            self.primed = False
         self._level_window = []
         self.recent_rms = 0.0
         self.recent_peak = 0.0
@@ -827,6 +851,26 @@ class StopWord:
         recognizer.AcceptWaveform(pcm)
         result = json.loads(recognizer.FinalResult())
         self.milliseconds = (time.time() - started) * 1000.0
+        # THE BEST `stop` ANYWHERE IN THE UTTERANCE, which is what "stop it"
+        # needs (it decodes as `[stop 0.96, [unk] 0.88]` and it IS a stop).
+        #
+        # A "THE UTTERANCE MUST BEGIN WITH THE KEYWORD" rule was tried and
+        # DROPPED, and the measurement is worth keeping because the idea is
+        # tempting. On one clip it looks decisive -- "top" decodes as
+        # `[[unk] 0.62, stop 0.93]`, so requiring the keyword first rejects it.
+        # Over the whole 365-clip corpus and the whole grid it moved the
+        # near-miss false-stop rate 27.9% -> 27.7% and cost 1.4 points of
+        # detection (63.8% -> 62.4%). Most near-misses come back as a BARE
+        # `stop`, not as a prefixed one, so the rule was paying for a class of
+        # failure that barely exists.
+        #
+        # The near-miss rate is a real property of a one-word grammar and no
+        # threshold fixes it: "top", "shop" and "drop" differ from the keyword
+        # by one phoneme, and a 40 MB model asked a two-way question answers it
+        # wrong about a quarter of the time at ANY confidence, 1.00 included.
+        # What DOES stay at 0.0% is the false-stop rate on ordinary calls --
+        # "come here", "over here", "help", and the five demo clips -- which is
+        # the population the demo actually contains.
         best = 0.0
         for word in result.get("result", []):
             if word.get("word") == STOP_WORD:

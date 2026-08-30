@@ -68,6 +68,8 @@ BEARING_AZIMUTHS_DEGREES = (0.0, 25.0, 45.0, 70.0, 90.0, 135.0, 160.0, 180.0)
 # Candidate thresholds for the sweep in section 1. Vosk's grammar posteriors
 # pile up near 1.0, so the interesting range is the top of the scale.
 THRESHOLD_LADDER = (0.50, 0.70, 0.80, 0.85, 0.90, 0.93, 0.95, 0.97, 0.99, 1.00)
+# How many missed stops one false stop is worth. See `print_stop_tables`.
+FALSE_STOP_COST = 3.0
 # HOW LOUDLY SHE SPEAKS, in dB about the corpus's own level. The user's point:
 # a shout carries further in wind than a mumble, and nothing in the pipeline
 # normalises the microphone, so the source level has to be a variable in the
@@ -75,7 +77,18 @@ THRESHOLD_LADDER = (0.50, 0.70, 0.80, 0.85, 0.90, 0.93, 0.95, 0.97, 0.99, 1.00)
 SOURCE_LEVEL_DECIBELS = (-20.0, 0.0, +10.0)
 SOURCE_LEVEL_DISTANCE_METERS = 5.0
 SOURCE_LEVEL_WIND_MPS = 12.0
-LEADING_SILENCE_SECONDS = 0.30    # the VAD wants context before the word
+# THE LEAD-IN IS 1.5 s, NOT 0.3, AND IT IS WIND -- not silence. webrtcvad is
+# STATEFUL: it adapts an internal noise model, and it needs a second or two of
+# the current conditions before it can tell a voice from a gale. That makes
+# every table order-dependent unless each clip is given its own warm-up, and it
+# bit hard: the demo clips read "never heard" at every wind above zero, while
+# the same clips inside the big sweep read 100% -- because in the sweep 365
+# clips at one wind speed had already adapted the detector, and in the small
+# table the wind changed every three clips. Through the ear model a lead-in of
+# zero SOURCE is a lead-in of pure wind noise, which is exactly the warm-up the
+# detector needs, so the fix is one constant and the tables stop depending on
+# the order they were computed in.
+LEADING_SILENCE_SECONDS = 1.50
 TRAILING_SILENCE_SECONDS = 0.50   # ... and enough after it to close the segment
 CONTROL_HZ = 50.0
 SAMPLES_PER_TICK = int(round(hearing_module.SAMPLE_RATE_HZ / CONTROL_HZ))
@@ -225,8 +238,9 @@ def print_stop_tables(results) -> float:
 
     print("\n1a. THRESHOLD SWEEP, pooled over the whole grid"
           " (the number below is chosen from this table)")
-    print("| threshold | stop detected | false stop, near-miss |"
-          " false stop, other calls | false stop, pooled | margin |")
+    print(f"| threshold | stop detected | false stop, near-miss |"
+          f" false stop, other calls | false stop, pooled |"
+          f" detected - {FALSE_STOP_COST:.0f}x false |")
     print("|---|---|---|---|---|---|")
     pooled = [row for rows in results.values() for row in rows]
     best_threshold, best_margin = THRESHOLD_LADDER[0], -2.0
@@ -236,11 +250,12 @@ def print_stop_tables(results) -> float:
         other, _ = rate(pooled, ("other",), threshold)
         false_pooled, _ = rate(pooled, corpus_module.NON_STOP_LABELS, threshold)
         # THE CHOICE RULE, stated before the table is read: maximise
-        # (detection rate - false-stop rate). It weights the two errors
-        # equally, which is the honest default when nobody has said which one
-        # costs more -- and it is written down here so the threshold is not
-        # chosen by looking at the numbers and picking a nice one.
-        margin = hit - false_pooled
+        # `detection - FALSE_STOP_COST * false-stop`. The weight is not a
+        # default, it is the brief: the user named "top", "shop" and "drop" as
+        # near-misses that MUST NOT trigger, so a false stop is declared to cost
+        # three misses. Writing it here means the threshold is chosen by a rule
+        # rather than by looking at the numbers and picking a nice one.
+        margin = hit - FALSE_STOP_COST * false_pooled
         if margin > best_margin:
             best_threshold, best_margin = threshold, margin
         print(f"| {threshold:.2f} | {100 * hit:5.1f}% | {100 * near:5.1f}% |"
@@ -271,6 +286,48 @@ def print_stop_tables(results) -> float:
                 cells.append(f"{100 * value:5.1f}% ({count})")
             print(f"| {wind:.0f} | " + " | ".join(cells) + " |")
     return best_threshold
+
+
+def print_demo_clip_table(manifest, ears, threshold, seed=0) -> None:
+    """1e: the five clips the SIDEBAR actually plays, each on the whole grid.
+
+    They are in the pooled corpus as well, where five rows among 365 cannot
+    move a number. This table is here because they are the utterances the demo
+    will be judged on: a threshold tuned on `say` voices that misses the very
+    clip the PEMBA button plays is a threshold tuned on the wrong thing.
+    """
+    demo = [row for row in manifest["clips"] if row["voice"] == "demo"]
+    if not demo:
+        print("\n1e. THE DEMO CLIPS -- none found in"
+              f" {corpus_module.DEMO_VOICE_DIRECTORY}")
+        return
+    print(f"\n1e. THE DEMO CLIPS -- app/web/sounds/voice/, what the sidebar's"
+          f" MANUAL buttons play.  `stop` threshold {threshold:.2f}.")
+    print("| clip | label | seconds | " + " | ".join(
+        f"{wind:.0f} m/s" for wind in WIND_SPEEDS_MPS) + " |")
+    print("|---" * (len(WIND_SPEEDS_MPS) + 3) + "|")
+    for row in demo:
+        clip = corpus_module.read_clip(manifest, row)
+        cells = []
+        for wind in WIND_SPEEDS_MPS:
+            verdicts = []
+            for distance in DISTANCES_METERS:
+                segments = hear_clip(clip, distance, 45.0, wind, seed=seed,
+                                     ears=ears)
+                best = max((segment["stop_confidence"]
+                            for segment in segments), default=0.0)
+                if not segments:
+                    verdicts.append("·")           # never heard at all
+                elif best >= threshold:
+                    verdicts.append("S")           # heard, decoded as `stop`
+                else:
+                    verdicts.append("v")           # heard, called a voice
+            cells.append("".join(verdicts))
+        print(f"| `{row['path']}` | {row['label']} | {row['seconds']:.2f} | "
+              + " | ".join(cells) + " |")
+    print("   Each cell is 2 m / 5 m / 10 m: `S` decoded as `stop`, `v` heard"
+          " as an ordinary voice, `·` not heard at all. A `stop` row wants"
+          " SSS; every other row wants vvv and MUST NOT contain an S.")
 
 
 def print_source_level_table(manifest, clips, ears, seed=0) -> None:
@@ -846,7 +903,12 @@ def choose_clip(manifest, text, voice=None):
 
 def main(arguments) -> None:
     manifest = corpus_module.load_manifest(arguments.corpus)
-    clips = manifest["clips"][::max(1, arguments.clip_stride)]
+    # THE DEMO CLIPS ARE NEVER STRIDED OUT. `--clip-stride` is for making a
+    # quick pass over 360 synthetic voices; dropping the five recordings the
+    # demo actually plays would be exactly the wrong economy.
+    demo = [row for row in manifest["clips"] if row["voice"] == "demo"]
+    clips = [row for row in manifest["clips"][::max(1, arguments.clip_stride)]
+             if row["voice"] != "demo"] + demo
     print(f"[test_hearing] corpus: {len(manifest['clips'])} clips,"
           f" using {len(clips)} (stride {arguments.clip_stride});"
           f" {len(manifest['voices'])} voices"
@@ -879,7 +941,9 @@ def main(arguments) -> None:
               f" {len(WIND_SPEEDS_MPS)}x{len(DISTANCES_METERS)} grid ...")
         results = sweep_corpus(manifest, clips, ears, seed=arguments.seed)
         if 1 in sections:
-            print_stop_tables(results)
+            threshold = print_stop_tables(results)
+            print_demo_clip_table(manifest, ears, threshold,
+                                  seed=arguments.seed)
             print_source_level_table(
                 manifest, clips[::max(1, arguments.bearing_stride)], ears,
                 seed=arguments.seed)
