@@ -71,7 +71,7 @@ const HIKER_MOUNT_IN_BODY = [0.03, 0.0, 1.815];
 // the camera happens to be. The clearance arithmetic in the header was redone
 // against these numbers, not carried over.
 const POLE_LENGTH_METERS = 0.45;
-const POLE_RADIUS_METERS = 0.012;
+const POLE_RADIUS_METERS = 0.004;   // antenna-thin (user: "the flag poles should be thin")
 const PENNANT_LENGTH_METERS = 0.36;      // pole to tip, along the wind
 const PENNANT_HEIGHT_METERS = 0.24;      // at the pole; it tapers to the tip
 const PENNANT_TIP_SHARE = 0.22;          // the tip's height, as a share of the root's
