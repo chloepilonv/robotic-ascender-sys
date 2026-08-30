@@ -168,23 +168,40 @@ class RopeCarrier:
     never open-ended, or the carrier reads as three phantom joints.
     """
 
-    def __init__(self, route: RopeRoute, s0: float = 0.0, ratchet: bool = True):
+    def __init__(self, route: RopeRoute, s0: float = 0.0, ratchet: bool = True,
+                 slide_friction: float = 8.0):
+        """`slide_friction` is the dry (Coulomb) drag of the cam on the sheath,
+        in newtons -- a constant resisting force, not proportional to speed.
+
+        A real ascender takes a small steady push to run up a rope; it does not
+        glide. 8 N is at the light end of a spring-loaded cam. Set 0 for a
+        frictionless bead. It has no bearing on the downward direction: that is
+        the ratchet, which is absolute.
+        """
         self.route = route
         self.s = float(s0)
         self.s0 = float(s0)
         self.ratchet = ratchet
+        self.slide_friction = float(slide_friction)
         self._slide_adr = None   # qpos address of the carrier's 3 slide joints
         self._dof_adr = None
         self._origin = None      # carrier body frame origin (slides are offsets)
+        self._dv = 0.0           # velocity the friction removes per substep
 
     def bind(self, model, mujoco) -> None:
         """Locate the carrier's coordinates in a compiled model."""
         jid = model.joint("carrier_x").id
         self._slide_adr = int(model.jnt_qposadr[jid])
         self._dof_adr = int(model.jnt_dofadr[jid])
-        self._origin = np.asarray(
-            model.body_pos[model.body("rope_carrier").id], dtype=float
-        ).copy()
+        body = model.body("rope_carrier").id
+        self._origin = np.asarray(model.body_pos[body], dtype=float).copy()
+        # Coulomb friction is applied on the velocity because that is where this
+        # class already projects. Doing it here rather than through MuJoCo's
+        # joint `frictionloss` keeps it isotropic: frictionloss sits on the three
+        # world-axis slides, so its effective resistance would depend on which
+        # way the rope happens to point.
+        mass = float(model.body_mass[body]) or 1.0
+        self._dv = self.slide_friction / mass * float(model.opt.timestep)
 
     def reset(self, s0: float | None = None) -> None:
         self.s = self.s0 if s0 is None else float(s0)
@@ -214,10 +231,12 @@ class RopeCarrier:
         self.advance(data.qpos[a : a + 3] + self._origin)
         data.qpos[a : a + 3] = self.route.point_at(self.s) - self._origin
         tangent = self.route.tangent_at(self.s)
-        vel = data.qvel[v : v + 3]
-        along = float(vel @ tangent)
+        along = float(data.qvel[v : v + 3] @ tangent)
         if self.ratchet:
             along = max(along, 0.0)
+        if self._dv:
+            # Dry friction: shave a fixed velocity increment off, never past zero.
+            along = np.sign(along) * max(0.0, abs(along) - self._dv)
         data.qvel[v : v + 3] = along * tangent
         return self.s
 

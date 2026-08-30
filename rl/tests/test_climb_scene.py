@@ -697,3 +697,62 @@ def test_rope_collision_does_not_stop_the_ascender_sliding():
         sc.step()
     assert sc.ascender.s - s0 > 1.0
     assert sc.hand_rope_distance() < 0.025
+
+
+# -- ascender slide friction -----------------------------------------------
+
+def test_ascender_is_frozen_downward_whatever_the_friction():
+    """Falling is the ratchet's job, and it is absolute, not frictional."""
+    from rl.environment import walk_policy as WP
+
+    for F in (0.0, 8.0, 50.0):
+        sc = CS.build_scene(T.load_patch("B"), robot_scene=R.resolve("himalaya").xml,
+                            slide_friction=F)
+        m, d = sc.model, sc.data
+        sc.reset()
+        ctl = WP.WalkController(m)
+        smax = sc.ascender.s
+        worst = 0.0
+        for _ in range(3000):
+            ctl.substep(d)
+            s = sc.step()
+            worst = max(worst, smax - s)
+            smax = max(smax, s)
+        assert worst == 0.0, F
+
+
+def test_slide_friction_decelerates_as_coulomb_friction_should():
+    """Dry friction F on mass m gives a constant F/m deceleration.
+
+    Checked against the closed form, with gravity along the rope included --
+    on a 38.6 deg line that is g*sin(slope), and omitting it makes the numbers
+    look wrong by a factor of four at light settings.
+    """
+    for F in (8.0, 20.0, 50.0):
+        sc = CS.build_scene(T.load_patch("B"), robot_scene=R.resolve("himalaya").xml,
+                            slide_friction=F)
+        m, d = sc.model, sc.data
+        m.eq_active0[m.equality("ascender_grip").id] = 0        # carrier alone
+        adr = sc.ascender._dof_adr
+        m.dof_damping[adr : adr + 3] = 0.0
+        sc.reset()
+        v0 = 1.0
+        d.qvel[adr : adr + 3] = v0 * sc.route.tangent_at(sc.ascender.s)
+        s0 = sc.ascender.s
+        for _ in range(20000):
+            mujoco.mj_step(m, d)
+            sc.ascender.constrain(d)
+            if float(d.qvel[adr : adr + 3] @ sc.route.tangent_at(sc.ascender.s)) <= 1e-9:
+                break
+        mass = float(m.body_mass[m.body("rope_carrier").id])
+        gravity_along = 9.81 * np.sin(np.radians(sc.terrain.slope_deg))
+        predicted = v0**2 / (2.0 * (gravity_along + F / mass))
+        assert sc.ascender.s - s0 == pytest.approx(predicted, rel=0.15), F
+
+
+def test_zero_slide_friction_still_ratchets():
+    r = A.drape_route(T.make_terrain(38, 0.12, 3))
+    asc = A.RopeCarrier(r, s0=0.0, slide_friction=0.0)
+    asc.advance(r.point_at(5.0))
+    asc.advance(r.point_at(1.0))
+    assert asc.s == pytest.approx(5.0)

@@ -526,6 +526,7 @@ def build_scene(
     lean_frac: float | None = None,
     carrier_mass: float = 1.0,
     carrier_damping: float = 1.0,
+    slide_friction: float = 8.0,
 ) -> ClimbScene:
     """Compile G1 + terrain + rope + ascender into one MuJoCo model.
 
@@ -705,7 +706,8 @@ def build_scene(
         data=data,
         terrain=terrain,
         route=route,
-        ascender=asc_mod.RopeCarrier(route, s0=s_start, ratchet=ratchet),
+        ascender=asc_mod.RopeCarrier(route, s0=s_start, ratchet=ratchet,
+                                     slide_friction=slide_friction),
         spec=spec,
         friction=friction,
         adapt_report=adapt_report,

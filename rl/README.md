@@ -138,6 +138,19 @@ python -m rl.scripts.climb_scene --patch B --haul 260 --view   # ascender rides 
 python -m rl.scripts.climb_scene --patch B_slope0 --view       # walking drags it ~1.5 m / 10 s
 ```
 
+### Ascender friction
+
+Downward the ascender is **frozen**, not merely stiff: the ratchet clamps both
+arc length and velocity, so backslide is exactly 0.0 at every setting. That is a
+hard constraint, not a friction that a big enough load could overcome.
+
+Upward it has dry (Coulomb) friction — a constant resisting force, not one
+proportional to speed, like a cam dragging on the sheath. `slide_friction`
+defaults to 8 N, the light end of a spring-loaded cam; 0 gives a frictionless
+bead. Validated against the closed form: with gravity along the rope included,
+a carrier launched at 1 m/s stops within 8% of `v0² / 2(g·sin(slope) + F/m)`
+across 8–50 N.
+
 ### The rope is solid
 
 Limbs cannot pass through it: shoved sideways into the line the robot travels
