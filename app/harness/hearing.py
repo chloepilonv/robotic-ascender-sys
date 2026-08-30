@@ -227,7 +227,8 @@ VOSK_GRAMMAR = '["stop", "[unk]"]'
 STOP_CONFIDENCE_THRESHOLD = 0.90
 
 # ------------------------------------------------------------- the behaviour
-HEARING_MODES = ("IDLE", "COMING_BY_EYES", "COMING_BY_EARS", "STOPPED", "WAIT")
+HEARING_MODES = ("IDLE", "LISTENING", "COMING_BY_EYES", "COMING_BY_EARS",
+                 "STOPPED", "WAIT")
 HEARING_MODE_CODES = {name: float(index)
                       for index, name in enumerate(HEARING_MODES)}
 HEARD_CODES = {"none": 0.0, "voice": 1.0, "stop": 2.0}
@@ -250,8 +251,8 @@ EAR_MAXIMUM_YAW_RATE_RADIANS_PER_SECOND = 0.5
 # waist -- and therefore the stereo pair -- at the direction the shout came
 # from, which is the whole job of the ear cue: get her into the picture so
 # vision can take over. Once the cue is older than this the waist is handed
-# back to the follower's own SEARCH sweep, because a stale bearing is a worse
-# place to look than everywhere.
+# back to wherever it was, because a stale bearing is not worth holding a torso
+# twisted for.
 EAR_WAIST_AIM_SECONDS = 3.0
 EAR_BEARING_DEADBAND_RADIANS = math.radians(4.0)
 # TURN FIRST, THEN WALK. Beyond this the robot pivots on the spot: walking while
@@ -1095,15 +1096,21 @@ class HearingBehaviour:
         acquire and vision takes over.
       * VOICE IS A TRIGGER, NOT A LEASH. One shout starts the walk; silence does
         not stop it. It ends at the person (`WAIT`) or at a `stop`.
-      * losing her mid-walk is the follower's SEARCH sweep, unchanged -- the
-        ear layer simply hands its command straight through -- and a NEW shout
-        re-cues by ear.
+      * LOSING HER MID-WALK IS NOT A SEARCH ANY MORE (user's ruling,
+        2026-08-30). The follower's camera sweep is deleted. Called, with no
+        eyes on her and no ear cue worth steering by, the robot STANDS STILL AND
+        LISTENS (`LISTENING`) -- and the next shout hands it a direction, which
+        is a thing a camera sweep could never do. That is the whole argument for
+        ears: a lost robot should wait to be called, not wave its torso about.
 
-    WHY IDLE COMMANDS ZERO. With hearing on, the robot is waiting to be called;
-    a robot that walks toward a person nobody called it to is a different demo.
-    So `IDLE` is a standing robot, and the first utterance is what starts
-    everything. With hearing OFF this class is never consulted and the guide
-    follower's command goes through untouched.
+    WHY IDLE AND LISTENING BOTH COMMAND ZERO, and why they are still two states.
+    `IDLE` is "nobody has called me yet"; `LISTENING` is "I was called, I have
+    lost her, and I do not know which way to go". The command is the same and
+    the situation is not, and a demo in which those two look identical is a demo
+    nobody can read.
+
+    With hearing OFF this class is never consulted and the guide follower's
+    command goes through untouched.
 
     Inputs  : the `Ears` (its verdicts only), and the `GuideFollower`'s live
               state.
@@ -1198,8 +1205,8 @@ class HearingBehaviour:
 
         if self.eyes_have_her(follower):
             # VISION OWNS THE NAVIGATION from here. The follower's own command
-            # is handed through byte for byte -- its hysteresis, its 1 m WAIT
-            # band and its SEARCH sweep are all still exactly what they were.
+            # is handed through byte for byte -- its hysteresis and its 1 m WAIT
+            # band are exactly what they were.
             if follower.mode == "WAIT":
                 self.mode = "WAIT"
                 self.called = False       # arrived; the next shout re-calls
@@ -1210,11 +1217,14 @@ class HearingBehaviour:
 
         if (self.cue_heading_world_radians is None
                 or self.cue_age_seconds > EAR_CUE_VALID_SECONDS):
-            # Called, but with no direction worth steering by. The follower's
-            # SEARCH sweep is the right thing and it is already running.
-            self.mode = "COMING_BY_EARS"
+            # Called, but with no eyes on her and no direction worth steering
+            # by. STAND STILL AND LISTEN. Walking off in the last known
+            # direction would be worse than useless: the cue is stale precisely
+            # because she has not spoken for twenty seconds, and a robot
+            # wandering away is a robot that cannot be called back.
+            self.mode = "LISTENING"
             self.bearing_error_radians = 0.0
-            self._command = np.asarray(guide_command, dtype=float).copy()
+            self._command = np.zeros(3)
             return self._command
 
         self.mode = "COMING_BY_EARS"
@@ -1413,9 +1423,10 @@ class HearingSystem:
         `guide.WaistYaw` owns both, and duplicating them here is how two
         clamps end up disagreeing.
 
-        Handing the waist back once the cue goes stale matters more than it
-        looks. A wrong bearing held for ever is a robot staring at an empty
-        slope, which is precisely the failure SEARCH was built to end.
+        Letting go of the waist once the cue goes stale matters more than it
+        looks: a wrong bearing held for ever is a robot staring at an empty
+        slope with its torso twisted, and the waist limit is 60 degrees for a
+        measured reason (`guide.WAIST_LIMIT_RADIANS`).
         """
         behaviour = self.behaviour
         if (guide_system is None or getattr(guide_system, "waist", None) is None
