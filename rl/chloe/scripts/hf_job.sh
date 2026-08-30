@@ -19,7 +19,10 @@ uv tool install -q huggingface_hub
 hf download "$HF_REPO" code.tar.gz --local-dir /dl
 mkdir -p /work && tar -xzf /dl/code.tar.gz -C /work && cd /work
 uv venv -q -p 3.11 .venv && uv pip install -q -p .venv/bin/python mjlab onnx onnxscript
-.venv/bin/python assets/robots/mujoco/build.py --fetch
+# Stock Unitree STLs (build.py --fetch needs USD; do the sparse clone directly).
+git clone -q --depth 1 --filter=blob:none --sparse https://github.com/google-deepmind/mujoco_menagerie /men \
+  && git -C /men sparse-checkout set unitree_g1 -q \
+  && mkdir -p assets/robots/g1/_menagerie && cp -r /men/unitree_g1 assets/robots/g1/_menagerie/
 nvidia-smi --query-gpu=name,memory.total --format=csv
 
 RESUME_ARGS=()
