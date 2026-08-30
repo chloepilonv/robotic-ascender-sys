@@ -173,6 +173,22 @@ CHLOE_POLICY_VERSIONS = {
                 " (normaliser baked in), verified vs torch to 3.8e-06.",
         "slopes": (10, 20, 30),
     },
+    "m2": {
+        "relative_path": os.path.join(
+            "rl", "chloe", "policies",
+            "g1_ascender_slope20_final_2026-08-30_13-55-14.onnx"),
+        "trained_slope_degrees": 20.0,
+        "display": "Mrinal 2",
+        "note": "Mrinal's FINAL checkpoint (main, iter 12997, trained with the"
+                " domain-randomisation guardrails of PR #20; same 96-d obs and"
+                " 512/256/128 ELU actor as m1). ONNX derived from the .pt with"
+                " plain torch (normaliser baked in), verified vs torch to"
+                " 5.7e-06. MEASURED 2026-08-30 (15 s, calm, tilted_plane):"
+                " uphill 6.06/6.19/5.93/5.42/4.87 m at 20/25/30/35/40 deg,"
+                " STANDING at every rung, up_z 0.87-0.96, ratchet gap"
+                " <= 0.11 cm -- the first checkpoint that climbs 35 and 40.",
+        "slopes": (20, 25, 30, 35, 40),
+    },
     "v2": {
         "relative_path": os.path.join(
             "rl", "chloe", "policies",
