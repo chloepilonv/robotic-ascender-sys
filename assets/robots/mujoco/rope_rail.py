@@ -4,10 +4,10 @@ Adds to a robot MjSpec (g1_unitree_ascender.xml):
 
   world
   ├── rope            visual cylinder along +x through the ascender channel (no contact)
-  └── rope_carriage   slide joint `rope_slide` (along +x) + hinge `rope_spin` (about +x)
+  └── rope_carriage   ONE slide joint `rope_slide` along +x (a prismatic joint)
         weld  rope_carriage <-> right_wrist_yaw_link, so the rope always runs
-        through the ascender's channel: the tool slides along the rope and spins
-        around it, nothing else — a real ascender. `ratchet()` is the cam.
+        through the ascender's channel: the tool slides along the rope and
+        nothing else. `ratchet()` is the cam (up only).
 
 The channel = the tool-frame Z axis through the collision-mesh centre, mapped
 through the mount pose (assets/ascender/MOUNT.md: the cam head is centred on
@@ -31,7 +31,6 @@ ASCENDER_MESH = HERE / "meshes/ascender_collision.obj"
 ROPE_BODY = "rope"
 CARRIER_BODY = "rope_carriage"
 SLIDE_JOINT = "rope_slide"  # no "_joint" suffix so ".*_joint" regexes skip it
-SPIN_JOINT = "rope_spin"
 WRIST_BODY = "right_wrist_yaw_link"
 RIGHT_WRIST = ("right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint")
 
@@ -149,7 +148,6 @@ def add_rope_rail(spec: mujoco.MjSpec, root_pos, root_quat, joint_pos: dict) -> 
     damping=2.0,
     frictionloss=CAM_FRICTION_N,
   )
-  carrier.add_joint(name=SPIN_JOINT, type=mujoco.mjtJoint.mjJNT_HINGE, axis=[1, 0, 0], damping=0.05)
   carrier.add_geom(
     name="carrier_geom",
     type=mujoco.mjtGeom.mjGEOM_SPHERE,
@@ -178,7 +176,6 @@ def add_rope_rail(spec: mujoco.MjSpec, root_pos, root_quat, joint_pos: dict) -> 
   out = dict(joint_pos)
   out.update(wrist_q)
   out[SLIDE_JOINT] = 0.0
-  out[SPIN_JOINT] = 0.0
   return out
 
 

@@ -23,7 +23,7 @@ import rope_rail as rail  # noqa: E402  (shared, mujoco-only)
 G1_ASCENDER_XML = REPO_ROOT / "assets/robots/mujoco/g1_unitree_ascender.xml"
 
 ROPE_BODY, CARRIER_BODY = rail.ROPE_BODY, rail.CARRIER_BODY
-SLIDE_JOINT, SPIN_JOINT, WRIST_BODY = rail.SLIDE_JOINT, rail.SPIN_JOINT, rail.WRIST_BODY
+SLIDE_JOINT, WRIST_BODY = rail.SLIDE_JOINT, rail.WRIST_BODY
 TORSO_BODY = "torso_link"
 FOOT_GEOM_REGEX = ".*_foot_[0-3]"
 

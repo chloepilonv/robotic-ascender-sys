@@ -38,9 +38,9 @@ Jacket/boots/logos are visual only: no contact, no mass. Not ported: metallic/ro
 ## Rope + ascender rail — `rope_rail.py` (use this, do not rebuild your own rope)
 
 The ascender on the rope, as a mechanism: `rope` (visual cylinder along +x) and a `rope_carriage`
-with a **slide** joint along the rope (`rope_slide`) and a **hinge** around it (`rope_spin`),
-**welded** to `right_wrist_yaw_link` so the rope always runs through the ascender's channel
-(green cylinder = the channel). The tool can go up the rope and rotate around it, nothing else.
+with ONE **slide** joint along the rope (`rope_slide`, a prismatic joint), **welded** to
+`right_wrist_yaw_link` so the rope always runs through the ascender's channel (green cylinder =
+the channel). The tool slides along the rope, nothing else.
 
 ```python
 import mujoco, sys; sys.path.insert(0, "assets/robots/mujoco")
