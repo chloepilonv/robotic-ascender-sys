@@ -40,7 +40,7 @@ SIM_STANDING_DEV = 0.367   # rad, from tests/test_deploy.py golden value
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--iface", default="eth0")
-    ap.add_argument("--policy", default="policies/mels_g1_joystick.npz")
+    ap.add_argument("--policy", default="rl/policies/mels_g1_joystick.npz")
     ap.add_argument("--seconds", type=float, default=60.0)
     ap.add_argument("--out", default="dryrun.jsonl")
     ap.add_argument("--command", type=float, nargs=3, default=[0.0, 0.0, 0.0],

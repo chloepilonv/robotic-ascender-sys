@@ -24,8 +24,8 @@ from deploy import constants as C
 from deploy.observation import ObservationBuilder, gravity_from_quaternion
 from deploy.policy import Policy
 
-NPZ = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                   "policies", "mels_g1_joystick.npz")
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+NPZ = os.path.join(_ROOT, "rl", "policies", "mels_g1_joystick.npz")
 FIXTURE = os.environ.get("G1_NOMESH_SCENE", "")
 
 

@@ -68,7 +68,7 @@ def bail(s, _f):
     print("\nsignal %d -> damping" % s); damp(); sys.exit(0)
 signal.signal(signal.SIGINT, bail); signal.signal(signal.SIGTERM, bail)
 
-policy, builder = Policy("/home/unitree/policies/mels_g1_joystick.npz"), ObservationBuilder()
+policy, builder = Policy("rl/policies/mels_g1_joystick.npz"), ObservationBuilder()
 q0, _, _, _ = read()
 acts, dacts, zs, prev = [], [], [], None
 try:

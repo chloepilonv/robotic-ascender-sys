@@ -105,7 +105,7 @@ class Robot:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--iface", default="eth0")
-    ap.add_argument("--policy", default="policies/mels_g1_joystick.npz")
+    ap.add_argument("--policy", default="rl/policies/mels_g1_joystick.npz")
     ap.add_argument("--arm", action="store_true")
     ap.add_argument("--seconds", type=float, default=30.0)
     a = ap.parse_args()
