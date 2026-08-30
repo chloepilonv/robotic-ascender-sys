@@ -1284,6 +1284,13 @@ class HearingBehaviour:
         # and LISTENS, which is the user's 2026-08-30 ruling.
         self.cue_spent = False
         self.bearing_error_radians = 0.0     # what the yaw command is closing
+        # WALK THE VECTOR (user's ruling, 2026-08-30). Not a constructor
+        # argument on purpose: the FOLLOWER already knows whether this world
+        # lets the body move sideways (`GuideFollower.vector_steering`, set from
+        # the rope flag), and it is handed to `update` on every tick, so reading
+        # it there keeps ears and eyes on ONE steering law with no second place
+        # to configure and get wrong.
+        self.vector_steering = False
         self._command = np.zeros(3)
 
     def reset(self) -> None:
@@ -1321,6 +1328,7 @@ class HearingBehaviour:
         """
         if measurement_yaw_radians is None:
             measurement_yaw_radians = robot_yaw_radians
+        self.vector_steering = bool(getattr(follower, "vector_steering", False))
         self.cue_age_seconds += dt_seconds
 
         if ears.new_segment:
@@ -1397,6 +1405,18 @@ class HearingBehaviour:
         price and it is worth paying.
         """
         bearing = float(bearing_radians)
+        if self.vector_steering:
+            # WALK THE VECTOR. `lin_vel_y` carries the sideways part of the
+            # approach directly instead of asking a 7%-authority yaw port to
+            # rotate the whole robot first -- `guide.vector_command` holds the
+            # measured table. The "never turn on the spot" finding below still
+            # governs: `lin_vel_x` is floored at -0.2 m/s rather than zeroed, so
+            # the gait keeps stepping and the yaw term keeps working even when
+            # she is directly behind.
+            from app.harness import guide as guide_module
+            return guide_module.vector_command(
+                bearing, self.walk_speed,
+                deadband_radians=EAR_BEARING_DEADBAND_RADIANS)
         if abs(bearing) < EAR_BEARING_DEADBAND_RADIANS:
             yaw_rate = 0.0
         else:

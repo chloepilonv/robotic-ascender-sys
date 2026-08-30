@@ -520,7 +520,13 @@ def run(arguments) -> str:
                                    and not autonomous),
             # No rope means no line for her to be on: W/S walk her along her own
             # heading and A/D turn it.
-            free_walk=not current_episode.rope_enabled)
+            free_walk=not current_episode.rope_enabled,
+            # WALK THE VECTOR on rope-off worlds only (user's ruling,
+            # 2026-08-30). With the palm clipped to the rope a lateral command
+            # fights the line, and Chloe's autonomous worlds have no command
+            # port at all -- both keep the old scalar approach law.
+            vector_steering=(not current_episode.rope_enabled
+                             and not autonomous))
         gate = HumanGate(guide_module.GuideVisionDetector(system),
                          clear_after_seconds=0.0)
         if system.available:

@@ -318,6 +318,93 @@ FOLLOW_SPEED_METERS_PER_SECOND = 0.5
 BEARING_GAIN_PER_RADIAN = 2.0
 MAXIMUM_YAW_RATE_RADIANS_PER_SECOND = 1.0
 
+# ------------------------------------------------- WALKING THE VECTOR (2026-08-30)
+# THE USER'S RULING: "the stock unitree should be able to walk in all directions
+# when it hears the voice." The old approach law was scalar -- `[speed, 0, yaw]`
+# -- so the ONLY way the robot could close a bearing was to turn, and MEASURED on
+# `flat_free` (the mels policy's own training floor, stock playground G1, 10 s per
+# cell from standstill) turning is the one thing it barely does:
+#
+#     command (vx, vy, yaw)   achieved vx    achieved vy    achieved yaw
+#     (1.0, 0.0, 0.0)           +0.70 m/s      -0.19 m/s      -0.05 rad/s
+#     (0.0, 0.5, 0.0)           +0.21          +0.08          -0.05      (fell 9.8 s)
+#     (0.0, 0.0, 1.0)           +0.09          +0.01          +0.07
+#     (0.7, 0.0, 1.0)           +0.05          -0.11          -0.11
+#     (0.7, 0.5, 0.3)           +0.32          -0.19          -0.27
+#
+# 70% of the commanded FORWARD speed arrives; about 7% of the commanded YAW does.
+# A controller that steers only with `ang_vel_yaw` is therefore spending its one
+# strong actuator (forward) on a direction it did not choose and its one weak
+# actuator on the whole steering job. The fix is to stop treating the command as
+# a speed plus a rudder and start treating it as a VELOCITY VECTOR in the body
+# frame, which is what the policy's `lin_vel_x` / `lin_vel_y` ports already are:
+#
+#     lin_vel_x  = v * cos(beta)
+#     lin_vel_y  = clip(v * sin(beta), +/- 0.5)      <- CMD_LIMITS' own lateral cap
+#     ang_vel_yaw = clip(k * beta, +/- 1.0)          <- face her WHILE walking
+#
+# `k` is set so the heading closes over about two seconds, which is gentle enough
+# that the turn is a drift rather than a lurch -- the robot is already moving
+# toward her on the linear ports, so yaw is now a comfort term, not the engine.
+#
+# BEHIND HER (|beta| > 90 deg) `cos(beta)` goes negative and the law would ask for
+# a backwards walk. It is capped rather than forbidden: a small negative `lin_vel_x`
+# keeps the gait stepping (and yaw only exists while the gait steps -- see
+# `hearing.HearingBehaviour._walk_toward`), so the robot walks a CURVED approach,
+# crabbing sideways on `lin_vel_y` while the yaw term swings the nose around. It
+# never stops to pivot, because a stopped robot cannot turn at all.
+VECTOR_YAW_GAIN_PER_RADIAN = 0.5          # ~2 s to face the target
+VECTOR_MAXIMUM_YAW_RATE_RADIANS_PER_SECOND = 1.0   # walk_policy.CMD_LIMITS[2]
+VECTOR_MAXIMUM_LATERAL_METERS_PER_SECOND = 0.5     # walk_policy.CMD_LIMITS[1]
+VECTOR_MAXIMUM_FORWARD_METERS_PER_SECOND = 1.0     # walk_policy.CMD_LIMITS[0]
+# The floor on `lin_vel_x` when she is BEHIND. Not zero: the gait has to keep
+# stepping or the yaw term buys nothing.
+VECTOR_MINIMUM_FORWARD_METERS_PER_SECOND = -0.2
+
+
+def vector_command(bearing_radians, speed_meters_per_second,
+                   yaw_gain=VECTOR_YAW_GAIN_PER_RADIAN,
+                   deadband_radians=None) -> np.ndarray:
+    """Walk TOWARD a body-frame bearing, using all three command ports.
+
+    Inputs : `bearing_radians` -- where the target is in the robot's own frame,
+             +ve to its left (the same sign the detector and the ears report);
+             `speed_meters_per_second` -- how fast to approach, metres/second.
+    Output : (3,) float [lin_vel_x m/s, lin_vel_y m/s, ang_vel_yaw rad/s], the
+             walking policy's own layout, already clamped to `CMD_LIMITS`.
+             The linear pair is the approach direction resolved into the body
+             frame; the yaw term turns the nose onto her over ~2 s WITHOUT
+             stopping. See the block comment above for the measured reason.
+    """
+    if deadband_radians is None:
+        # Resolved here, not in the signature: `BEARING_DEADBAND_RADIANS` is
+        # assigned further down this module and a default argument is evaluated
+        # at def time.
+        deadband_radians = BEARING_DEADBAND_RADIANS
+    bearing = float(_wrap_to_pi(bearing_radians))
+    speed = float(speed_meters_per_second)
+    forward = speed * math.cos(bearing)
+    lateral = speed * math.sin(bearing)
+    forward = max(forward, VECTOR_MINIMUM_FORWARD_METERS_PER_SECOND)
+    forward = float(np.clip(forward, VECTOR_MINIMUM_FORWARD_METERS_PER_SECOND,
+                            VECTOR_MAXIMUM_FORWARD_METERS_PER_SECOND))
+    lateral = float(np.clip(lateral, -VECTOR_MAXIMUM_LATERAL_METERS_PER_SECOND,
+                            VECTOR_MAXIMUM_LATERAL_METERS_PER_SECOND))
+    if abs(bearing) < deadband_radians:
+        yaw_rate = 0.0
+    else:
+        yaw_rate = float(np.clip(
+            yaw_gain * bearing,
+            -VECTOR_MAXIMUM_YAW_RATE_RADIANS_PER_SECOND,
+            VECTOR_MAXIMUM_YAW_RATE_RADIANS_PER_SECOND))
+    return np.array([forward, lateral, yaw_rate])
+
+
+def _wrap_to_pi(angle_radians: float) -> float:
+    """(-pi, pi]. A bearing of +190 deg is a bearing of -170 deg."""
+    return (float(angle_radians) + math.pi) % (2.0 * math.pi) - math.pi
+
+
 # ------------------------------------------------------- looking for her
 # THE G1 HAS NO NECK. The stereo pair is the `d435i` mount on `torso_link`, and
 # the chain from the pelvis up is
@@ -1591,8 +1678,16 @@ class GuideFollower:
     """
 
     def __init__(self, command_speed=FOLLOW_SPEED_METERS_PER_SECOND,
-                 waist=None, yaw_command_available=False):
+                 waist=None, yaw_command_available=False,
+                 vector_steering=False):
         self.command_speed = float(command_speed)
+        # WALK THE VECTOR, DON'T STEER WITH THE RUDDER (user's ruling,
+        # 2026-08-30). True on rope-off worlds, where the body is free to move
+        # sideways and `lin_vel_y` is a real actuator; False on every roped
+        # world, where the palm is clipped to a fixed line and a lateral command
+        # only fights the rope. See `vector_command` for the measured authority
+        # table that motivates it.
+        self.vector_steering = bool(vector_steering)
         # THE ROBOT'S ONLY WAY TO POINT ITS CAMERAS WITHOUT TURNING. None on a
         # model with no waist-yaw actuator; the ear layer then simply cannot aim
         # and waits for the body to happen to face the right way.
@@ -1686,6 +1781,13 @@ class GuideFollower:
         """
         if self.mode != "FOLLOW":
             return np.zeros(3)
+        if self.vector_steering:
+            # The BODY bearing, not the image bearing: the ear layer may have
+            # panned the waist, and the legs live in the body frame.
+            bearing = self.body_bearing_radians()
+            if bearing is None:
+                bearing = 0.0
+            return vector_command(bearing, self.command_speed)
         return np.array([self.command_speed, 0.0,
                          self._yaw_rate(self.bearing_radians)])
 
@@ -1755,7 +1857,7 @@ class GuideSystem:
 
     def __init__(self, scene, model, control_hz, verbose=True, enable=True,
                  degradation=None, yaw_command_available=False,
-                 free_walk=False):
+                 free_walk=False, vector_steering=True):
         import mujoco
         self._mujoco = mujoco
         # A legacy world has no MjSpec to operate on -- their old env hands back
@@ -1776,7 +1878,8 @@ class GuideSystem:
         # once the model is known.
         self.waist = WaistYaw()
         self.follower = GuideFollower(
-            waist=self.waist, yaw_command_available=yaw_command_available)
+            waist=self.waist, yaw_command_available=yaw_command_available,
+            vector_steering=vector_steering)
         self.latest = None                 # the last vision measurement
         self.eye_jpeg = None
         self.true_range_meters = float("nan")
