@@ -61,6 +61,7 @@ First-order lumped model, integrated with the sim dt:
 |---|---|---|
 | motor winding | C_th · dT_m/dt = τ² R / k_t² − (T_m − T_amb) / R_th   (C_th ≈ 50 J/K, R_th ≈ 2 K/W) | °C |
 | battery | C_bat · dT_bat/dt = I² R_int − (T_bat − T_amb) / R_th,bat   (C_bat ≈ 2000 J/K, R_th,bat ≈ 1.5 K/W) | °C |
+| jacket (hardcoded) | R_th,bat ← R_th,bat / (1 − JACKET_PCT/100)   (JACKET_PCT = 60: KAILAS jacket, vents closed; robot shell already in R_th,bat) | K/W |
 | over-temperature flag | T_m > 80 °C or T_bat > 55 °C | bool |
 
 ## 5. Environment (SIM inputs; altitude, wind are the knobs)
@@ -73,3 +74,12 @@ First-order lumped model, integrated with the sim dt:
 | snow/ice friction | μ ≈ 0.05 (ice, −5 °C) … 0.3 (wet snow) → MuJoCo `geom_friction` | – |
 
 Loop: altitude → T_amb, ρ → T_bat, T_m → f(T), R_int → SOC, V_pack, TTE; friction → slips → τ ↑ → P_elec, heat ↑.
+
+## 6. The minimal loop (recap — one pass per sim dt)
+    P      = Σ|τ·q̇| / η + P_idle                              η=0.70, P_idle=60 W
+    I      = P / V_pack                                        V_pack = V_ocv(SOC) − I·R_int(T_bat)
+    SOC   −= 100·I·dt / (3600 · 9 Ah · f(T_bat))               f: cold shrinks usable capacity
+    T_bat += dt/2000 · [ I²·R_int − (T_bat − T_amb)/R_th ]     heater vs cold leak
+    R_th   = 1.5 · (1.225/ρ)^0.5 / (1 − 60/100)                robot shell + jacket (hardcoded 60 %)
+T_amb and the jacket touch **one** term only (the cold leak); cold reaches SOC only via T_bat
+(through f and R_int). Break-even at −15 °C ≈ 10 A: below that draw the pack is net-cooling — idle always cools.

@@ -5,7 +5,7 @@ Owner: BMS work. app/harness is the walker; this file is the only glue.
 What it does per control tick: read two MuJoCo arrays,
     tau = data.actuator_force      (N.m,  actuator order, 29 joints)
     dq  = data.actuator_velocity   (rad/s, actuator order)
-and feed app/bms/sim/battery_model.py (MATH.md sections 3-5):
+and feed app/bms/sim/battery_model.py (MATH.md sections 3-6, jacket hardcoded):
     P_mech = sum |tau*dq|, P_elec = P_mech/eta + I^2R + idle
     -> pack current, SOC, pack V (sag through R_int(T)), pack/motor temperature.
 Readout only: nothing is written back to the physics or the policy.
@@ -31,8 +31,8 @@ for _sub in ("sim", "real"):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from battery_model import BatteryThermalModel, Environment, R_INT_25  # noqa: E402
-from derived import EnergyEstimator, capacity_factor                  # noqa: E402
+from battery_model import BatteryThermalModel, Environment  # noqa: E402
+from derived import EnergyEstimator, capacity_factor        # noqa: E402
 
 KNOB_DEFAULTS = {"t_amb": 15.0, "soc0": 100.0}      # page knobs: ambient C, start SOC %
 
@@ -41,12 +41,6 @@ KNOB_DEFAULTS = {"t_amb": 15.0, "soc0": 100.0}      # page knobs: ambient C, sta
 HUD_FIELDS = ["bms_soc_pct", "bms_pack_V", "bms_current_A", "bms_power_W",
               "bms_mech_power_W", "bms_t_bat_C", "bms_r_int_ohm",
               "bms_energy_used_Wh", "bms_max_abs_tau_Nm"]
-
-
-def r_int_curve(t_min=-30.0, t_max=45.0, n=16):
-    """[[T, R_int(T), f(T)], ...] for the page's curve: R25 * 2^((25-T)/15)."""
-    return [[float(t), float(R_INT_25 * 2 ** ((25.0 - t) / 15.0)), capacity_factor(float(t))]
-            for t in np.linspace(t_min, t_max, n)]
 
 
 class BmsPlugin:
@@ -126,8 +120,7 @@ class BmsPlugin:
 
     def state(self) -> dict:
         """Extra keys for the websocket state message (read by bms.js)."""
-        return {"bms": self.last, "actuator_names": self.actuator_names,
-                "r_int_curve": r_int_curve()}
+        return {"bms": self.last, "actuator_names": self.actuator_names}
 
 
 def _actuator_name(model, i):
