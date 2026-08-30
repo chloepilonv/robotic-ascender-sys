@@ -6,15 +6,13 @@
 // controls are a straight copy of app/web/index.html's and must stay diffable
 // against it, while none of this exists there at all.
 import * as THREE from './vendor/three.module.js';
-import { Sky } from './vendor/addons/objects/Sky.js';
 import { EffectComposer } from './vendor/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from './vendor/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from './vendor/addons/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from './vendor/addons/postprocessing/UnrealBloomPass.js';
 import { SSAOPass } from './vendor/addons/postprocessing/SSAOPass.js';
 import { OutputPass } from './vendor/addons/postprocessing/OutputPass.js';
-import { World, FOG_COLOUR, FOG_DENSITY_PER_METER,
-         SUN_ELEVATION_DEGREES, SUN_AZIMUTH_DEGREES } from './world.js';
+import { World, FOG_COLOUR, FOG_DENSITY_PER_METER } from './world.js';
 import { ChaseCamera } from './chase_camera.js';
 
 // Z-UP, ONCE, BEFORE ANYTHING IS CONSTRUCTED. Every camera's `lookAt`, every
@@ -25,6 +23,42 @@ THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
 const NEAR_PLANE_METERS = 0.08;
 const FAR_PLANE_METERS = 2400;
 const MAXIMUM_PIXEL_RATIO = 2;
+
+// ---------------------------------------------------------------- the sky
+// A PHOTOGRAPH, NOT A GRADIENT. This page used to draw Sky.js's Preetham model:
+// correct physics, empty picture. On a Himalayan face the thing that reads as
+// altitude is the SKYLINE -- Nuptse, Changtse, the Khumbu ridge -- and no
+// analytic sky has one. The texture is a real Kala Patthar panorama folded into
+// an equirectangular sphere by app/harness/build_sky_texture.py; provenance,
+// author and licence are in app/web/sky/README.md.
+const SKY_TEXTURE_URL = new URL('../sky/everest_kala_patthar_4k.jpg', import.meta.url);
+// Until it decodes, the page must not flash black behind the mountain.
+const SKY_FALLBACK_COLOUR = 0x2a4a8c;
+
+// TWO ROTATIONS, FOR TWO DIFFERENT REASONS.
+//   tilt  -- Three.js samples an equirectangular map with `asin(direction.y)`,
+//            i.e. it assumes Y is up. This whole app is Z-up (see world.js), so
+//            without a quarter turn about X the panorama wraps round the world
+//            sideways and the horizon runs vertically up the screen.
+//   yaw   -- which way Everest faces. Three.js maps a world azimuth phi to
+//            texture azimuth 180 + yaw - phi (derived from `equirectUv` and the
+//            euler negation in WebGLBackground, then checked against renders).
+//            The panorama's brightest sky sits at texture azimuth 93 deg, so
+//            yaw 150 puts its bright quarter at world azimuth 237 -- 22 deg off
+//            world.js's sun at 215, close enough that the glow and the shadows
+//            agree, and chosen over the exact 128 because 150 is what swings
+//            the Everest-Nuptse massif into the view the chase camera starts
+//            in. A sky whose bright quarter disagrees with the shadows is the
+//            tell that a backdrop is pasted on; 22 degrees does not show.
+const SKY_TILT_RADIANS = Math.PI / 2;
+const SKY_YAW_DEGREES = 150;
+
+// Image-based lighting from the same photograph, on top of the three lights
+// world.js already places. Kept LOW on purpose: world.js records that the first
+// pass at this scene summed past 1.0 everywhere and came back a white sheet,
+// and an environment map is one more additive term in that sum. It is here for
+// the cold blue bounce on the robot's metal, not to light the scene.
+const SKY_ENVIRONMENT_INTENSITY = 0.35;
 
 // The grade. A cold shadow lift and a warm highlight roll is the entire look of
 // a high-altitude photograph; the vignette and the grain stop the snow reading
@@ -114,26 +148,41 @@ export class Stage {
   }
 
   _buildSky() {
-    const sky = new Sky();
-    sky.scale.setScalar(FAR_PLANE_METERS * 0.9);
-    // The Preetham model in Sky.js is written Y-up; the `up` uniform is the one
-    // knob that makes it agree with a Z-up world. (Its `vSunfade` term still
-    // reads sunPosition.y, which only shifts the blue a little -- the turbidity
-    // and rayleigh below were tuned against the picture, not against theory.)
-    sky.material.uniforms.up.value.set(0, 0, 1);
-    sky.material.uniforms.turbidity.value = 2.0;
-    sky.material.uniforms.rayleigh.value = 3.6;
-    sky.material.uniforms.mieCoefficient.value = 0.004;
-    sky.material.uniforms.mieDirectionalG.value = 0.90;
-    const elevation = SUN_ELEVATION_DEGREES * Math.PI / 180;
-    const azimuth = SUN_AZIMUTH_DEGREES * Math.PI / 180;
-    sky.material.uniforms.sunPosition.value.set(
-      Math.cos(elevation) * Math.cos(azimuth),
-      Math.cos(elevation) * Math.sin(azimuth),
-      Math.sin(elevation)).multiplyScalar(1.0);
-    sky.frustumCulled = false;
-    this.scene.add(sky);
-    this.sky = sky;
+    // The photograph has to decode before it can be a background, and the GLB
+    // usually wins that race -- so paint the fallback FIRST and swap.
+    this.scene.background = new THREE.Color(SKY_FALLBACK_COLOUR);
+    this.skyTexture = null;
+    this.skyReady = false;
+    this._applySkyRotation();
+
+    new THREE.TextureLoader().load(SKY_TEXTURE_URL.href, texture => {
+      texture.mapping = THREE.EquirectangularReflectionMapping;
+      texture.colorSpace = THREE.SRGBColorSpace;
+      // Three re-projects this into a cube render target for the background and
+      // a PMREM for the environment; both want a clean minification chain, and
+      // ANISOTROPY is what keeps the ridge from crawling when the camera pans.
+      texture.anisotropy = Math.min(
+        8, this.renderer.capabilities.getMaxAnisotropy());
+      texture.needsUpdate = true;
+      this.skyTexture = texture;
+      this.scene.background = texture;
+      this.scene.environment = texture;
+      this.scene.environmentIntensity = SKY_ENVIRONMENT_INTENSITY;
+      this._applySkyRotation();
+      this.skyReady = true;
+    }, undefined, error => {
+      // A missing texture must not take the page down: the fallback colour
+      // stays, the scene still runs, and the console says why the sky is flat.
+      console.error('[stage] sky texture failed to load', SKY_TEXTURE_URL.href, error);
+    });
+  }
+
+  // Both rotations are set from the same two numbers so the lighting can never
+  // drift out of step with the picture it is supposed to come from.
+  _applySkyRotation() {
+    const yaw = SKY_YAW_DEGREES * Math.PI / 180;
+    this.scene.backgroundRotation.set(SKY_TILT_RADIANS, 0, yaw);
+    this.scene.environmentRotation.set(SKY_TILT_RADIANS, 0, yaw);
   }
 
   _buildComposer() {
