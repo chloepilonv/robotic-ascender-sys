@@ -32,8 +32,8 @@ cd g1-himalayas
 ../.venv_everest/bin/python app/harness/team_env.py        # prints + writes fingerprint.json
 ../.venv_everest/bin/python -m app.harness.test_parity     # (a) and (b) below
 ../.venv_everest/bin/python rl/tests/test_climb_env.py     # their own baseline
-../.venv_everest/bin/python -m app.harness.runtime --world climb_30 --duration 10 --hold-w --keep-going --no-render
-../.venv_everest/bin/python -m app.harness.runtime --live --world free_0   # http://localhost:8766/app/web/index.html
+../.venv_everest/bin/python -m app.harness.runtime --world climb_30 --duration 10 --hold-w --keep-going
+../.venv_everest/bin/python -m app.harness.runtime --live --world free_0   # http://localhost:8766/
 ```
 
 Environment: `/Users/dengjingxi/Documents/code/himalaya_hack/.venv_everest`,
@@ -112,8 +112,9 @@ corrects an earlier "~25 s per world" figure in this file, which was a
 **cold-start artifact**: the first run in a fresh venv also clones
 `mujoco_menagerie` and compiles bytecode. The sim loop is still what blocks
 during a build, so it broadcasts one state carrying `"loading": true` first, and
-`app/web/index.html`'s toast timeout was raised from 8 s to 60 s — headroom for
-a cold start, not a measured wait.
+the page's toast timeout was raised from 8 s to 60 s — headroom for a cold
+start, not a measured wait. (Measured against `app/web/index.html`, which was
+the front end at the time; `app/web/render3d.html` carries the same 60 s.)
 
 ## Test (d) — the four worlds with mels, W held (lin_vel_x 0.5), 10 s
 
@@ -146,6 +147,392 @@ What the four rows say together, which no single run could:
   ends **0.765 m** from spawn instead of 25 m, hanging at 250–320 N (1162 N at
   the catch). The ascender does exactly its job; what is missing is a policy
   that can stand on a 30° slope.
+
+## ClimbScene worlds — the merged scene (PR #8)
+
+Twelve of the sixteen worlds now run `rl/environment/climb_scene.py`: the
+Lhotse Face heightfield, a rope polyline draped over it, a bead-on-a-wire
+carrier, the jacketed G1. `app/harness/climb_worlds.py` calls `build_scene`
+and drives what comes back. **It builds nothing.**
+
+### What is his, and what is ours
+
+| piece | source of truth | how we consume it |
+|---|---|---|
+| the whole model | `climb_scene.build_scene(...)` | **called**. Terrain, rope, carrier, grip equality, slope-fitted spawn all come back compiled |
+| the physics step | `ClimbScene.step(wind)` | **called**, 10× per 50 Hz control tick. It is one `mj_step` + the carrier projection + the arc-length ratchet, with wind drag written into `xfrc_applied` first |
+| the 103-d observation | `walk_policy.WalkController.observe()` | **called**. His is the contract now; ours is measured against it (below) and used only for the legacy worlds |
+| the policy + gait clock + `last_act` | `walk_policy.WalkController.substep()` | **called**. It writes `data.ctrl` and evaluates the net once per decimation |
+| wind | `climb_scene.WindParams` | **constructed** from the dial (m/s + heading) and handed to `step()` |
+| friction | `FrictionParams.from_scalar` at build; live knob writes `geom_friction` | see the note on contact pairs below |
+| the robot | `robot.resolve` / `robot.adapt` | selected by name (`himalaya` / `playground`), never by a path we typed |
+| command clamp | `walk_policy.CMD_LIMITS` | **imported**, not restated |
+| climb metric | `RopeCarrier.progress` (his ratchet state) | arc length along the rope since spawn |
+
+### `policy_compat` — what it actually does
+
+`robot.adapt(spec, policy_compat=True)` is on by default and is **not
+cosmetic**. The jacketed robot ships stock menagerie dynamics; Playground
+retuned them for RL and the mels policy learned against *that* plant. Measured
+on the built model, `adapt_report` reports:
+
+```
+added   : site right_palm, sensor local_linvel_pelvis, sensor gyro_pelvis,
+          keyframe knees_bent
+retuned : foot contact: 4 spheres -> playground box
+          actuator kp/kv, dof damping/armature/frictionloss
+```
+
+Concretely it rewrites actuator kp (500 uniform → 75/20/2 per joint), kv, dof
+damping, armature and frictionloss, and swaps the four 5 mm foot spheres for
+Playground's single contact box. Our compiled scene reads back
+**`actuator kp min/max 2/75`**.
+
+**This is the fix for the kp=500 problem the previous report raised as ASK P1.**
+That ask is resolved upstream: the plant mismatch is handled by an explicit,
+documented, default-on shim, and `--stock-plant` keeps the robot exactly as the
+project specifies it (his measurement: the walking policy then falls at ~1.8 s).
+
+### Gates — both run, both printed
+
+    python -m app.harness.climb_worlds --world lhotse_B
+
+**Joint parity.** The scene's 29 actuated joints against Playground's own
+model, in order. Result: **29 vs 29, identical order.** Re-run here rather than
+inherited, because the merged scene is a different build path.
+
+**Observation parity.** Our `PlaygroundObservation` against his `observe()` at
+the same state, reset and perturbed:
+
+```
+obs parity (reset state):     max |ours - his| 0.000e+00   his norm 3.5787
+obs parity (perturbed state): max |ours - his| 0.000e+00   his norm 3.5618
+observation parity worst 0.000e+00  PASS
+```
+
+**Bit-identical.** One input has to be handed over rather than derived, and it
+is load-bearing: `default_pose`. His is pinned to `robot.KNEES_BENT_QPOS`; ours
+reads the compiled keyframe. On a slope `build_scene` *leans the base and
+re-pitches the ankles* so the soles lie flat, so the scene's keyframe is no
+longer the pose the policy's action deltas are about. Reading it — which is
+correct for the flat legacy env — would silently move the policy's operating
+point with the terrain. His is right; ours takes his value.
+
+**His own acceptance suite:** `python -m rl.scripts.climb_scene --check` →
+**ALL CHECKS PASSED** (13 checks).
+
+### What the scene does not have, and what we do instead
+
+| absent | what we do |
+|---|---|
+| `upvector_torso` sensor (`adapt` adds only `local_linvel_pelvis`, `gyro_pelvis`) | read the same quantity off `site_xmat[imu_in_torso]` column z — that IS what a `framezaxis` sensor on that site reports |
+| the seven `..._found` contact sensors | **our fall test is narrower than the training env's**: upright < 0 or non-finite state, with no foot/shin self-collision term. Stated here because a "did not fall" on a ClimbScene world is a weaker claim than on a legacy one |
+| a rope-off switch in `build_scene` | the free world deactivates the `ascender_grip` equality through `data.eq_active`, re-applied after every reset (`mj_resetDataKeyframe` restores it from the model) |
+
+### mels on the merged scene, W held (`lin_vel_x` 0.5), 10 s
+
+| world | robot | rope | slope | fell | at | arc climbed | height | max rope | hand-off-rope | pelvis displ |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `flat_0` | himalaya | on | 0.4° | **no** | — | **+1.855 m** | −0.076 m | 137 N | 0.0003 m | 1.803 m |
+| `lhotse_B` | himalaya | on | 38.6° | **no** | — | +0.002 m | −0.741 m | 309 N | 0.0023 m | 0.768 m |
+| `lhotse_B_playground` | playground | on | 38.6° | **no** | — | +0.002 m | −0.796 m | 580 N | 0.0038 m | 0.828 m |
+| `lhotse_B_free` | himalaya | **off** | 38.6° | **yes** | 3.14 s | 0.000 m | **−276.4 m** | 0 N | 272 m | 276.6 m |
+
+What the four rows say together:
+
+* **On the flat the ascender tracks a walking robot.** `flat_0` walks and the
+  carrier climbs 1.855 m of arc, hand 0.3 mm off the rope throughout.
+* **On the real face the policy cannot climb, and the rope catches it.**
+  `lhotse_B` slips to −0.74 m and hangs at ~300 N; it never tips past upright,
+  and the hand stays 2 mm off the line. This reproduces his own documented
+  baseline ("slips, then hangs from the rope, dz −0.83 m").
+* **The jacketed robot and the Playground robot behave the same** on the same
+  scene — −0.741 m vs −0.796 m, arc 0.0020 vs 0.0023 m. That is
+  `policy_compat` working: his "103-dim observation bit-identical between the
+  two robots" claim holds dynamically, not just statically.
+* **Without the rope it is a 276 m slide.** `lhotse_B_free` tips at 3.14 s and
+  ends a quarter-kilometre down the face. The rope is the entire difference
+  between "hangs, −0.74 m" and "gone".
+
+**Caveat, his and worth repeating:** the command is *body-frame* forward
+velocity and yaw drifts freely, so world-frame pelvis displacement is not a
+tracking measure. Read the arc-length column, not the displacement column.
+
+### Fingerprints
+
+`fingerprint_lhotse_B.json`, `fingerprint_lhotse_B_playground.json`. Highlights
+for B:
+
+```
+model     nq 39  nv 38  nu 29   (7 base + 29 robot + 3 carrier slides)
+          nbody 32  neq 1  nsensor 7  nhfield 1   dt 0.002  mass 34.4411 kg
+terrain   patch B, 38.60 deg (REAL, Copernicus GLO-30)
+          hfield 12.5 x 7.5 x 0.698 m, 300 x 500 grid, friction 0.9
+rope      29.476 m, 9 waypoints, rise 18.409 m over run 23.002 m
+          => mean slope 38.67 deg (matches the terrain to 0.07 deg)
+ascender  carrier 1.0 kg, ratchet on, arc at spawn 6.368 m
+          grip CONNECT solref [0.004, 1.0] solimp [0.95, 0.99, 0.001, 0.5, 2.0]
+spawn     lean 12.4 deg, ankle -47.0 deg, hand-rope distance 5.6e-17 m
+control   action_scale 0.5, ctrl_dt 0.02 x 10 substeps, kp 2..75
+```
+
+The three carrier slide joints are appended AFTER the robot's, so the robot's
+joints are `qpos[7:36]` / `qvel[6:35]` — **bounded slices only**. An open-ended
+`qpos[7:]` picks the carrier up as three phantom joints. Ours are bounded and
+the obs parity result proves it.
+
+### Contact pairs — the trap that does NOT apply here
+
+His doc records that `climb_env.py`'s `foot_friction` knob is inert, because
+the G1 XML declares `<pair name="left_foot_floor" friction="0.6 0.6"/>` and an
+explicit pair overrides both geoms' friction. **The merged scene compiles with
+`npair 0`** — verified on the built model, not assumed — so the live friction
+knob writing `geom_friction` on the foot and terrain geoms does take effect
+here. The legacy worlds still have the bug, upstream.
+
+### Gaps this raised
+
+**C1 — neither fetch path for the scene's assets works on a clean machine.**
+`rl/tools/fetch_reference_model.py` dies with
+`URLError: [SSL: CERTIFICATE_VERIFY_FAILED]`, and it writes to `rl/.reference`
+(`__file__.parent.parent`) while `robot.py` reads `<repo>/.reference` — so even
+a successful fetch lands in the wrong directory. Separately,
+`assets/robots/mujoco/build.py --fetch` still dies with
+`ModuleNotFoundError: No module named 'pxr'`. `app/harness/provision_assets.py`
+sidesteps all three by copying from the `mujoco_playground` already installed in
+the venv (same pinned menagerie commit, no network). **ASK:** fix the
+`parent.parent` path, and either vendor the reference or make the fetch
+tolerate a proxy.
+
+**C2 — the trainer is still on the old env.** His doc's "Not yet done:
+training" — `rl/environment/{climb_env,wind_env}.py` still use the flat tilted
+plane and the slide joint. So **wind and this terrain are demo-only**, and the
+state message keeps `wind_in_training: false` and adds
+`terrain_in_training: false`. The four `legacy_*` worlds exist precisely
+because that is still the thing being trained.
+
+**C3 — no self-collision termination on the merged scene.** See the table
+above; our fall test is narrower than the training env's. If `adapt` gained
+Playground's seven `..._found` contact sensors the two would match.
+
+**C4 — `B_slope*` slopes are synthetic overrides.** `--list` says so and the
+world list carries `slope_provenance`, but it is worth repeating where the
+numbers get quoted: `slope_45` is *not* the Lhotse Face at 45°. Only
+`lhotse_A/B/C/D` have measured slopes, and even there everything finer than
+~30 m is synthetic (one patch covers 0.447 of a DEM cell).
+
+### Asks from earlier reports that PR #8 RESOLVED
+
+* **P1 — actuator gains (was the blocker).** Resolved by `policy_compat`.
+* **P2 — point `climb_env` at the jacketed MJCF.** Superseded: `climb_scene`
+  takes `robot_scene=` directly and defaults to the jacketed robot, so no
+  monkeypatch is needed for the new path. (Our `robot_variants.py` monkeypatch
+  survives for the legacy env only.)
+* **P3 — the robot needs Playground's names.** Resolved by `robot.adapt`,
+  which adds `right_palm`, the two sensors and the `knees_bent` keyframe.
+* **P4 — `knees_bent` was Playground's, not the robot's.** Resolved: `adapt`
+  installs it, and `build_scene` re-poses it per slope while `walk_policy`
+  keeps the policy's `default_pose` pinned to the training value.
+* **P6 — `build.py --fetch` broken.** Still broken; now tracked as C1.
+
+Still open from earlier: **G6** (brax → npz export for trained checkpoints),
+**G10** (obs layout will change if rope terms are added — his doc says the same:
+"keep the observation at 103 dims"), **G14** (`njmax` sizing, MJX only),
+**P5** (MJX CCD warning on mesh/cylinder pairs — now more relevant, since the
+merged scene has a rope cylinder *and* mesh collision geoms).
+
+## Graphics, natural wind, the sandbox, and A/D — all visual or input-side
+
+### Physics is untouched, and that is MEASURED
+
+The alpine look sets `model.vis`, `geom_rgba`, `light_*` and render-time flags,
+and installs a skybox by recompiling the spec. None of it is read by the
+solver, but a spec recompile is exactly the kind of change that could move
+something quietly, so it is checked rather than asserted. Same world, same
+seed, 6 s, W held, with and without `--plain-graphics`:
+
+| metric | alpine | plain | delta |
+|---|---|---|---|
+| pelvis displacement | 0.768703118 m | 0.768703118 m | **0** |
+| height gained | −0.750794943 m | −0.750794943 m | **0** |
+| rope travel | 0.002006123 m | 0.002006123 m | **0** |
+| max rope force | 304.229107608 N | 304.229107608 N | **0** |
+| hand off line | 0.002243983 m | 0.002243983 m | **0** |
+| `frames.npz` root_position_world | | | **0** |
+| `frames.npz` rope_force_newtons | | | **0** |
+
+**Bit-identical.** The graphics pass cannot change a result.
+
+### The skybox, and why a recompile is safe
+
+A skybox is a TEXTURE and textures are fixed at compile time; the merged scene
+compiles with `ntex 2`, both `mjTEXTURE_2D`. Without a skybox texture
+`mjRND_SKYBOX` does nothing and the background renders BLACK — which is what
+the first attempt looked like.
+
+`build_scene` returns `scene.spec`, so `graphics.add_skybox` adds a gradient
+skybox there and recompiles. A texture is an ASSET, not structure: measured,
+all 14 structural fields come back bit-identical (`nq nv nu nbody njnt neq
+ngeom nsite nsensor nkey`, `jnt_qposadr`, `jnt_dofadr`, `body_mass`, actuator
+targets), with only `ntex` going 2 → 3. `add_skybox` re-checks that list on
+every call and REFUSES the swap if anything moved, so the day this stops being
+true it fails loudly. One real gotcha it also handles: `vis.global_.offwidth`
+lives on the compiled model, not the spec, so a recompile resets the offscreen
+framebuffer to 640 and the next 1920-wide renderer raises
+`Image width 1920 > framebuffer width 640`. It is carried across explicitly.
+
+### Exposure — the first pass was worse than stock
+
+Snow 0.90 + ambient 0.42 + sun 1.00 summed past 1.0 everywhere and clipped: the
+rendered face came back a **featureless white sheet with less visible relief
+than the stock grey**. Looking at the frame is what caught it; the fps numbers
+were fine. Snow is bright but a camera is not, and what sells snow is the
+CONTRAST between the lit and shaded sides of the roughness. Now: snow 0.82,
+ambient 0.20, sun 0.78, total near 1.0 and mostly directional, sun at 16° so it
+rakes. Measured saturation (pixels > 250) is **0.0%**.
+
+### Render cost, 1920×1080, lhotse_B
+
+| | ms/frame | fps |
+|---|---|---|
+| stock visuals | 16.2 | 61.9 |
+| alpine, shadows ON | 14.9 | 67.1 |
+| alpine, shadows OFF | 9.2 | 109.0 |
+
+Shadows cost **5.7 ms/frame** against a 20 ms control tick, and the alpine look
+is *faster* than stock because fog culls distant geometry. So shadows stayed ON
+at every size we rendered — the "off above 1280 wide" contingency was not
+needed. **Live at 1920×1080 with shadows: realtime factor 1.00.**
+
+> **SUPERSEDED 2026-08-30 — the render these numbers measure no longer exists.**
+> The third-person render, `--no-shadows` and `graphics.shadows_affordable` went
+> with the 2-D page; `app/web/render3d.html` draws its own shadows in three.js.
+> The measurements stay because they are why the eye cameras render with
+> `shadows=False`: the 4096² shadow pass costs the same whatever the output
+> size, so it is the most expensive thing in a 320×240 eye render and it buys a
+> block matcher nothing. `--plain-graphics` is still live, and is no longer
+> cosmetic — the eyes render through the same model.
+
+No noise texture on the snow, deliberately: a texture needs a compile-time
+asset for the same reason a skybox does, and the heightfield's own 12 cm
+roughness under a raking sun already gives the surface its texture — real
+geometry rather than a painted-on pattern.
+
+### Natural wind
+
+`wind_natural` (0/1, default 0) makes the dial a TARGET rather than a constant.
+
+    speed   = target * clamp(1 + OU(sigma 0.25, tau 4 s), 0.4, 1.6) * (1 + gust)
+    heading = target + OU(sigma 15 deg, tau 6 s)
+    gust    = raised cosine, arrivals every 3-8 s, +20-60%, lasting 0.5-1.5 s
+
+The OU processes are integrated EXACTLY (`x <- x e^(-dt/tau) + sigma sqrt(1 -
+e^(-2dt/tau)) N(0,1)`), not Euler-stepped, so sigma and tau do not drift with
+the tick rate. Everything draws from one generator seeded from `--seed` and
+advances once per control tick, so a replay at the same seed sees the same
+weather. Measured over 300 s at a 12 m/s target:
+
+| seed | speed mean | sd | min | max | heading sd | gusts |
+|---|---|---|---|---|---|---|
+| 0 | 12.54 | 2.90 | 4.80 | 27.48 | 16.09° | 45 in 300 s |
+| 1 | 11.78 | 2.94 | 4.80 | 24.18 | 15.83° | 47 in 300 s |
+
+Determinism at equal seed: PASS. Disabled: **bit-exact pass-through** of the
+dial value — verified, not assumed.
+
+Live, the state message carries `wind_speed_mps`, `wind_heading_degrees`,
+`wind_gain`, `wind_gust` and `wind_natural` alongside the existing
+`wind_velocity_world_meters_per_second` and `wind_force_world_newtons`; all of
+them are recorded, because a replay that stored only the dial could not
+reproduce the gust that knocked the robot over. Measured live at a 12 m/s dial:
+off → exactly 12.00 every tick; on → mean 13.53, sd 1.47, range 10.81–18.03,
+heading sd 8°.
+
+### The sandbox map
+
+**The shipped DEM patches are fixed at 25 × 15 m.** `terrain.load_patch` reads
+a whole `.npz`; there is no crop or window argument anywhere in that module, so
+a bigger map cannot come from the DEM without new code. `terrain.make_terrain`
+DOES take an arbitrary `length_m`/`width_m` and builds from the same octave
+recipe, so the sandbox uses that — **synthetic, not measured**, and it must
+never be quoted as terrain evidence.
+
+Measured at 1920×1080 with an idle robot:
+
+| size | res | grid | fps | hfield MB |
+|---|---|---|---|---|
+| 25 × 15 m | 0.05 | 300 × 500 | 60.9 | 0.6 |
+| 60 × 60 m | 0.10 | 600 × 600 | 54.4 | 1.4 |
+| 120 × 120 m | 0.15 | 800 × 800 | 39.0 | 2.6 |
+| **120 × 120 m** | **0.20** | **600 × 600** | **48.8** | **1.4** |
+| 200 × 200 m | 0.25 | 800 × 800 | 37.9 | 2.6 |
+| 200 × 200 m | 0.30 | 667 × 667 | 43.7 | 1.8 |
+
+**Physics was 20–29× realtime at every size** — the heightfield never bound the
+solver. Render cost is what buys area, and it tracks the GRID, not the metres.
+200 × 200 m is affordable only by making cells so coarse (0.30 m) that the
+finest roughness octave (0.6 m correlation) spans two cells and stops being
+resolved. 120 × 120 m at 0.20 m keeps three cells per finest octave, leaves
+headroom for the graphics pass, and is still **38× the area of a patch**
+(14 400 m² against 375). `sandbox_free` and `sandbox_rope` (the scene's own
+route builder lays a 120.7 m rope across it); live realtime factor 1.00.
+
+### Uneven-terrain ladder, rope off
+
+`load_patch` runs a least-squares DE-PLANE, returning patch B's real
+micro-roughness as a mean-zero grid (RMS 0.1138 m) with the macro tilt on the
+geom's quaternion. So `dataclasses.replace(patch, slope_deg=X)` is the
+roughness-preserving path — verified: `rough` stays bit-identical to patch B's.
+This is used instead of the `B_slope*` files because those exist only at 0, 25,
+30, 35, 45, 50 **and each carries its own noise seed** (roughness correlation
+between B and B_slope25 is −0.06, i.e. unrelated draws). Reusing B's actual
+roughness makes slope the only variable that changes across the ladder.
+
+mels, W held, 10 s, rope off, jacketed robot, spawned at the bottom facing
+uphill:
+
+| world | slope | fell | at | displacement | height |
+|---|---|---|---|---|---|
+| `terrain_free_5` | 5° | **no** | — | 2.04 m | −0.36 m |
+| `terrain_free_10` | 10° | **no** | — | 1.97 m | −0.52 m |
+| `terrain_free_15` | 15° | yes | 3.00 s | 2.60 m | −1.46 m |
+| `terrain_free_20` | 20° | yes | 2.04 s | 149.95 m | −149.65 m |
+| `terrain_free_25` | 25° | yes | 2.88 s | 2.43 m | −1.69 m |
+| `terrain_free_30` | 30° | *no* | — | 2.31 m | −1.74 m |
+
+**The flat-ground walker gives up between 10° and 15°** on real micro-roughness
+with nothing to hold. 20° is the one that finds a clean fall line and slides
+150 m. Read the 30° "no" with the C3 caveat above: our fall test is upright < 0
+with no self-collision term, and at −1.74 m of height that row is a robot
+sitting on the slope, not one walking.
+
+### A/D turn-in-place — works, but the policy tracks yaw poorly
+
+A = +1.0 rad/s, D = −1.0 rad/s, both held cancel, all inside the policy's
+trained `ang_vel_yaw` range. While A or D is held the camera-follow
+`HeadingController` is SUSPENDED and its target re-seated to the robot's
+current yaw every tick, so releasing does not snap the robot back toward the
+camera.
+
+The wiring is right — the issued command is exactly `[0, 0, ±1.0]` — but the
+achieved turn is far below it. flat_0, 3 s, measured:
+
+| rope | command | achieved | note |
+|---|---|---|---|
+| off | +1.0 (A) | **+9.4 °/s** | correct direction |
+| off | −1.0 (D) | −1.9 °/s | correct direction, weak |
+| on | +1.0 (A) | +1.7 °/s | tether dominates |
+| on | +1.0 (A) + W | **−7.9 °/s** | **wrong direction** |
+
+Commanded +1.0 rad/s is 57.3 °/s, so the policy delivers roughly a sixth of it
+at best, asymmetrically. Two causes, both his and both documented upstream:
+the mels policy only initiates a gait above ~0.4 command and a yaw-only command
+leaves it shuffling in place; and his `HeadingController` docstring already
+warns that the rope point-attaches the palm to a fixed line, so a heading
+change drags the robot around its own hand. **Flagged, not fixed** — it is a
+policy/tether limitation, not a wiring bug, and per the standing rule the fix
+is not mine to choose. Yaw also oscillates ±2° per gait step, so "monotonic"
+is ~0.5 at tick level even when the trend is clean.
 
 ## Pemba robot variant — the real demo robot on the rope
 
@@ -384,6 +771,590 @@ and freezes (never slips back), and the palm stays on the line to 0.18 mm.
 
 ---
 
+## Guide follower — what is vision, what is stand-in, what is cheat
+
+`app/harness/guide.py`. A human guide walks ahead along the rope; the robot
+measures its distance with two head cameras and drives itself. Reproduce every
+number below with `python -m app.harness.test_guide`.
+
+### The ledger
+
+| piece | status | what it actually is |
+|---|---|---|
+| the two eye images | **REAL** | 320×240 RGB renders of the scene from two MuJoCo cameras 6 cm apart, copied from the `d435i` mount already in `assets/robots/mujoco/g1_unitree_ascender.xml` (pos `0.0789635 0 0.386` on `torso_link`, fovy 58°). Cameras are visual-only; MuJoCo integrates nothing from them. |
+| the DISTANCE | **REAL passive stereo** | OpenCV `StereoSGBM` on that pair → disparity → `depth = focal_pixels × baseline / disparity`, `focal_pixels = (height/2)/tan(fovy/2) = 216.5 px`, `baseline = 0.06 m`. Sub-pixel from SGBM's own 1/16-px fixed point. **No simulator state is read anywhere in this path.** |
+| the BEARING | **REAL** | the matched pixels' centroid column through the same intrinsics. |
+| WHICH PIXELS ARE THE HUMAN | **STAND-IN** | an HSV colour threshold on her deliberately distinctive orange jacket (hue 6–15, saturation ≥ 120, value ≥ 80), largest connected component. Re-measured on HER jacket with a segmentation render: **97.7% of jacket pixels in, 0.0% of every other material** — the table is below. A person detector goes here; the seam is `guide.detect_guide(image) -> (box, mask)`. It is not vision in any interesting sense — it knows the answer's colour. |
+| `true_distance_meters` | **LABELLED CHEAT** | read straight out of `data.cam_xpos` and the guide's own pose. HUD and grading only; the follower never sees it. Recorded as `guide_true_distance_meters`. |
+| the guide's motion | **not physics, and says so** | Chloe's hiker (`assets/humans/human.xml`) as one mocap root plus six WELDED limb bodies (zero DOF, `nq`/`nv`/`njnt` untouched), driven along `RopeRoute` arc length, height snapped to `terrain.surface_z` every tick. It cannot fall, be pushed, or be walked into: every geom is `contype=0, conaffinity=0`. |
+| the guide's WALK | **synthetic animation, geometric not learned** | six hinge angles written into `model.body_quat`, phase locked to distance travelled (`2π × travel / 1.05 m`). No joint, no actuator, no integrator. See "The animated guide" below. |
+| the command | ours, as everything in the app layer is | the follower writes the same 3-vector the keyboard writes. No new policy, no retraining, no change to `rl/`. |
+
+### The animated guide, and the 23 cm it nearly cost
+
+`guide.py`'s six limbs are hinges IN NAME ONLY: `_add_guide_body` adds no joint,
+each limb body is welded to its parent, and `Guide.write` turns it by writing
+`model.body_quat` every control tick. `mj_kinematics` reads that field for a
+welded body, so the figure poses exactly as if it had joints, and the state
+vector the solver integrates does not grow by one number.
+
+**THE FIRST VERSION USED REAL HINGES, AND IT MOVED THE ROBOT.** Six `mjJNT_HINGE`
+joints grew `nq` 39 -> 45 and `nv` 38 -> 44. The guide's limbs cannot touch the
+robot -- no contacts (`contype=0`), no constraint, a mocap root welded to the
+world -- so they exert no force on it. They still changed the answer: two 6 s
+same-seed `flat_0` runs, `--hold-w`, came back with **1.447 m** and **1.675 m**
+of rope travel. That is not a force, it is a walking robot amplifying a
+floating-point difference in the solver over 300 ticks, and a run that does not
+reproduce is exactly what this file exists to forbid.
+
+**AND SO DID THE CAMERA REFRESH, which had been there all along.** The guide
+runs `mj_kinematics` + `mj_camlight` after it moves the human, so the eyes see
+where she IS rather than where she was a tick ago. `mj_step` is
+forward-then-integrate, so when it returns `data.qpos` is the NEW state while
+`data.xpos` still describes the OLD one -- and the next control tick reads those
+stale frames. Refreshing them hands the next step a fresher world than it would
+have had: **0.95 rad** of joint-angle difference in six seconds, measured. The
+frames are now snapshotted before the refresh and put back after the eye render
+(`GuideSystem._freeze` / `_restore`, `KINEMATICS_OUTPUT_FIELDS` -- the exact
+output set of those two functions), so the cameras get the fresh pose and the
+physics gets the frames it would have got.
+
+**MEASURED, both claims, and both reproducible:**
+
+`python -m app.harness.test_guide`, section D -- the same scripted command flown
+twice from the same reset, once with the guide OFF and once with it ON and the
+human WALKING (mocap moving, limbs swinging, eyes rendering every fifth tick):
+
+| array | max abs difference, `flat_0` | `terrain_free_10` |
+|---|---|---|
+| `qpos` | 0.000e+00 | 0.000e+00 |
+| `qvel` | 0.000e+00 | 0.000e+00 |
+| `ctrl` | 0.000e+00 | 0.000e+00 |
+| `sensordata` | 0.000e+00 | 0.000e+00 |
+| `qfrc_constraint` | 0.000e+00 | 0.000e+00 |
+| `cfrc_ext` | 0.000e+00 | 0.000e+00 |
+
+And at the runtime level, two 6 s same-seed runs with the guide's bodies in the
+model and with `--no-guide-body` (which skips the surgery entirely):
+
+    python -m app.harness.runtime --world flat_0 --duration 6 --hold-w \
+        --no-render --keep-going --seed 0 --output-name paritytest_guidebody
+    python -m app.harness.runtime --world flat_0 --duration 6 --hold-w \
+        --no-render --keep-going --seed 0 --no-guide-body \
+        --output-name paritytest_noguidebody
+
+300 ticks, 39 recorded arrays, of which **35 are physics/robot: max absolute
+difference 0.000e+00**. The four that differ are the guide's own HUD columns
+(`guide_human_progress_meters` and friends), which do not exist in a run with no
+guide in it.
+
+### The gait, and why the feet do not skate
+
+Distance-locked: phase = `2π × arclength / GUIDE_STRIDE_METERS`, a function of
+how far she has walked and never of the clock. One stride of ground is one
+stride of animation at any speed, and S (walking back down the rope) runs the
+same cycle in reverse for free. Within a stride the planted foot's offset from
+the hip ramps linearly from +stride/4 to -stride/4 while the root advances
+stride/2, so the two cancel and the boot holds still in the world; the swing
+half returns it on a raised cosine. The hip angle that puts a boot a given
+distance in front is one arcsine, because with the knee straight the hip-to-boot
+vector is rigid (`Guide._hip_for_foot_offset`).
+
+**STRIDE IS SET FROM CADENCE.** Speed is 1.0 m/s (the user's ruling), so
+cadence = 2 x speed / stride. The 0.70 m the figure was first drawn with gives
+171 steps/min -- a jog, and it read as one. 1.05 m gives **114 steps/min** and
+hips swinging +/-17 deg, which is where a real brisk walker's are.
+
+`python -m app.harness.guide_walk_sheet` writes the contact sheet and prints the
+audit. `flat_0`, 200 samples around one cycle:
+
+| leg | stance skate | stance spread | swing clearance | lowest sole vs snow |
+|---|---|---|---|---|
+| left | 0.0007 m | 0.0007 m | 0.084 m | -0.026 m |
+| right | 0.0007 m | 0.0007 m | 0.125 m | -0.010 m |
+
+0.7 mm of skate per stance phase. The sole sits between -2.6 cm and +2.2 cm of
+the surface over the cycle, on terrain whose roughness is 10.9 cm rms: the root
+height is solved from the lowest boot corner assuming a LOCALLY FLAT surface
+under the root, so a boot half a stride away can be a couple of centimetres out.
+
+**The neutral pose is baked, not authored.** Chloe drew the hiker mid-stride, so
+every limb is rotated back to vertical once at surgery time and the angles that
+were subtracted become the joints' zero. Printed on attach, `flat_0`:
+
+| hinge | baked out |
+|---|---|
+| `hip_l` | +20.9 deg |
+| `knee_l` | -14.8 deg |
+| `hip_r` | -19.3 deg |
+| `knee_r` | +4.5 deg |
+| `shoulder_l` | -15.9 deg |
+| `elbow_l` | +42.5 deg |
+
+Her two legs also came out 2.7 cm different in length and 3.2 cm apart along the
+stride, which in a symmetric gait means a limp: one leg carries the whole walk
+and the other paws the air (swing clearances 7.6 cm against 5.1 cm). The knee
+anchor and the boot are nudged to the mean of the two sides in the sagittal
+plane -- 1.3 cm and 1.6 cm, half the difference each way. The left/right
+offsets in y are untouched: those are her stance width, not an error.
+
+### The colour window, re-measured on HER jacket
+
+`test_guide` section A0 renders the left eye twice at each test range -- once in
+colour, once in SEGMENTATION -- so every pixel is attributed to the geom that
+painted it before its hue is counted. Window: hue 6-15, saturation >= 120,
+value >= 80. `flat_0`, pooled over 1/2/4/8 m:
+
+| material | pixels | hue 1-99% | saturation 1-99% | value 1-99% | inside the window |
+|---|---|---|---|---|---|
+| **jacket (target)** | 21,708 | 10-11 | 236-242 | 61-255 | **97.7%** |
+| skin | 565 | 5-11 | 57-101 | 51-217 | 0.0% |
+| beanie | 6,420 | 176-178 | 213-222 | 51-205 | 0.0% |
+| pack | 6,322 | 109-110 | 184-198 | 36-136 | 0.0% |
+| glove | 25 | 113-120 | 51-101 | 8-22 | 0.0% |
+| pants | 4,238 | 109-113 | 82-127 | 14-50 | 0.0% |
+| boots | 519 | 13-14 | 143-152 | 32-73 | 0.0% |
+| everything else (snow, sky, rope, robot) | 267,403 | 1-111 | 33-238 | 74-230 | 0.0% |
+
+The 2.3% of jacket it drops are shadowed pixels under the value floor. The boots
+are the nearest miss at hue 13-14, and it is the VALUE floor, not the hue range,
+that keeps them out.
+
+### The model surgery, and why it is safe
+
+`guide.attach_guide(scene)` adds one mocap body (3 geoms) and two cameras to
+**his** `MjSpec` and recompiles — the same mechanism `graphics.add_skybox` uses,
+with the same refusal rule. Every joint qpos/dof address, every actuator target,
+every existing body's mass and name, and `nq nv nu njnt neq nsite nsensor nkey`
+are compared before and after; if any of them moves the swap is **refused** and
+the scene is left exactly as it was. Measured on `flat_0`: bodies 32→39, geoms
+101→126, cameras 1→3, mocap 0→1, joints 33→33, `nq` 39→39, `nv` 38→38,
+**all 13 structural fields unchanged**. The new bodies are appended after the
+existing tree, so no existing id shifts — and `nq`, `nv` and `njnt` are IN the
+checked list, which is the whole reason the limbs are welded rather than jointed.
+
+TWO ORDERING RULES, both learned by breaking them:
+
+1. **The surgery runs before the graphics dressing.** `apply_alpine_look` writes
+   to the COMPILED model (lights, fog, the snow colour) and a recompile throws
+   that away; doing it the other way round gives a dark, unlit picture.
+2. **The camera orientation is read off the compiled model, not the spec.** The
+   MJCF writes `d435i` as `xyaxes="0 -1 0  0 0 1"`, and MjSpec keeps that in the
+   element's `alt` field while leaving `quat` at IDENTITY. Copying `source.quat`
+   produced two cameras pointing straight down — a black picture and zero
+   detections at every range. `model.cam_quat` is the compiler's resolved answer.
+
+### Stereo accuracy vs the simulator's own answer
+
+Two truths are printed because the measurement sits between them, and neither
+alone is the whole story: a dense matcher's median disparity over a convex body
+reads its **near face**, so the surface column is the like-for-like comparison,
+while the axis column is the literal "distance to the human" the HUD reports.
+
+`flat_0`:
+
+| true to axis | true to surface | measured | err vs axis | err vs surface | disparity |
+|---|---|---|---|---|---|
+| 1.000 m | 0.810 m | 0.798 m | −20.2% | −1.5% | 17.88 px |
+| 2.000 m | 1.810 m | 1.884 m | **−5.8%** | **+4.1%** | 6.94 px |
+| 4.000 m | 3.810 m | 4.002 m | +0.0% | +5.0% | 3.31 px |
+| 8.000 m | 7.810 m | 7.235 m | −9.6% | −7.4% | 1.81 px |
+
+Re-measured on the animated hiker (the numbers moved a little because the figure
+did: the reference point and the visible silhouette are hers, not the
+placeholder's). `terrain_free_10`, against the axis: −19.2% / **−3.6%** /
++12.5% / +69.6% — the 8 m row there matches on a single disparity pixel, which
+is the honest end of a 6 cm baseline. The 8 m
+row is the honest limit of a 6 cm baseline at this focal length: the whole
+disparity there is 1.25 px, so one quantisation step is metres.
+
+### The decision, and its hysteresis
+
+`FOLLOW` above 1.3 m (1.0 m once already following), `WAIT` at or below 1.0 m
+(1.3 m once already waiting), `LOST` after a second with no detection. Both WAIT
+and LOST command zero, so a lost human and a close human stop the robot alike —
+the conservative direction. `ang_vel_yaw = clamp(2 × bearing, ±1)`, 2° deadband.
+
+### One notion of "a human is there"
+
+`human-safety/human_gate.py` already owns the auditable rule "no climbing UP
+while a human is in front", with a SIM ORACLE detector. Running the follower's
+vision alongside that oracle would give the demo two detectors free to disagree.
+So while the guide is on, the gate is driven from the same measurement
+(`guide.GuideVisionDetector` returns *her* `Detection` type, with `seen` true
+exactly when the follower says WAIT) and its own hysteresis is set to 0.0,
+because the follower already has two. Her file is imported, not edited.
+**ASK (low priority):** if the oracle-driven `--human` spawns and the guide are
+ever wanted at once, the two gates need merging rather than switching.
+
+### Cost, measured
+
+Per stereo pair on this machine: two 320×240 renders 10.9 ms, SGBM 1.1 ms,
+detection 0.7 ms, annotate + JPEG 1.2 ms. At one vision tick in five that is
+**2.8 ms per control tick**. Dropping to 256×192 saves 0.1 ms — the cost is the
+GL round trip, not the pixels, so the resolution dial is not the lever.
+
+One real win found on the way: `mujoco.Renderer` sizes its offscreen buffer from
+`model.vis.global_`, so a second small renderer on a model whose `offwidth` was
+raised to 1920×1080 for the main view allocates a **1920×1080 8×-MSAA** buffer to
+read 320×240 out of. Per pair: 17.07 ms that way, 13.23 ms with the buffer at
+320×240, 11.09 ms with MSAA off too. `StereoEyes` sets those three fields around
+the context creation and restores them immediately.
+
+Realtime factor on `lhotse_B`, live, W held (this machine, three agents running):
+
+| viewport | guide off | guide on |
+|---|---|---|
+| 960×540 (the page's default) | 1.00 | **1.00** |
+| 1280×720 | 1.00 | **1.00** |
+| 1920×1080 | 0.90–0.99 | 0.79 |
+| 1920×1080, `--no-shadows` | 1.00 | **1.00** |
+
+At 1920×1080 with shadows the main render alone already fills the 20 ms tick
+(0.90–0.99 with the guide OFF, load-dependent), so there is no headroom there
+with or without the eyes; `--no-shadows` (a documented 5.7 ms at that size)
+restores it and holds 1.00 with the guide on.
+
+### What the follower cannot fix, because it is the plant
+
+Both measured with `test_guide` and a direct command sweep, and both are
+properties of the team's walking policy in these scenes, not of this layer:
+
+* **Ground speed is ~0.15 m/s whatever `lin_vel_x` says.** `flat_0`, 20 s,
+  straight-ahead command: 3.15 m at cmd 0.5, 4.18 m at cmd 0.8, 4.22 m at
+  cmd 1.0. The guide walks at **1.0 m/s** (the user's ruling), so holding W
+  indefinitely opens the gap at ~0.85 m/s and she leaves the ±29° field of view
+  in about three seconds — `test_guide` B now goes FOLLOW → LOST at t = 2.5 s
+  and stays there. The demo that works is a two-second tap of W and then
+  release, or **S**, which walks her back down the rope to the robot (measured:
+  −2.00 m of arc length in 2 s, exactly the 1.0 m/s, gait running in reverse
+  with her yaw still uphill). Closing a gap the robot opened is now beyond it,
+  and that is the plant, not the follower.
+* **Yaw authority is nearly nil while the palm grips the rope.** `flat_0`, 3 s
+  of a constant yaw command on top of `lin_vel_x` 0.5: +1.0 → −23.6°, +0.5 →
+  −24.2°, 0.0 → −29.6°, −0.5 → −15.1°, −1.0 → −13.4°. The robot yaws about −25°
+  regardless of what is asked. `HeadingController`'s docstring already warned
+  about this for the mouse-look controller; the follower inherits it, and the
+  visible symptom is FOLLOW→LOST flapping when the human ends up outside the
+  ±36° horizontal field of view.
+* On `terrain_free_10` the walker drifts **−50° of yaw in 3 s with a zero yaw
+  command** and walks backwards (−2.12 m in 20 s at cmd 0.5), which is why the
+  follower cannot hold a gap there at all. **ASK:** if the follower is to be
+  demoed *steering*, it wants a world where the walker tracks its command — a
+  rope-off gentle slope with a retuned policy would be the fix, and that lives
+  in `rl/`.
+
+---
+
+## SEARCH -- turning the cameras, and what that costs
+
+`app/harness/guide.py`. When the follower loses the human it sweeps its cameras
+to find her again. The G1 has no neck, so the cameras are panned by WAIST YAW.
+
+### The mount, checked rather than assumed
+
+The `d435i` camera sits on `torso_link`, and the parent chain is
+
+    pelvis -> waist_yaw_link (waist_yaw_joint, +z, +/-150 deg, actuator 12)
+           -> waist_roll_link -> torso_link   [the cameras]
+
+so `waist_yaw_joint` is above the cameras in the tree and is the joint that pans
+them. `WaistYaw.bind` looks the actuator up by name and turns the search off with
+a message if it is not there.
+
+### What is written where
+
+| piece | status | what it actually is |
+|---|---|---|
+| the waist offset | ours, a supervisory command | one number added to the walking policy's OWN waist-yaw PD target, at `ClimbSceneEpisode.control_hooks` -- after `WalkController.substep` writes `data.ctrl` and before the `mj_step` that acts on it. The policy is not retrained, not consulted and not modified. |
+| the rate limit | ours | 1.5 rad/s on the offset. A step change in a PD target is a kick, and this robot hangs off a rope by one palm. |
+| the clamp | ours, and MEASURED | +/-60 deg (see below), applied on ASSIGNMENT to `target_radians`. |
+| `theta_waist` | **read from `data.qpos`**, not from the command | the achieved joint angle. See the windup note. |
+| `ang_vel_yaw` | **zero unless a policy can use it** | `yaw_command_available`, False for every climb world. |
+
+### Two bugs this found, both worth keeping written down
+
+**1. Feeding the COMMAND back is a windup loop.** The bearing to the human in the
+body's frame is `theta_waist + beta`. The first version used the COMMANDED
+offset for `theta_waist` -- but the offset is added to a PD target the policy is
+also writing, so the policy pulls back and the joint settles short. The image
+bearing therefore never closes, the target grows every vision tick, and on
+`flat_0` the waist wound to **168 degrees** and the robot fell at **7.3 s**.
+`WaistYaw.measure` reads the achieved angle out of `qpos` instead.
+
+**2. Tracking her in FOLLOW/WAIT is a fall.** Keeping the waist on her after the
+search ended looks obviously right and is not: with the palm clipped to the rope,
+twisting the waist counter-rotates the PELVIS, so the image bearing never closes
+and the waist chases it to the clamp. On `flat_0` that is a fall at **1.9 s**.
+The waist straightens once REALIGN hands over, and REALIGN does not hand over
+until she is inside the cone the straightened cameras will still see.
+
+### The clamp is measured, not chosen
+
+Sweeping `flat_0`, roped, 25 s, 1.5 rad/s:
+
+| peak sweep | outcome |
+|---|---|
+| 90 deg | fell at 9.5 s |
+| 80 deg | fell at 8.3 s |
+| 75 deg | fell at 5.6 s |
+| 70 deg | survived |
+| 65 deg | fell at 21.6 s |
+| **60 deg** | **survived, upright 0.96** |
+
+So `WAIT_LIMIT` is 60 deg. The 20/60/90 ladder stays in the source because it is
+the design; the clamp is what binds. A robot that can hold 90 gets it by raising
+one line.
+
+### The acquisition, measured
+
+`python -m app.harness.test_search`. The human is placed **60 degrees** off the
+robot's axis -- the camera's horizontal half-FOV is 36.5 deg, so she is outside
+it and the detector sees nothing at t = 0. The camera-bearing error is read from
+the simulator (a LABELLED CHEAT, grading only) so the same detector that did the
+aiming cannot flatter it.
+
+| world | rope | ACQUIRE | hand-over | camera-bearing error at hand-over | waist peak | fell |
+|---|---|---|---|---|---|---|
+| `flat_0` | on | 0.20 s | 0.24 s -> FOLLOW | **10.2 deg** | 58.4 deg | no |
+| `terrain_free_10` | off | 0.40 s | 1.00 s -> FOLLOW | **3.2 deg** | 20.1 deg | no |
+
+Rope-off is the cleaner of the two, as expected: nothing is counter-rotating the
+pelvis, so the waist barely has to move and the error is 3 deg.
+
+### The limit of a neck that only turns 60 degrees
+
+The searchable cone is 60 (waist) + 36.5 (half-FOV) = **+/-96.5 deg**. A human
+BEHIND the robot cannot be found. Held **S** on `flat_0` until she walks back
+past the robot: FOLLOW -> WAIT (2.5 s) -> SEARCH/sweep, and she is never
+re-acquired, correctly. **ASK to Mrinal: randomise `ang_vel_yaw` in the training
+commands if a steerable turn is wanted.** Everything here is a workaround for a
+policy that cannot turn; `realign_mode: "body+waist"` is already written for one
+that can.
+
+### The physics claim, stated the only way it can be true
+
+A SEARCHING robot's physics is NOT identical to a still one's, and must not be:
+the waist offset is a real command on a real actuator, and the feature IS that
+the torso turns. What must be identical is the OFF case -- the machinery built,
+the hook registered and running on every substep, the knob off:
+
+    no guide system at all   vs   guide built + waist hook registered, knob OFF
+
+Same reset, same scripted command, 6 s, `flat_0`: `qpos`, `qvel`, `ctrl`,
+`sensordata`, `qfrc_constraint` all **0.000e+00**.
+
+---
+
+## The storm -- a white-out, and here is the proof it is only a picture
+
+`app/harness/storm.py`. The `storm` knob closes the weather in with the
+INSTANTANEOUS wind speed. It degrades what the robot SEES and nothing else.
+
+### The ledger
+
+| piece | status | what it actually is |
+|---|---|---|
+| the visibility law | ours, stated | `100 m x exp(-wind / 6)`, clamped at 1.5 m. 100 / 37 / 14 / 3.6 m at 0 / 6 / 12 / 20 m/s. Not a measurement of anything -- a look, specified by the user and fitted to three points. |
+| the fog on the eye images | **synthetic degradation** | composited per pixel from the eye renderer's own depth buffer: `out = colour*(1-f) + white*f`, `f` a linear ramp from `0.15 x visibility` to `visibility`. The same law GL's `GL_LINEAR` fog uses. |
+| the sensor grain | **synthetic degradation** | Gaussian noise, sigma `1.0 + 0.30 x wind` grey levels, drawn INDEPENDENTLY per eye from a seeded generator. |
+| the fog on the 3D page | **synthetic degradation** | `FogExp2` at density `1.73 / visibility` (FogExp2 is 95% opaque at `1.73 / density`), sky mesh hidden, clear colour = fog colour. Driven by the same knob and the same speed. |
+| the physics | **untouched** | nothing here writes to the model or to `MjData`. |
+
+### Why the fog is composited, and not left to MuJoCo
+
+MuJoCo has linear GL fog and it CANNOT BE MOVED at runtime from Python. Four
+measurements, each one a dead end:
+
+* `model.vis.map.fogstart` / `fogend` are multiples of `model.stat.extent`, and
+  `mjr_render(viewport, scene, context)` takes **no model** -- it cannot read
+  them. Writing them mid-run changes the rendered picture by **0.000**.
+* `context.fogStart` / `fogEnd` are metres and ARE writable from Python, but
+  they only reach GL through `glFogf` inside `mjr_makeContext`. Writing them
+  mid-run also changes the picture by **0.000**.
+* `mjr_makeContext` is not exposed in the Python bindings, so the context cannot
+  be rebuilt to pick them up.
+* `context.fogRGBA` IS read every frame (**14.06** mean pixel change). That is
+  the trap: the fog COLOUR is live while the fog DISTANCE is frozen at whatever
+  the model compiled with -- **2534 m** on `flat_0`, i.e. no fog at all. Driving
+  only the colour puts a flat white wash over every pixel at every depth, near
+  objects included, which is the "particles on the glass" look arrived at from
+  the other direction. The first build of this feature was doing exactly that.
+
+**A FINDING WHILE WE ARE HERE, left unfixed on purpose.** The same arithmetic
+says the scene's CLEAR-weather fog has never been visible either:
+`graphics.apply_alpine_look` writes `1.35 x terrain diagonal` into a field
+measured in EXTENTS, which on `flat_0` is a fog end of 2534 m. What reads as
+haze in the JPEG view is the haze layer and the skybox, not the fog. Changing it
+would change the look of every view and every recorded mp4, so it is written
+down rather than touched.
+
+### The white-out is by DISTANCE, not a wash
+
+`test_storm` section E0. The guide is at 5 m; the near half of the frame (depth
+<= 6 m) and the far half are reported apart, sensor noise off:
+
+| wind m/s | visibility | mean change NEAR | mean change FAR |
+|---|---|---|---|
+| off | -- | 0.0 | 0.0 |
+| 0 | 100.0 m | 0.0 | 38.3 |
+| 6 | 36.8 m | 0.0 | 41.2 |
+| 12 | 13.5 m | 15.7 | 53.6 |
+| 20 | 3.6 m | 114.6 | 63.8 |
+
+A flat colour wash would move both columns equally. Fog eats the far half first
+and only reaches the near half once the visibility falls below the subject's own
+range.
+
+On the 3D page the same thing, measured off the screenshots (far-field and
+near-ground mean RGB, 1920x1080, pointer-lock scrim hidden):
+
+| wind m/s | far-field | near-ground |
+|---|---|---|
+| 0 | 205, 221, 239 | 119, 127, 139 |
+| 12 | **251, 252, 253** | 180, 187, 198 |
+| 20 | **250, 251, 252** | **250, 251, 253** |
+
+The page's fog colour carries **2.6x linear headroom** on purpose: the renderer
+tone-maps ACES-filmic at exposure 0.92, ACES rolls a 1.0 off to about 0.77, and
+a fog painted at plain "white" renders as a mid grey. Measured before the
+headroom: a full 20 m/s frame came back at RGB 150.
+
+(A screenshot trap worth writing down: `#lockOverlay` is `rgba(9,9,11,.55)`
+across the viewport whenever the page does not hold the pointer, and **headless
+Chrome can never take pointer lock**, so it is always up. It dims the render by
+55% -- a white-out measured RGB 118 instead of 245 for that reason alone, and
+two rounds of chasing the tone mapper were spent on it.)
+
+### What it does to the follower
+
+| wind m/s | visibility | detected at 2 m | detected at 5 m | max detection range |
+|---|---|---|---|---|
+| storm off | -- | 100% | 100% | 10 m |
+| 0 | 100.0 m | 100% | 100% | 10 m |
+| 6 | 36.8 m | 100% | 100% | 10 m |
+| 12 | 13.5 m | 100% | 100% | 6 m |
+| 20 | 3.6 m | 100% | **0%** | **2 m** |
+
+Stereo error over the frames where she IS seen stays around -5% to -10% at 2 m
+and 5 m; what the storm takes is DETECTION, not accuracy, which is what a
+contrast-destroying fog should do to a colour threshold.
+
+And the follower's own verdict, human parked at 9 m, 6 s of real vision, robot
+not stepped -- nothing scripted, the detector simply misses and the 1 s timeout
+expires:
+
+| wind m/s | vision frames with a detection | FOLLOW | LOST |
+|---|---|---|---|
+| off | 100% | 100% | 0% |
+| 6 | 100% | 100% | 0% |
+| 12 | **0%** | 0% | **100%** |
+| 20 | **0%** | 0% | **100%** |
+
+LOST needs a whole second with no detection and the eyes run at 10 Hz, so ten
+consecutive misses: the mode only flips once detection falls well below half.
+
+### The physics claim
+
+`test_storm` section H -- the same scripted command flown twice from the same
+reset, once with no storm and once with a 20 m/s white-out and the guide on, so
+the fog is recomputed every tick and the eyes render through it every fifth:
+
+| array | max abs difference |
+|---|---|
+| `qpos` | 0.000e+00 |
+| `qvel` | 0.000e+00 |
+| `ctrl` | 0.000e+00 |
+| `sensordata` | 0.000e+00 |
+| `qfrc_constraint` | 0.000e+00 |
+| `cfrc_ext` | 0.000e+00 |
+
+---
+
+## Snow and footprints -- visual only, and here is the proof
+
+`app/harness/snow.py`. The terrain wears a procedural snow texture and keeps the
+footprints the robot leaves in it.
+
+**THE PHYSICS CLAIM.** Three things change on the compiled model: one texture is
+added, one material is added, and the terrain geom's `matid` points at it. None
+of the three is read by the solver -- MuJoCo's contact model knows about
+`geom_friction`, `geom_solref`, `condim` and the collision bitmasks, not about
+what a surface looks like -- and the HEIGHTFIELD IS NEVER EDITED, so the ground
+the feet actually touch is the same ground. The spec recompile is guarded the
+same way `graphics.add_skybox` and the guide's surgery are: `nq nv nu nbody njnt
+neq ngeom nsite nsensor nkey`, every joint address, every actuator target, every
+body mass, and additionally every geom's `friction`, `contype` and `conaffinity`
+are compared before and after, and the swap is refused if any of them moved.
+Measured on `flat_0`: **all 17 fields unchanged**.
+
+MEASURED, not asserted. Two 6 s runs, same seed, same world, `--hold-w`, one
+with the snow and one with `--no-snow`:
+
+    python -m app.harness.runtime --world flat_0 --duration 6 --hold-w \
+        --no-render --keep-going --seed 0 --output-name paritytest_snow
+    python -m app.harness.runtime --world flat_0 --duration 6 --hold-w \
+        --no-render --keep-going --seed 0 --no-snow --output-name paritytest_nosnow
+
+300 ticks, **39 recorded arrays compared, max absolute difference 0.000e+00** --
+bit-identical, joint angles, contact forces, rope force and all. Both runs also
+counted the same 18 footsteps.
+
+**Which footprint path was used.** The TEXTURE path, not the geom-pool fallback.
+`mujoco.Renderer` exposes `_mjr_context` and `_gl_context`, and
+`mjr_uploadTexture` replaces a texture in a live context, so a print is written
+into `model.tex_data` (through a reshaped numpy VIEW of it -- a slice of that
+buffer is a view, which turns a repaint into one vectorised assignment instead of
+a loop over rows) and pushed. The world-to-texel map is exact rather than
+approximate: the material carries `texrepeat 1 1` with `texuniform` off, so the
+texture maps once across the heightfield, and world x is de-sloped by the same
+three fixed-point passes `terrain.surface_z` uses before it is normalised. It was
+verified by painting a marker at a computed texel and rendering top-down before a
+single footprint was written.
+
+**The fade, and why it is cheap.** A separate alpha channel holds the prints;
+`live = base blended toward the shadow colour by alpha` is recomputed from
+`base` every time, never from the previous frame, so repeated fading cannot
+ratchet the snow grey. Fading is one multiply of the alpha over the union
+rectangle of the live prints, every 3 seconds. A ring buffer caps the live
+prints at 400 and erases the oldest outright.
+
+**Costs, per 50 Hz control tick, measured on this machine** (`lhotse_B`,
+25 x 15 m, texture 1600 x 960 = 4.6 MB):
+
+| step | cost |
+|---|---|
+| paint a print (only on a landing) | 0.04 ms mean, 0.90 ms worst |
+| the fade pass (every 3 s) | 0.002 ms mean, 0.22 ms worst |
+| `mjr_uploadTexture`, main context only | 3.69 ms per upload -> 0.44 ms/tick at 6 Hz |
+| `mjr_uploadTexture`, main + the guide's eye context | 6.28 ms per upload -> **0.75 ms/tick** at 6 Hz |
+
+The upload is the whole cost of the feature, and it is the RESOLUTION that sets
+it, because `mjr_uploadTexture` replaces the entire texture: at 80 texels/m the
+same patch is a 7.2 MB texture and 6.52 ms for the pair of contexts. 64 texels/m
+still gives a 17 x 8 texel footprint, which reads as a print at demo distance,
+and 6 Hz instead of 10 means a print appears at most 170 ms after the foot lands.
+`--no-snow` removes all of it.
+
+**A note on the realtime numbers.** The live realtime factor could not be
+measured cleanly for this change: three agents were running on this laptop and
+the SAME configuration measured 0.99 and 0.85 an hour apart with no code change
+at all. The per-tick costs above are the reproducible statement; against them,
+the snow is +0.8 ms on a 20 ms tick.
+
+**The `foot_steps` protocol.** A landing is a foot geom gaining contact with the
+terrain geom after at least two ticks with none -- the debounce matters, because
+a scuffing foot makes and breaks contact several times a second and would
+machine-gun both the sound and the paint. Feet are identified by geom id from
+`meta["foot_geom_ids"]`, grouped by owning body, and labelled left/right off the
+body name (falling back to the sign of its y offset), so nothing here breaks when
+the robot's foot contacts change from four spheres to one box. Impact speed is
+the foot's own downward speed on the last tick it was still airborne, differenced
+from its world height -- the number a sound engine wants, and one that no longer
+exists once contact does.
+
+---
+
 ## GAPS / ASKS
 
 Everything below is either something we could **not** guarantee, or something
@@ -541,6 +1512,8 @@ The four worlds and their slope/rope split; the model cache; `W` →
 `lin_vel_x = 0.5` (`--command-speed` to change it); the camera-heading yaw controller (gain 2.0/rad,
 ±1.0 rad/s, 2° deadband); the third-person orbit and its half-turn azimuth
 offset; the wind dial; the friction slider; pause/reset/record/replay; the
+guide follower and its two head cameras (`app/harness/guide.py` — a mocap body
+and two visual-only cameras added to his spec, nothing else); the
 websocket protocol and the page. None of it exists on their side, and none of it
 touches the physics except through the command 3-vector, `xfrc_applied` (wind)
 and `geom_friction` (the slider) — both clearly marked in the state message and
