@@ -68,6 +68,13 @@ BEARING_AZIMUTHS_DEGREES = (0.0, 25.0, 45.0, 70.0, 90.0, 135.0, 160.0, 180.0)
 # Candidate thresholds for the sweep in section 1. Vosk's grammar posteriors
 # pile up near 1.0, so the interesting range is the top of the scale.
 THRESHOLD_LADDER = (0.50, 0.70, 0.80, 0.85, 0.90, 0.93, 0.95, 0.97, 0.99, 1.00)
+# HOW LOUDLY SHE SPEAKS, in dB about the corpus's own level. The user's point:
+# a shout carries further in wind than a mumble, and nothing in the pipeline
+# normalises the microphone, so the source level has to be a variable in the
+# tables rather than an assumption.
+SOURCE_LEVEL_DECIBELS = (-20.0, 0.0, +10.0)
+SOURCE_LEVEL_DISTANCE_METERS = 5.0
+SOURCE_LEVEL_WIND_MPS = 12.0
 LEADING_SILENCE_SECONDS = 0.30    # the VAD wants context before the word
 TRAILING_SILENCE_SECONDS = 0.50   # ... and enough after it to close the segment
 CONTROL_HZ = 50.0
@@ -75,23 +82,32 @@ SAMPLES_PER_TICK = int(round(hearing_module.SAMPLE_RATE_HZ / CONTROL_HZ))
 
 # Section 4.
 # WHICH WORLD SECTION 4 FLIES, and it is a MEASURED choice -- table 4a below.
-# The ear layer's only actuator is `ang_vel_yaw`, so it needs a world where a
-# commanded turn produces a turn. On the roped worlds it does not (PARITY.md:
-# the palm is clipped to a fixed line), and on the small rope-off patches the
-# stock walker's yaw response is swamped by its own drift: MEASURED over 4 s of
-# a pure yaw command, flat_0 answers -13 deg to +1.0 rad/s and -50 deg to -1.0,
-# i.e. the wrong way round, and terrain_free_5 answers -76 and -35. Only
-# `sandbox_free` -- flat-ish at 12 deg, rope off, and big enough to walk in --
-# gives a real response: +171 deg to +1.0 and -161 deg to -1.0.
-DEFAULT_SIM_WORLD = "sandbox_free"
+# The ear layer's only body actuator is `ang_vel_yaw`, so it needs a world where
+# a commanded turn produces a turn AND the robot stays upright long enough to
+# walk six metres. On the roped worlds a turn does nothing (PARITY.md: the palm
+# is clipped to a fixed line). On `sandbox_free` the yaw responds but the walker
+# TIPS OVER inside four seconds under a walk-and-turn command. `terrain_free_0`
+# -- the flat Lhotse-roughness ground, rope off, added 2026-08-30 -- is the one
+# world in the catalogue where the robot neither falls nor is deaf to the
+# command, and it is what section 4 flies.
+DEFAULT_SIM_WORLD = "terrain_free_0"
 SIM_CALL_DISTANCE_METERS = 6.0
 SIM_CALL_AZIMUTH_DEGREES = 45.0
 SIM_WHITEOUT_VISIBILITY_METERS = 3.0
 SIM_CLEAR_VISIBILITY_METERS = 100.0
+# A LADDER, not one setting. At 3 m the eyes cannot see a person 6 m away at
+# all, so "does the robot reach WAIT" cannot be answered there by construction
+# -- it is the arm that proves the EARS are the only sensor in play. 10 m and
+# 100 m are what show the hand-over back to vision actually happening.
+SIM_VISIBILITY_LADDER_METERS = (3.0, 10.0, 100.0)
 SIM_ARRIVAL_METERS = 1.3          # the follower's own FOLLOW/WAIT boundary
-SIM_SECONDS = 60.0
+SIM_SECONDS = 90.0
 SIM_CALL_AT_SECONDS = 1.0
 SIM_STOP_AT_SECONDS = 12.0
+# The eye cameras' horizontal half field of view, from `guide.StereoEyes`
+# (320x240 at the d435i's fovy). Used only to ask whether the ear cue put her
+# in front of the cameras.
+CAMERA_HALF_FOV_DEGREES = 36.5
 
 
 # ------------------------------------------------------ the offline ear bench
@@ -257,6 +273,59 @@ def print_stop_tables(results) -> float:
     return best_threshold
 
 
+def print_source_level_table(manifest, clips, ears, seed=0) -> None:
+    """1d: does speaking up help? It had better.
+
+    NOTHING IN THIS PIPELINE APPLIES AUTOMATIC GAIN (user's ruling,
+    2026-08-30). The page asks the browser for `autoGainControl: false`, the
+    runtime does not normalise the PCM it receives, and the ear model applies
+    only the world -- 1/r, the propagation delay, the air's low-pass and the
+    wind noise. The consequence is testable and is tested here: at a fixed
+    range in a fixed wind, a louder utterance must be heard more often, decoded
+    more often, and located more accurately. If this table were flat, something
+    upstream would be quietly normalising and the whole "shout at the robot"
+    story would be a lie.
+    """
+    print(f"\n1d. SOURCE LEVEL -- the same clips at"
+          f" {SOURCE_LEVEL_DISTANCE_METERS:.0f} m in"
+          f" {SOURCE_LEVEL_WIND_MPS:.0f} m/s of wind, spoken at three"
+          f" loudnesses.")
+    print("| source level | peak ear level | SNR vs wind | voice heard |"
+          " `stop` decoded | bearing mean err |")
+    print("|---|---|---|---|---|---|")
+    noise = hearing_module.wind_noise_amplitude(SOURCE_LEVEL_WIND_MPS)
+    for level_db in SOURCE_LEVEL_DECIBELS:
+        gain = 10.0 ** (level_db / 20.0)
+        heard = decoded = stop_clips = 0
+        errors, ear_levels = [], []
+        for row in clips:
+            clip = corpus_module.read_clip(manifest, row) * gain
+            segments = hear_clip(clip, SOURCE_LEVEL_DISTANCE_METERS, 45.0,
+                                 SOURCE_LEVEL_WIND_MPS, seed=seed, ears=ears)
+            if not segments:
+                continue
+            heard += 1
+            ear_levels.append(ears.segment_peak_level_db)
+            measured = segments[0]["bearing_degrees"]
+            if measured is not None:
+                errors.append(abs((measured - 45.0 + 180) % 360 - 180))
+            if row["label"] == "stop":
+                stop_clips += 1
+                best = max(segment["stop_confidence"] for segment in segments)
+                if best >= hearing_module.STOP_CONFIDENCE_THRESHOLD:
+                    decoded += 1
+        source_rms = (hearing_module.VOICE_REFERENCE_RMS_AT_ONE_METER * gain
+                      / SOURCE_LEVEL_DISTANCE_METERS)
+        print(f"| {level_db:+.0f} dB |"
+              f" {np.mean(ear_levels) if ear_levels else float('nan'):.1f} dBFS |"
+              f" {20 * math.log10(source_rms / noise):+.1f} dB |"
+              f" {100 * heard / max(len(clips), 1):5.1f}% |"
+              f" {100 * decoded / max(stop_clips, 1):5.1f}% ({stop_clips}) |"
+              f" {np.mean(errors) if errors else float('nan'):5.1f}° |")
+    print("   The stop-clip count is small at this stride; what the column is"
+          " for is the SHAPE, and the shape is the claim.")
+
+
 # ------------------------------------------------------------- 2: the voice
 def print_voice_table(results) -> None:
     print("\n2. VOICE ACTIVITY (webrtcvad).  Did the utterance become a SEGMENT"
@@ -395,7 +464,8 @@ def print_bearing_table(rows) -> None:
 
 
 # --------------------------------------------------------- 4: the whole thing
-YAW_LADDER_WORLDS = ("flat_0", "terrain_free_5", "sandbox_free")
+YAW_LADDER_WORLDS = ("terrain_free_0", "flat_0", "terrain_free_5",
+                     "sandbox_free")
 YAW_LADDER_SECONDS = 4.0
 
 
@@ -495,7 +565,7 @@ def true_head_frame_azimuth(hearing, system, data) -> float:
 
 def end_to_end(world, clip_path, stop_clip_path, seed, visibility_meters,
                seconds=SIM_SECONDS, stop_at_seconds=None, verbose=False,
-               voice="?") -> dict:
+               voice="?", distance_meters=SIM_CALL_DISTANCE_METERS) -> dict:
     """Section 4: one flight. Call her once by voice; walk to her.
 
     Everything the live loop does, minus the websocket and the recorder:
@@ -525,11 +595,16 @@ def end_to_end(world, clip_path, stop_clip_path, seed, visibility_meters,
     elif stop_at_seconds is not None:
         hearing.add_injector(stop_clip_path, stop_at_seconds)
 
+    # THE "NECK" HOOK, exactly as `runtime.make_guide` registers it. Without it
+    # the waist offset the ear layer writes goes nowhere and the cameras never
+    # turn toward the shout -- a test that quietly measured a feature it had
+    # not wired up.
+    episode.control_hooks.append(system.waist.apply)
     episode.reset()
     system.place(episode.spawn_position_world)
     robot_yaw = root_yaw_radians(episode.data.qpos[3:7])
     her = _pin_guide(system, episode.spawn_position_world, robot_yaw,
-                     SIM_CALL_DISTANCE_METERS, SIM_CALL_AZIMUTH_DEGREES)
+                     distance_meters, SIM_CALL_AZIMUTH_DEGREES)
 
     ticks = int(seconds * episode.control_hz)
     samples, transitions = [], []
@@ -538,7 +613,9 @@ def end_to_end(world, clip_path, stop_clip_path, seed, visibility_meters,
     stopped_at = None
     first_ear_bearing = None
     true_bearing = None
+    truth_history = []
     eyes_acquired_at = None
+    in_cone_at = None
     for tick in range(ticks):
         time_seconds = tick / episode.control_hz
         guide_command = system.update(episode.data, tick, True, False, False)
@@ -551,13 +628,35 @@ def end_to_end(world, clip_path, stop_clip_path, seed, visibility_meters,
         if mode != previous_mode:
             transitions.append((time_seconds, previous_mode, mode))
             previous_mode = mode
-        if (first_ear_bearing is None and mode == "COMING_BY_EARS"
+        # THE TRUTH AZIMUTH IS RECORDED EVERY TICK, because the bearing has to
+        # be scored against the geometry AT THE MOMENT ITS AUDIO ARRIVED, not
+        # at the moment the verdict is published. Those are up to a second
+        # apart (`Ears.bearing_age_seconds`), and this walker swings its torso
+        # yaw fast enough that a second is tens of degrees: scoring against the
+        # publication tick charged the ears a 43 degree error they had not
+        # made.
+        truth_history.append((time_seconds,
+                              true_head_frame_azimuth(hearing, system,
+                                                      episode.data)))
+        if (first_ear_bearing is None and hearing.ears.new_segment
                 and hearing.behaviour.cue_bearing_radians is not None):
             first_ear_bearing = math.degrees(hearing.behaviour.cue_bearing_radians)
-            true_bearing = true_head_frame_azimuth(hearing, system, episode.data)
+            measured_at = time_seconds - hearing.ears.bearing_age_seconds
+            true_bearing = min(truth_history,
+                               key=lambda row: abs(row[0] - measured_at))[1]
         if eyes_acquired_at is None and hearing.behaviour.eyes_have_her(
                 system.follower):
             eyes_acquired_at = time_seconds
+        # DID THE EAR CUE PUT HER IN FRONT OF THE CAMERAS? The eyes' horizontal
+        # half-FOV is 36.5 deg about wherever the waist is pointing, so this is
+        # the geometric question the ear cue actually has to answer -- and it is
+        # separable from whether the DETECTOR then saw her, which the fog and
+        # her orange pack decide.
+        if in_cone_at is None:
+            camera_bearing = (truth_history[-1][1]
+                              - math.degrees(system.waist.measured_radians))
+            if abs((camera_bearing + 180) % 360 - 180) <= CAMERA_HALF_FOV_DEGREES:
+                in_cone_at = time_seconds
         true_range = float(np.linalg.norm(
             episode.data.qpos[0:2] - her[:2]))
         if arrived_at is None and true_range <= SIM_ARRIVAL_METERS:
@@ -569,17 +668,21 @@ def end_to_end(world, clip_path, stop_clip_path, seed, visibility_meters,
                         "command": np.asarray(command, dtype=float).copy()})
         if arrived_at is not None and stop_at_seconds is None:
             break
+        if episode.fell_at_seconds is not None:
+            break
         if stopped_at is not None and time_seconds > stopped_at + 1.0:
             break
     system.close()
     return {
         "seed": seed,
         "voice": voice,
+        "distance_meters": distance_meters,
         "visibility_meters": visibility_meters,
         "transitions": transitions,
         "arrived_at_seconds": arrived_at,
         "stopped_at_seconds": stopped_at,
         "eyes_acquired_at_seconds": eyes_acquired_at,
+        "in_camera_cone_at_seconds": in_cone_at,
         "first_ear_bearing_degrees": first_ear_bearing,
         "true_bearing_degrees": true_bearing,
         "start_range_meters": samples[0]["true_range_meters"],
@@ -598,9 +701,11 @@ def print_end_to_end(rows) -> None:
           " \"come here\".")
     print("   `arrived` is graded by the SIMULATOR's own distance -- a"
           " LABELLED CHEAT, used to grade and never in the decision path.")
-    print("| visibility | seed | voice | ear bearing vs truth (head frame) |"
-          " eyes acquired | arrived (<= 1.3 m) | closest | final mode | fell |")
-    print("|---|---|---|---|---|---|---|---|---|")
+    print("| visibility | start | seed | voice |"
+          " ear bearing vs truth (head frame) |"
+          " she enters the camera cone | eyes acquire her | arrived (<= 1.3 m) |"
+          " closest | final mode | fell |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|")
     for row in rows:
         bearing = ("--" if row["first_ear_bearing_degrees"] is None
                    else f"{row['first_ear_bearing_degrees']:+.1f}° vs"
@@ -608,10 +713,13 @@ def print_end_to_end(rows) -> None:
                         f" ({row['first_ear_bearing_degrees'] - row['true_bearing_degrees']:+.1f}°)")
         eyes = ("never" if row["eyes_acquired_at_seconds"] is None
                 else f"{row['eyes_acquired_at_seconds']:.1f} s")
+        cone = ("never" if row["in_camera_cone_at_seconds"] is None
+                else f"{row['in_camera_cone_at_seconds']:.1f} s")
         arrived = ("no" if row["arrived_at_seconds"] is None
                    else f"{row['arrived_at_seconds']:.1f} s")
-        print(f"| {row['visibility_meters']:.0f} m | {row['seed']} |"
-              f" {row['voice']} | {bearing} |"
+        print(f"| {row['visibility_meters']:.0f} m |"
+              f" {row['distance_meters']:.1f} m | {row['seed']} |"
+              f" {row['voice']} | {bearing} | {cone} |"
               f" {eyes} | {arrived} | {row['closest_range_meters']:.2f} m |"
               f" {row['final_mode']} | {row['fell_at_seconds']} |")
     arrived = [row for row in rows if row["arrived_at_seconds"] is not None]
@@ -772,6 +880,9 @@ def main(arguments) -> None:
         results = sweep_corpus(manifest, clips, ears, seed=arguments.seed)
         if 1 in sections:
             print_stop_tables(results)
+            print_source_level_table(
+                manifest, clips[::max(1, arguments.bearing_stride)], ears,
+                seed=arguments.seed)
         if 2 in sections:
             print_voice_table(results)
             print_aggressiveness_table(
@@ -804,12 +915,30 @@ def main(arguments) -> None:
                                    SIM_WHITEOUT_VISIBILITY_METERS,
                                    voice=voice))
         control_voice = voices[0]
-        print(f"[test_hearing] section 4: clear-weather control arm"
+        for visibility in SIM_VISIBILITY_LADDER_METERS[1:]:
+            print(f"[test_hearing] section 4: visibility {visibility:.0f} m arm"
+                  f" ({control_voice}) ...", flush=True)
+            rows.append(end_to_end(
+                arguments.world,
+                choose_clip(manifest, "come here", control_voice),
+                choose_clip(manifest, "stop", control_voice), 0,
+                visibility, voice=control_voice))
+        # A CLOSE ARM. Six metres is the user's scenario and it is beyond this
+        # walker's reach (table 4a); 2.5 m asks the same question of a plant
+        # that can answer it, so the behaviour is tested and the plant limit
+        # stays separately visible instead of swallowing the whole section.
+        print(f"[test_hearing] section 4: close arm, 2.5 m, white-out"
               f" ({control_voice}) ...", flush=True)
         rows.append(end_to_end(
             arguments.world, choose_clip(manifest, "come here", control_voice),
             choose_clip(manifest, "stop", control_voice), 0,
-            SIM_CLEAR_VISIBILITY_METERS, voice=control_voice))
+            SIM_WHITEOUT_VISIBILITY_METERS, voice=control_voice,
+            distance_meters=2.5))
+        rows.append(end_to_end(
+            arguments.world, choose_clip(manifest, "come here", control_voice),
+            choose_clip(manifest, "stop", control_voice), 0,
+            SIM_CLEAR_VISIBILITY_METERS, voice=control_voice,
+            distance_meters=2.5))
         print_end_to_end(rows)
         print("[test_hearing] section 4b: `stop` mid-walk ...", flush=True)
         print_stop_mid_walk(end_to_end(

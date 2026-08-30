@@ -1109,105 +1109,156 @@ properties of the team's walking policy in these scenes, not of this layer:
 
 ---
 
-## SEARCH -- turning the cameras, and what that costs
+## Hearing -- four synthesised microphones, and the ledger
 
-`app/harness/guide.py`. When the follower loses the human it sweeps its cameras
-to find her again. The G1 has no neck, so the cameras are panned by WAIST YAW.
+`app/harness/hearing.py`. The robot hears the human's voice, works out whether
+she said `stop` and which way she is, and comes when she calls.
 
-### The mount, checked rather than assumed
+### The ledger -- what is real, what is a model, what is a cheat
 
-The `d435i` camera sits on `torso_link`, and the parent chain is
-
-    pelvis -> waist_yaw_link (waist_yaw_joint, +z, +/-150 deg, actuator 12)
-           -> waist_roll_link -> torso_link   [the cameras]
-
-so `waist_yaw_joint` is above the cameras in the tree and is the joint that pans
-them. `WaistYaw.bind` looks the actuator up by name and turns the search off with
-a message if it is not there.
-
-### What is written where
-
-| piece | status | what it actually is |
-|---|---|---|
-| the waist offset | ours, a supervisory command | one number added to the walking policy's OWN waist-yaw PD target, at `ClimbSceneEpisode.control_hooks` -- after `WalkController.substep` writes `data.ctrl` and before the `mj_step` that acts on it. The policy is not retrained, not consulted and not modified. |
-| the rate limit | ours | 1.5 rad/s on the offset. A step change in a PD target is a kick, and this robot hangs off a rope by one palm. |
-| the clamp | ours, and MEASURED | +/-60 deg (see below), applied on ASSIGNMENT to `target_radians`. |
-| `theta_waist` | **read from `data.qpos`**, not from the command | the achieved joint angle. See the windup note. |
-| `ang_vel_yaw` | **zero unless a policy can use it** | `yaw_command_available`, False for every climb world. |
-
-### Two bugs this found, both worth keeping written down
-
-**1. Feeding the COMMAND back is a windup loop.** The bearing to the human in the
-body's frame is `theta_waist + beta`. The first version used the COMMANDED
-offset for `theta_waist` -- but the offset is added to a PD target the policy is
-also writing, so the policy pulls back and the joint settles short. The image
-bearing therefore never closes, the target grows every vision tick, and on
-`flat_0` the waist wound to **168 degrees** and the robot fell at **7.3 s**.
-`WaistYaw.measure` reads the achieved angle out of `qpos` instead.
-
-**2. Tracking her in FOLLOW/WAIT is a fall.** Keeping the waist on her after the
-search ended looks obviously right and is not: with the palm clipped to the rope,
-twisting the waist counter-rotates the PELVIS, so the image bearing never closes
-and the waist chases it to the clamp. On `flat_0` that is a fall at **1.9 s**.
-The waist straightens once REALIGN hands over, and REALIGN does not hand over
-until she is inside the cone the straightened cameras will still see.
-
-### The clamp is measured, not chosen
-
-Sweeping `flat_0`, roped, 25 s, 1.5 rad/s:
-
-| peak sweep | outcome |
+| piece | what it is |
 |---|---|
-| 90 deg | fell at 9.5 s |
-| 80 deg | fell at 8.3 s |
-| 75 deg | fell at 5.6 s |
-| 70 deg | survived |
-| 65 deg | fell at 21.6 s |
-| **60 deg** | **survived, upright 0.96** |
+| the MICROPHONE signal | **REAL**. A human being's voice, captured by the Mac in the browser and streamed here as 16 kHz mono int16 PCM. `getUserMedia` is asked for `autoGainControl: false`, `noiseSuppression: false`, `echoCancellation: false`; the runtime does not normalise it. Nothing about the WORDS is simulated. |
+| the four EAR signals | **A SENSOR MODEL DRIVEN BY TRUTH POSITIONS** -- the same standing as `StereoEyes`, which renders two pictures from truth geometry. The simulator supplies where the mouth is (a point on the guide's head) and where the head is (`torso_link`'s frame); the model turns that into what four capsules 7 cm out would have received: `1/r`, a fractional propagation delay at c = 330 m/s, an air-absorption low-pass, and wind noise drawn INDEPENDENTLY per capsule. |
+| voice activity, the word, the bearing | **DOWNSTREAM OF THE SENSOR MODEL AND NOTHING ELSE.** After `EarArray.feed` nothing in this file touches `MjData` again. |
+| `hearing.bearing_degrees` etc. in the state | measurements, not truth. `test_hearing` grades them against the simulator's geometry; the runtime never does. |
 
-So `WAIT_LIMIT` is 60 deg. The 20/60/90 ladder stays in the source because it is
-the design; the clamp is what binds. A robot that can hold 90 gets it by raising
-one line.
+**What the model does NOT have**, and each of these flatters the bearing: no
+reverberation, no diffraction or shadowing around the torso (so a source behind
+the robot is as loud at the front capsule as at the back one, and only the DELAY
+distinguishes them), no elevation estimate, and no coherent low-frequency
+component in the wind noise. Treat the bearing numbers as an optimistic bound on
+a real array.
 
-### The acquisition, measured
+### The noise-vs-wind law, and the anchor that was wrong first
 
-`python -m app.harness.test_search`. The human is placed **60 degrees** off the
-robot's axis -- the camera's horizontal half-FOV is 36.5 deg, so she is outside
-it and the detector sees nothing at t = 0. The camera-bearing error is read from
-the simulator (a LABELLED CHEAT, grading only) so the same detector that did the
-aiming cannot flatter it.
+    noise_rms(speed) = 0.0005 + 0.0364 * (speed / 20)^2
 
-| world | rope | ACQUIRE | hand-over | camera-bearing error at hand-over | waist peak | fell |
-|---|---|---|---|---|---|---|
-| `flat_0` | on | 0.20 s | 0.24 s -> FOLLOW | **10.2 deg** | 58.4 deg | no |
-| `terrain_free_10` | off | 0.40 s | 1.00 s -> FOLLOW | **3.2 deg** | 20.1 deg | no |
+QUADRATIC, because turbulent pressure on a bare diaphragm goes as the dynamic
+head. The coefficient is anchored at "a 20 m/s gale on an unwindshielded
+microphone sits about 10 dB below a voice at one metre", which fixes it at
+`VOICE_REFERENCE_RMS_AT_ONE_METER * 10^(-10/20)`.
 
-Rope-off is the cleaner of the two, as expected: nothing is counter-rotating the
-pelvis, so the waist barely has to move and the error is 3 deg.
+**Both sides of that comparison are rms, and getting it wrong is what the first
+version did**: the anchor was applied to the corpus's PEAK level, 15.6 dB
+higher, and the grid collapsed -- a 6 m/s breeze wiped out a shout at two metres
+and every row below 0 m/s read 0.0%. `test_hearing` now prints the corpus's own
+measured median rms beside the constant so a drift shows up instead of hiding.
+Measured 2026-08-30: corpus median rms 0.0975 against a declared 0.115, -1.4 dB.
 
-### The limit of a neck that only turns 60 degrees
+### The physics claim
 
-The searchable cone is 60 (waist) + 36.5 (half-FOV) = **+/-96.5 deg**. A human
-BEHIND the robot cannot be found. Held **S** on `flat_0` until she walks back
-past the robot: FOLLOW -> WAIT (2.5 s) -> SEARCH/sweep, and she is never
-re-acquired, correctly. **ASK to Mrinal: randomise `ang_vel_yaw` in the training
-commands if a steerable turn is wanted.** Everything here is a workaround for a
-policy that cannot turn; `realign_mode: "body+waist"` is already written for one
-that can.
+`test_hearing` section 5, the `test_guide` section D convention: the same
+scripted command flown twice on `terrain_free_0`, once with hearing off and once
+with it ON and a real utterance injected so the detectors fire.
 
-### The physics claim, stated the only way it can be true
+| array | max abs difference |
+|---|---|
+| `qpos` | 0.000e+00 |
+| `qvel` | 0.000e+00 |
+| `ctrl` | 0.000e+00 |
+| `sensordata` | 0.000e+00 |
+| `qfrc_constraint` | 0.000e+00 |
+| `cfrc_ext` | 0.000e+00 |
 
-A SEARCHING robot's physics is NOT identical to a still one's, and must not be:
-the waist offset is a real command on a real actuator, and the feature IS that
-the torso turns. What must be identical is the OFF case -- the machinery built,
-the hook registered and running on every substep, the knob off:
+BIT-IDENTICAL. The ears are a sensor; a sensor may not move the robot. The
+COMMAND is of course different when the behaviour is driving -- that is the
+feature -- which is exactly why the parity run scripts the command instead of
+taking it from the behaviour.
 
-    no guide system at all   vs   guide built + waist hook registered, knob OFF
+### Cost, measured
 
-Same reset, same scripted command, 6 s, `flat_0`: `qpos`, `qvel`, `ctrl`,
-`sensordata`, `qfrc_constraint` all **0.000e+00**.
+Per 20 ms control tick on this laptop, `terrain_free_0`, hearing on:
 
----
+| stage | cost |
+|---|---|
+| ear synthesis (4 channels x 320 samples, delays + gains + low-pass + noise) | **0.12 - 0.22 ms every tick** |
+| the detectors, at 10 Hz (VAD on the front channel) | **0.06 - 0.09 ms** on a detector tick, 0 otherwise |
+| `webrtcvad` alone | 0.04 ms |
+| `vosk` with the grammar | **5.7 ms, once per utterance** |
+| GCC-PHAT, both pairs, 8x interpolated | **1.6 ms, once per utterance** |
+
+So the steady-state cost is about 1% of the tick and the utterance cost is a one
+-off 7 ms, against a 20 ms budget that the eye render (13 ms per stereo pair at
+10 Hz) already dominates.
+
+### What the plant cannot do, and it is not the ears
+
+The ear layer's only body actuator is `ang_vel_yaw`, and on this robot that is
+close to useless. `test_hearing` table 4a, a pure yaw command for 4 s from the
+spawn, with the drift at zero command as the noise floor:
+
+| world | +1.0 rad/s | 0.0 | -1.0 rad/s | separation | drift at 0 |
+|---|---|---|---|---|---|
+| `terrain_free_0` | +2° | -43° | -36° | +38° | 0.52 m |
+| `flat_0` | -13° | -15° | -50° | +37° | 1.04 m |
+| `terrain_free_5` | -76° | +45° | -35° | -41° | 2.39 m |
+| `sandbox_free` | +171° | +28° | -161° | +332° | 2.19 m |
+
+Three further measurements, all on `terrain_free_0` unless stated:
+
+* **The robot cannot turn on the spot.** Yaw comes out of the stepping gait, so
+  a `[0, 0, +0.5]` command is a robot standing still. With a pivot-first rule the
+  heading error sat at +80° for **85 seconds**, the waist pinned at its limit,
+  the base not moving. The ear layer therefore always walks while it turns.
+* **Walking and turning together is what tips it.** `sandbox_free` has the only
+  real yaw response in the catalogue and `[0.5, 0, ±0.2…±0.5]` tips the robot
+  over inside four seconds. `terrain_free_0` survives, which is why section 4
+  flies it.
+* **The ear-driven waist aim has to be gentler than the sweep's was.**
+  `guide.WAIST_LIMIT_RADIANS` (60°) was measured on a robot standing still; a
+  robot walking and turning at the same time adds the two loads. Ear-driven
+  approach, 90 s budget: 60° -> fell at 4.5 s, 25° -> fell at 89.8 s, 15° ->
+  survived, 0° -> survived. `EAR_WAIST_AIM_LIMIT_RADIANS` is 20°.
+
+**Consequence, stated plainly:** the ears work and the walker does not. The
+bearing is right to about a degree, the word is decoded, the state machine goes
+where it should, and the robot then fails to close six metres because the stock
+mels policy on this jacketed robot cannot hold a heading -- a heading-hold probe
+with the ear layer's own gains covers 3.2 m of a 45° approach in 30 s at a mean
+heading error of 55°, and the same controller closed by 0.5 m in 20 s once the
+plant's own drift was in the loop. **ASK to Mrinal, and it is the same ASK the
+retired SEARCH section made:** randomise `ang_vel_yaw` in the training commands.
+A policy that could turn would make this whole layer work as designed.
+
+### The two bugs this found, both worth keeping written down
+
+* **The onset must be pre-rolled.** The VAD runs at 10 Hz, so the segment can
+  open up to 100 ms into the word, and the recogniser was handed a `stop` with
+  its `/s/` missing -- which is "top", one of the near-misses the grammar exists
+  to reject. Measured: a `stop` spoken at a robot 6 m away came back `[unk]`,
+  confidence **0.000**; the SAME clip through the SAME ear model with 300 ms of
+  silence in front of it came back **1.000**. The offline tables were passing
+  only because their clips were padded.
+* **A bearing table of multiples of 45° measures nothing.** The first version
+  reported 0.0° of error in every cell of the grid. At 0/45/90/135/180 the two
+  pairs' delays are equal in magnitude or one is zero, so `atan2(u_y, u_x)`
+  returns the exact answer for ANY common scaling of the two components: a 20%
+  error in the baseline, the speed of sound or the sample rate would have gone
+  straight through untouched. 25°, 70° and 160° are in the table for that reason,
+  and they are where the error actually appears.
+
+Two smaller ones, same family: the GCC-PHAT peak's SHARPNESS read **0.25 for
+every cell of the grid from a flat calm to a gale** while the noise floor was
+measured over the physically possible lag range -- the peak was dividing itself.
+Measured over a lag range the source cannot occupy, it moves 0.63 -> 0.29. And a
+textbook PHAT that whitens EVERY bin amplifies empty ones to unit magnitude with
+garbage phase: on a 700 Hz tone at +30° it answered +6°. `PHASE_TRANSFORM_FLOOR`
+is 2% of the strongest bin.
+
+### The SEARCH sweep this replaced
+
+Retired 2026-08-30 on the user's ruling ("the eye sweep logic can be deleted now
+for the robot searching for the human"), along with `app/harness/test_search.py`.
+Kept here as history because the numbers were real: the waist swept a 20/60/90°
+ladder clamped to 60°, and with the human 60° off-axis it reached ACQUIRE in
+**0.20 s** on `flat_0` roped (hand-over 0.24 s, 10.2° camera-bearing error) and
+**0.40 s** on `terrain_free_10` rope off (hand-over 1.00 s, 3.2°). The 60° clamp
+was measured: sweeping `flat_0` roped for 25 s, 90° fell at 9.5 s, 80° at 8.3 s,
+75° at 5.6 s, 70° survived, 65° fell at 21.6 s, 60° survived at upright 0.96.
+The searchable cone was ±96.5° and a human behind the robot could not be found.
+`guide.WaistYaw` and the `control_hooks` seam survive; the ear layer aims them.
+
 
 ## The two wind pennants and the camera subject -- browser only
 
