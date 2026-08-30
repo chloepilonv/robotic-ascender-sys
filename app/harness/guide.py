@@ -348,18 +348,32 @@ MAXIMUM_YAW_RATE_RADIANS_PER_SECOND = 1.0
 # toward her on the linear ports, so yaw is now a comfort term, not the engine.
 #
 # BEHIND HER (|beta| > 90 deg) `cos(beta)` goes negative and the law would ask for
-# a backwards walk. It is capped rather than forbidden: a small negative `lin_vel_x`
-# keeps the gait stepping (and yaw only exists while the gait steps -- see
-# `hearing.HearingBehaviour._walk_toward`), so the robot walks a CURVED approach,
-# crabbing sideways on `lin_vel_y` while the yaw term swings the nose around. It
-# never stops to pivot, because a stopped robot cannot turn at all.
+# a backwards walk. It is FLOORED AT A SMALL POSITIVE CREEP instead, and the floor
+# is MEASURED, not chosen: a target 6 m away at 135 deg off the nose, `flat_free`,
+# 3 seeds, 90 s budget, walking the vector with only the floor varied --
+#
+#     lin_vel_x floor   arrivals   mean arrival   falls
+#         -0.20 m/s       0/3          --           3
+#         +0.00           3/3         27.4 s        0
+#         +0.15           3/3         26.7 s        0
+#         +0.30           3/3         42.6 s        0
+#
+# -- so asking this walker to step BACKWARDS while crabbing and turning tips it
+# over every time, and a small forward creep does not. +0.15 is taken over +0.00
+# because at a bearing of exactly 180 deg the lateral term vanishes too, and a
+# robot commanded (0, 0, yaw) is standing still: yaw only exists while the gait
+# steps (see `hearing.HearingBehaviour._walk_toward`). So the robot walks a
+# CURVED approach, crabbing sideways on `lin_vel_y` while the yaw term swings
+# the nose around -- and it never stops to pivot, because a stopped robot cannot
+# turn at all.
 VECTOR_YAW_GAIN_PER_RADIAN = 0.5          # ~2 s to face the target
 VECTOR_MAXIMUM_YAW_RATE_RADIANS_PER_SECOND = 1.0   # walk_policy.CMD_LIMITS[2]
 VECTOR_MAXIMUM_LATERAL_METERS_PER_SECOND = 0.5     # walk_policy.CMD_LIMITS[1]
 VECTOR_MAXIMUM_FORWARD_METERS_PER_SECOND = 1.0     # walk_policy.CMD_LIMITS[0]
-# The floor on `lin_vel_x` when she is BEHIND. Not zero: the gait has to keep
-# stepping or the yaw term buys nothing.
-VECTOR_MINIMUM_FORWARD_METERS_PER_SECOND = -0.2
+# The floor on `lin_vel_x` when she is BEHIND. Positive, not negative and not
+# zero: the gait has to keep stepping or the yaw term buys nothing, and stepping
+# BACKWARDS while crabbing tips this walker over. See the table above.
+VECTOR_MINIMUM_FORWARD_METERS_PER_SECOND = 0.15
 
 
 def vector_command(bearing_radians, speed_meters_per_second,
