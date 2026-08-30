@@ -559,7 +559,7 @@ def run(arguments) -> str:
     if server is not None:
         server.knobs["hearing"] = 1.0   # ears ON by default (user ruling 2026-08-30); --hearing kept for headless
         server.microphone = hearing_system.microphone
-    print(f"[hearing] starts {'ON' if arguments.hearing else 'OFF'}"
+    print(f"[hearing] starts ON by default"
           f" (knob `hearing`); it needs the GUIDE on, because the voice comes"
           f" out of her mouth and the hand-over is to her eyes", flush=True)
 
