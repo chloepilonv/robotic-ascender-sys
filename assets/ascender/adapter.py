@@ -35,8 +35,8 @@ PLUG_D, PLUG_L = HOLE_D - 0.35, 25.0         # TODO: add the internal retention 
 PLATE_T, RIM = 6.0, 5.0
 COLLAR_T, SPLIT_GAP, M3_CLEAR = 4.0, 1.0, 3.4
 # ---- ascender interface (Petzl frame at its attachment hole; tune from the real part) ----
-FRAME_T, PIN_D = 8.0, 12.0
-HOLE_TOOL = np.array([0.0, 0.0, 12.0])       # attachment hole centre in the tool frame (mm)
+FRAME_T, PIN_D = 4.5, 12.0                  # scan: plate 4.1 mm at the eye; Ø12 shoulder bolt + Ø18/12 sleeve in the Ø18 eye
+HOLE_TOOL = np.array([-9.0, 0.0, 19.4])     # attachment eye centre in the tool frame (mm), Ø18 — measured on the scan
 CHEEK_T, CHEEK_W, BAR_T = 6.0, 26.0, 8.0
 ARM_W = 12.0
 TOOL_SHIFT_X = PLATE_T + 2.0                 # push the tool out so it clears the face plate
