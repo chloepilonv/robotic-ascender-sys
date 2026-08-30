@@ -194,7 +194,7 @@ CURRENT_CHLOE_VERSION = "v1"
 # scales -- with only the slope changed. She trained at 20; the measured band
 # she climbs in is 10-30 (SLOPE_BAND_DEGREES); rungs outside it are kept ON
 # PURPOSE so the failure is visible in the app, not just in a table.
-CHLOE_SLOPE_LADDER_DEGREES = (0, 5, 10, 15, 20, 25, 30, 35, 40)
+CHLOE_SLOPE_LADDER_DEGREES = (0, 10, 20, 30, 40)   # 5-degree rungs deleted (user, 2026-08-30)
 
 
 def _display_name(version):
