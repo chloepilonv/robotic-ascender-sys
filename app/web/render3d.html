@@ -340,6 +340,7 @@
       <div class="kv">
         <span>Distance</span><b id="guideDistance">—<em></em></b>
         <span>Bearing</span><b id="guideBearing">—</b>
+        <span>Eyes</span><b><button class="switchrow" id="eyesSwitch" role="switch" aria-checked="true" title="the robot may use vision"><i class="switch"></i></button></b>
       </div>
     </div>
     <canvas id="eyeView" width="320" height="240"></canvas>
@@ -646,6 +647,15 @@ function paintGuideSwitch() {
   paintViewMode();
   paintEyeViewVisibility();
 }
+// EYES (user's ruling, 2026-08-30): vision off = the stereo pair is not even
+// rendered server-side; the robot navigates by ears alone and the PiP goes
+// stale and hides on its own.
+const eyesState = { on: true };
+$('eyesSwitch').addEventListener('click', () => {
+  eyesState.on = !eyesState.on;
+  $('eyesSwitch').setAttribute('aria-checked', String(eyesState.on));
+  send({ type: 'knob', name: 'eyes', value: eyesState.on ? 1 : 0 });
+});
 $('guideSwitch').addEventListener('click', () => {
   guideState.on = !guideState.on;
   viewState.onGuide = true;   // fresh guide session opens framed on her
@@ -668,6 +678,10 @@ function paintGuideCard(frame) {
     guideState.on = Boolean(guide.enabled);
     guideState.freeWalk = freeWalk;
     paintGuideSwitch();
+  }
+  if (guide.eyes !== undefined && Boolean(guide.eyes) !== eyesState.on) {
+    eyesState.on = Boolean(guide.eyes);
+    $('eyesSwitch').setAttribute('aria-checked', String(eyesState.on));
   }
   readout.style.display = 'block';
   const mode = typeof guide.mode === 'string' ? guide.mode.toUpperCase() : null;

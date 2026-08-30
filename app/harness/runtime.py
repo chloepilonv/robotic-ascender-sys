@@ -582,6 +582,7 @@ def run(arguments) -> str:
     touchdowns = make_snow(model, meta)
     if server is not None:
         server.knobs["guide"] = 1.0 if arguments.guide else 0.0
+        server.knobs["eyes"] = 1.0   # vision on unless the page says otherwise
     print(f"[guide] {'available' if guide_system.available else 'NOT available'}"
           f" in world {episode.world_name};"
           f" starts {'ON' if arguments.guide else 'OFF'}"
@@ -641,6 +642,7 @@ def run(arguments) -> str:
             break
 
         guide_enabled = bool(arguments.guide)
+        eyes_enabled = True   # headless default; the page's `eyes` knob overrides
         walking = bool(arguments.hold_w)
         backing = False
         # A/D as the HIKER's steering, +1 = left. Only ever non-zero on a
@@ -655,6 +657,7 @@ def run(arguments) -> str:
             # human: the robot's own command still comes from the follower.
             backing = "s" in keys
             guide_enabled = bool(server.knobs.get("guide", 0.0))
+            eyes_enabled = bool(server.knobs.get("eyes", 1.0))
             # Only the AZIMUTH is read: it is the steering input. Elevation
             # moves the browser's own camera and the server no longer draws
             # anything, so the page still sends it and the harness ignores it.
@@ -773,7 +776,7 @@ def run(arguments) -> str:
         # heading it drifted away from ten seconds ago.
         guide_command = guide_system.update(
             episode.data, episode.tick, guide_enabled, walking, backing,
-            guide_turning)
+            guide_turning, eyes_enabled=eyes_enabled)
         if guide_command is not None:
             command = guide_command
             heading.desired_heading_radians = root_yaw_radians(

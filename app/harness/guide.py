@@ -1935,7 +1935,8 @@ class GuideSystem:
         return float(np.linalg.norm(self.guide.reference_point_world() - eye))
 
     def update(self, data, tick: int, enabled: bool, walking: bool,
-               backing: bool = False, turning: float = 0.0) -> np.ndarray | None:
+               backing: bool = False, turning: float = 0.0,
+               eyes_enabled: bool = True) -> np.ndarray | None:
         """One control tick. -> the command to fly, or None if the guide is off.
 
         Order matters: the human moves, its body is written, and only THEN are
@@ -1993,8 +1994,19 @@ class GuideSystem:
         self._mujoco.mj_camlight(self.model, data)
         self.true_range_meters = self.true_range_to_guide(data)
 
+        # EYES OFF (user's ruling, 2026-08-30: an option to disable eyes): the
+        # stereo pair is not even rendered -- the robot is genuinely blind, not
+        # ignoring what it saw -- and the follower is snapped to LOST at once so
+        # the ear layer owns the approach. The stale-range trap this avoids:
+        # with no fresh non-detection arriving, `seconds_since_detection` would
+        # freeze and the follower would FOLLOW a remembered range forever.
+        self.eyes_enabled = bool(eyes_enabled)
+        if not self.eyes_enabled:
+            self.latest = None
+            self.follower.seconds_since_detection = max(
+                self.follower.seconds_since_detection, LOST_AFTER_SECONDS)
         measurement = None
-        if tick % EYE_RENDER_EVERY_N_TICKS == 0:
+        if self.eyes_enabled and tick % EYE_RENDER_EVERY_N_TICKS == 0:
             import time
             started = time.time()
             measurement = self.eyes.look(data)
@@ -2052,7 +2064,7 @@ class GuideSystem:
                     "waist_yaw_degrees": 0.0,
                     "distance_meters": None, "bearing_degrees": None,
                     "true_distance_meters": None, "human_progress_meters": 0.0,
-                    "free_walk": False}
+                    "free_walk": False, "eyes": False}
         bearing = self.follower.bearing_radians
         return {
             "enabled": bool(self.enabled),
@@ -2072,6 +2084,7 @@ class GuideSystem:
                 float(self.guide.travel_meters), 3),
             # Which keys drive HER: on a rope-off world A and D turn her.
             "free_walk": bool(self.available and self.guide.free_walk),
+            "eyes": bool(getattr(self, "eyes_enabled", True)),
         }
 
     def recorded(self) -> dict:
