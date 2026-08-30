@@ -70,9 +70,9 @@
   #eyePip { position: absolute; right: 18px; bottom: 18px; width: 256px; height: 192px;
             display: none; border: 1px solid rgba(228,228,231,.28); border-radius: 8px;
             background: #000; pointer-events: none;
-            box-shadow: 0 8px 28px rgba(0,0,0,.55);;
-    /* display-only match to the viewport's renderer -- the detector sees raw pixels */
-    filter: brightness(1.42) contrast(0.97); }
+            box-shadow: 0 8px 28px rgba(0,0,0,.55);
+    /* display-only match to the viewport's renderer -- see #eyeAlbedo in the body */
+    filter: url(#eyeAlbedo); }
 
   #lockOverlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
                  pointer-events: none; background: rgba(9,9,11,.55); }
@@ -202,9 +202,9 @@
   .pill.lost { background: rgba(239,68,68,.14); border-color: rgba(239,68,68,.4); color: var(--bad); }
   #guideReadout .kv { margin-top: 9px; }
   #eyeView { display: none; width: 100%; aspect-ratio: 4 / 3; margin-top: 10px;
-             border: 1px solid var(--border); border-radius: 6px; background: #000;;
-    /* display-only match to the viewport's renderer -- the detector sees raw pixels */
-    filter: brightness(1.42) contrast(0.97); }
+             border: 1px solid var(--border); border-radius: 6px; background: #000;
+    /* display-only match to the viewport's renderer -- see #eyeAlbedo in the body */
+    filter: url(#eyeAlbedo); }
 
   #hearingReadout { display: none; }
   .pill.coming { background: rgba(34,197,94,.14); border-color: rgba(34,197,94,.4); color: var(--good); }
@@ -273,6 +273,37 @@
 </style>
 </head>
 <body>
+<!-- THE EYE WINDOWS' DISPLAY CURVE, and it is display only: `fog_image` in
+     app/harness/storm.py still hands the DETECTOR raw pixels, and nothing here
+     touches the eye render.
+
+     WHY A CURVE AND NOT A GAIN. MuJoCo's snow reads darker than three.js's, so
+     the eye windows used to carry `brightness(1.42) contrast(0.97)`. A GAIN is
+     the wrong shape for a fogged picture: the eye image is
+     `scene*(1-f) + fogcolour*f`, and multiplying the WHOLE thing multiplies the
+     fog too. Where the fog colour is already 255 white -- everything below 46.7 m
+     of visibility -- 1.42x has nowhere to go, so the white-out clipped while the
+     dark ground was still short, and in the middle of the dial the eye read
+     far whiter than the viewport. Worse, `contrast(0.97)` pulled pure white DOWN
+     to 251, so a full white-out could never match the viewport's 255 no matter
+     what: a measured 4.4/255 floor under every reading.
+
+     A GAMMA has the shape the problem wants. `out = 255*(in/255)^0.62` lifts the
+     dark snow by about the same factor the old gain did (85 -> 137) and leaves
+     255 exactly 255, so the fog end of the dial lines up by construction and
+     only the albedo gap is corrected. `color-interpolation-filters="sRGB"` is
+     load-bearing: the SVG default is linearRGB, which would apply the curve to
+     different numbers than the ones measured here. -->
+<svg width="0" height="0" aria-hidden="true" focusable="false"
+     style="position:absolute; pointer-events:none">
+  <filter id="eyeAlbedo" color-interpolation-filters="sRGB">
+    <feComponentTransfer>
+      <feFuncR type="gamma" amplitude="1" exponent="0.62" offset="0"/>
+      <feFuncG type="gamma" amplitude="1" exponent="0.62" offset="0"/>
+      <feFuncB type="gamma" amplitude="1" exponent="0.62" offset="0"/>
+    </feComponentTransfer>
+  </filter>
+</svg>
 <div id="stage">
   <canvas id="canvas"></canvas>
   <canvas id="snow"></canvas>
