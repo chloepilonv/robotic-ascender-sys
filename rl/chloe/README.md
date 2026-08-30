@@ -1,15 +1,34 @@
 # rl/chloe — mjlab ascender climb (PPO)
 
+## What we did (2026-08-29/30, hackathon)
 
-Fixed-rope climb with the wrist-mounted ascender, built on
-[mjlab](https://github.com/mujocolab/mjlab) (MuJoCo Warp + rsl_rl PPO).
-Separate from the JAX/Playground envs above: it needs its own venv.
+Goal: a Unitree G1 that climbs a Himalayan slope on a fixed rope with the ascender on its
+right wrist — walk, push the ascender up, walk, push — and stays up in wind and on ice.
 
-```bash
-uv venv -p 3.11 .venv-mjlab && uv pip install -p .venv-mjlab/bin/python mjlab onnx onnxscript
-python assets/robots/mujoco/build.py --fetch        # stock Unitree STLs, once per clone
-.venv-mjlab/bin/python rl/chloe/tests/test_ascender_env.py  # CPU smoke test (~1 min)
-```
+1. **The ascender on the rope, as a real mechanism** — `assets/robots/mujoco/rope_rail.py`
+   (shared, plain MuJoCo, see `ROPE_ASCENDER_ALIGNMENT.md` there). The rope passes through the
+   tool's channel (measured on the mesh); the tool is welded to a carriage that has ONE prismatic
+   joint along the rope; the cam = the joint's lower limit follows the highest point reached, so
+   it never goes back down. Rigid to 0.1 mm, verified by `rope_rail_check.py`.
+2. **An RL task on top of it** (`task/`): mjlab (MuJoCo Warp, 4096 robots on one GPU) + rsl_rl PPO.
+   Observations = what the real G1 measures (IMU, encoders, last action, wrist position from FK).
+   Rewards: go uphill, push the ascender up, stay upright, stay on one side of the rope, keep the
+   ascender ahead of the hips. Slope = tilted gravity (one task per slope, 0/10/20/30/40°).
+3. **Domain randomisation for robustness and sim-to-real**: wind 0–15 m/s random heading,
+   foot friction 0.4–0.9 (snow → crampons), PD gains ±20 %, torso mass ±10 %, CoM ±3 cm,
+   action delay 0–2 steps.
+4. **Training on HF Jobs** (`scripts/hf_job.sh`): clone → install → train → export ONNX → upload to
+   `iteratehack/g1-ascender`. First 3000-iteration run (`Slope20`): full-length episodes, uphill
+   speed at target, ascender progressing.
+5. **Deployment path**: `scripts/export_onnx.py` (obs → 29 joint targets, 50 Hz) and
+   `scripts/sim2sim.py` (runs the ONNX in plain CPU MuJoCo with hand-written obs/PD/ratchet — the
+   same loop the Jetson will run).
+6. **Climb mime for the real robot today** (`deterministic/`): RL walking policy + scripted
+   right-arm reach/pull cycle, MuJoCo twin and Unitree-SDK runner (arm_sdk + LocoClient).
+
+What is *not* done: per-env slope, gait-quality rewards, hardware deployment of the climb policy.
+See `ROADMAP.md`.
+
 
 Files:
 - `robot.py` — `assets/robots/mujoco/g1_unitree_ascender.xml` as an mjlab entity, plus a
