@@ -245,10 +245,22 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
     "uphill_velocity": RewardTermCfg(
       func=mdp.mode_uphill_velocity, weight=2.0, params={"target": 0.3, "std": 0.3}
     ),
-    "ascender_progress": RewardTermCfg(
-      func=mdp.mode_ascender_progress, weight=2.0, params={"asset_cfg": mdp.SLIDE}
+    "ascender_progress": RewardTermCfg(  # rope = support, not propulsion (weight < uphill)
+      func=mdp.mode_ascender_progress, weight=1.0, params={"asset_cfg": mdp.SLIDE}
     ),
+    "rope_tension": RewardTermCfg(
+      func=mdp.rope_tension_band, weight=0.5, params={"lo": 20.0, "hi": 150.0}
+    ),
+    "rope_jerk": RewardTermCfg(func=mdp.rope_tension_rate, weight=-0.002),
     "face_uphill": RewardTermCfg(func=mdp.face_uphill, weight=1.0),
+    "hiking_posture": RewardTermCfg(
+      func=mdp.hiking_posture,
+      weight=0.5,
+      params={"targets": mdp.HIKE_POSE, "std": 0.4},
+    ),
+    "stillness": RewardTermCfg(
+      func=mdp.stillness, weight=-0.02, params={"asset_cfg": G1_JOINTS}
+    ),
     "upright": RewardTermCfg(
       func=vel_mdp.upright,
       weight=1.0,
@@ -263,7 +275,7 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
     "dof_pos_limits": RewardTermCfg(
       func=base_mdp.joint_pos_limits, weight=-1.0, params={"asset_cfg": G1_JOINTS}
     ),
-    "action_rate_l2": RewardTermCfg(func=base_mdp.action_rate_l2, weight=-0.1),
+    "action_rate_l2": RewardTermCfg(func=base_mdp.action_rate_l2, weight=-0.2),
     "joint_torques_l2": RewardTermCfg(
       func=base_mdp.joint_torques_l2, weight=-1e-5, params={"asset_cfg": G1_JOINTS}
     ),
