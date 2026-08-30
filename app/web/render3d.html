@@ -1150,7 +1150,8 @@ function stormVisibilityMeters(speed) {
                   STORM_CLEAR_VISIBILITY_METERS
                     * Math.exp(-speed / STORM_VISIBILITY_DECAY_MPS));
 }
-const stormFog = { baseDensity: null, baseColour: null, whiteout: null, lastWritten: null };
+const stormFog = { baseDensity: null, baseColour: null, whiteout: null,
+                   lastWritten: null, background: null };
 function applySnowStorm() {
   if (!stage || !stage.world) return;
   stage.world.stormEnabled = stormState.on;
@@ -1179,13 +1180,23 @@ function applySnowStorm() {
       .multiplyScalar(1 + (STORM_FOG_EXPOSURE_HEADROOM - 1) * whiteness);
   }
   stormFog.lastWritten = fog.density;
-  // THE SKY HAS TO GO WITH IT. `Sky.js` is a Preetham shader on a mesh at the far
-  // plane and it does NOT read scene.fog -- so a whiteout that only fogged the
-  // GEOMETRY left a clear blue sky sitting on top of an erased mountain, which is the
-  // one thing that reads instantly as fake. While the storm blows, the sky mesh is
-  // hidden and the clear colour IS the fog colour, so there is no horizon at all.
-  if (stage.sky) stage.sky.visible = !stormState.on;
-  stage.scene.background = stormState.on ? fog.color : null;
+  // THE SKY HAS TO GO WITH IT. A scene BACKGROUND is never fogged -- neither the
+  // Everest panorama stage.js loads nor a plain colour -- so a whiteout that only
+  // fogged the GEOMETRY leaves a crisp sky sitting on top of an erased mountain,
+  // which is the one thing that reads instantly as fake. While the storm blows, the
+  // background IS the fog colour and there is no horizon at all.
+  //
+  // AND IT IS PUT BACK, not nulled. The panorama arrives ASYNCHRONOUSLY into
+  // `scene.background`; blanking it on storm-off would delete the sky for the rest of
+  // the session. So whatever is there is remembered the moment we take it over -- and
+  // because the test is "is this our own fog colour", a panorama that finishes loading
+  // DURING a storm is picked up on the next frame instead of being lost.
+  if (stormState.on) {
+    if (stage.scene.background !== fog.color) stormFog.background = stage.scene.background;
+    stage.scene.background = fog.color;
+  } else if (stage.scene.background === fog.color) {
+    stage.scene.background = stormFog.background ?? null;
+  }
   // the flakes are lit by the same fog, so they must be told about it too
   const uniforms = stage.world.snow && stage.world.snow.material.uniforms;
   if (uniforms) {
