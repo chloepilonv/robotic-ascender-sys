@@ -30,6 +30,54 @@ What is *not* done: per-env slope, gait-quality rewards, hardware deployment of 
 See `ROADMAP.md`.
 
 
+## Training recipe per policy (what each network was rewarded for)
+
+Common to all: mjlab + rsl_rl PPO, 4096 envs, 24 steps/env per update, 3000 iterations (~1 h on an
+A10G), 50 Hz control, 15 s episodes, slope 20° (tilted gravity). Obs = base ang. vel (3), projected
+gravity (3), joint pos (29), joint vel (29), last action (29), ascender position in the pelvis frame (3)
+[+ mode bit from v4]. Randomisation: wind 0–15 m/s random heading, foot friction 0.4–0.9, PD gains ±20 %,
+torso mass ±10 %, CoM ±3 cm, action delay 0–2 steps. Terminations: tilt > 60°, pelvis < 0.35 m, time-out
+[+ facing > 90° from uphill from v4].
+
+### v3 — `g1_ascender_slope20_v3_2026-08-30_04-35-59` (climbs, faces any direction)
+Rope model: channel at the mesh-hull centre, weld, qpos-clamp ratchet (superseded).
+
+| reward | weight | meaning |
+|---|---|---|
+| uphill_velocity | +2 | base velocity along +x tracks 0.3 m/s |
+| ascender_progress | +1 | ascender sliding up (≤ 1 m/s) |
+| upright | +1 | torso not tilted |
+| alive | +0.5 | |
+| rope_side | −5 | pelvis stays on its side of the rope (10 cm margin) |
+| hand_behind | −2 | ascender must stay uphill of the pelvis |
+| dof_pos_limits / action_rate_l2 / joint_torques_l2 | −1 / −0.1 / −1e-5 | limits, smoothness, effort |
+
+Result: +12 m in 30 s in sim2sim, no falls — but walks uphill *backwards* (no heading term), and
+slides + walks at the same time (no rhythm).
+
+### v7 — training now (`g1_ascender_slope20_v7_<timestamp>` when it lands)
+Rope model: **final** `rope_rail.py` (channel x=+15 mm, pitch +5°, rigid weld, limit-based ratchet, 3 N drag).
+Adds a **mode command** in the obs: SLIDE (push the ascender 0.5 m, feet still) → WALK (walk until the
+ascender is within 0.3 m of the pelvis) → repeat; random start mode. `sim2sim.py` runs the same FSM.
+
+| reward | weight | meaning |
+|---|---|---|
+| uphill_velocity | +2 | WALK: track 0.3 m/s uphill; SLIDE: stand still |
+| ascender_progress | +1 | SLIDE: ascender sliding up; WALK: penalise moving it (rope = support, not propulsion) |
+| rope_tension | +0.5 | rope tension inside 20–150 N (moderate, continuous) |
+| rope_jerk | −0.002 | |Δtension| per step — no sudden pulling |
+| face_uphill | +1 | cosine(torso forward, uphill): +1 facing up, −1 facing down |
+| hiking_posture | +0.5 | hips −0.45, knees 0.85, waist lean 0.15 rad (std 0.4) |
+| upright | +1 | torso not tilted |
+| alive | +0.5 | |
+| stillness | −0.02 | joint speed² while in SLIDE (no jiggling) |
+| rope_side | −5 | pelvis stays on its side of the rope |
+| hand_behind | −2 | ascender stays uphill of the pelvis |
+| dof_pos_limits / action_rate_l2 / joint_torques_l2 | −1 / −0.2 / −1e-5 | limits, smoothness (doubled), effort |
+
+v4 (heading + mode, old tool angle), v5/v6 (cancelled: geometry changed mid-run) are not kept.
+The exact code is `task/env_cfg.py` (weights) and `task/mdp.py` (functions); `task/climb_mode.py` (rhythm).
+
 Files:
 - `robot.py` — `assets/robots/mujoco/g1_unitree_ascender.xml` as an mjlab entity, plus a
   `rope` (visual cylinder along world +x) and an `rope_carriage` body with one slide
