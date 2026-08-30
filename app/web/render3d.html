@@ -1188,6 +1188,8 @@ const soundIndicator = {
   confidence: 0,
   holding: false,          // the utterance is still going: no fade yet
   releasedAtMilliseconds: 0,
+  screenAngleRadians: null,   // the drawn angle, slid toward the live target
+  lastDrawMilliseconds: 0,
 };
 // Called from paintHearingCard on every state frame; acts only on the EDGE.
 function noteHeardSound(heard, bearingDegrees, bearingConfidence) {
@@ -1218,6 +1220,7 @@ function noteHeardSound(heard, bearingDegrees, bearingConfidence) {
       stage.robotHeadingRadians + bearingDegrees * Math.PI / 180;
     soundIndicator.confidence = confidence;
   }
+  if (newUtterance) soundIndicator.screenAngleRadians = null;   // re-seed the slide
   soundIndicator.kind = heardNow;
   soundIndicator.holding = true;
 }
@@ -1228,20 +1231,52 @@ function drawSoundIndicator(widthPixels, heightPixels) {
           / (SOUND_INDICATOR_FADE_SECONDS * 1000);
   if (fade <= 0) { soundIndicator.kind = null; return; }
 
+  // LIVE TARGET (user's ruling, 2026-08-30): the indicator points at the GUIDE
+  // herself, from the pose stream, re-aimed every frame -- so looking or
+  // turning away makes it SLIDE around to keep pointing at her, instead of
+  // pinning the utterance's original direction to the screen. The ear bearing
+  // seeds the first frame; geometry owns the rest.
+  const now = performance.now();
+  const elapsedSeconds = Math.min(
+    0.1, (now - (soundIndicator.lastDrawMilliseconds || now)) / 1000);
+  soundIndicator.lastDrawMilliseconds = now;
+  let worldAngleRadians = soundIndicator.worldAngleRadians;
+  let distanceMeters = null;
+  try {
+    const bodies = stage.world && stage.world.bodies;
+    const guide = (bodies && stage.world.guideIndex >= 0)
+      ? bodies[stage.world.guideIndex] : null;
+    const pelvis = bodies ? bodies[stage.world.pelvisIndex] : null;
+    if (guide && pelvis) {
+      worldAngleRadians = Math.atan2(guide.position.y - pelvis.position.y,
+                                     guide.position.x - pelvis.position.x);
+      distanceMeters = guide.position.distanceTo(pelvis.position);
+    }
+  } catch (error) { /* geometry not up yet: keep the ear's angle */ }
   const viewAzimuthRadians = stage.viewAzimuthDegrees * Math.PI / 180;
   const forwardX = -Math.cos(viewAzimuthRadians), forwardY = -Math.sin(viewAzimuthRadians);
   const rightX = forwardY, rightY = -forwardX;
-  const soundX = Math.cos(soundIndicator.worldAngleRadians);
-  const soundY = Math.sin(soundIndicator.worldAngleRadians);
+  const soundX = Math.cos(worldAngleRadians);
+  const soundY = Math.sin(worldAngleRadians);
   const along = soundX * forwardX + soundY * forwardY;
   const lateral = soundX * rightX + soundY * rightY;
   // 0 = dead ahead (arc at top centre), +pi/2 = right edge, pi = behind (bottom).
-  const screenAngleRadians = Math.atan2(lateral, along);
+  const targetScreenAngleRadians = Math.atan2(lateral, along);
+  if (soundIndicator.screenAngleRadians === null) {
+    soundIndicator.screenAngleRadians = targetScreenAngleRadians;
+  } else {
+    const share = 1 - Math.exp(-elapsedSeconds / 0.18);
+    const error = ((targetScreenAngleRadians - soundIndicator.screenAngleRadians
+                    + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+    soundIndicator.screenAngleRadians += error * share;
+  }
+  const screenAngleRadians = soundIndicator.screenAngleRadians;
 
   const scale = Math.max(0.75, heightPixels / REFERENCE_HEIGHT_PIXELS);
   const radius = Math.min(widthPixels, heightPixels) * 0.34;
   const stop = soundIndicator.kind === 'stop';
-  const tint = stop ? '244,86,86' : '235,235,238';
+  // Green for a voice (user's ruling), red for STOP.
+  const tint = stop ? '244,86,86' : '74,222,128';
   // Confidence is the opacity, floored so a real-but-unsure bearing is still
   // visible: the indicator saying "roughly that way" is the point of it.
   const alpha = fade * (0.28 + 0.72 * soundIndicator.confidence)
@@ -1276,6 +1311,20 @@ function drawSoundIndicator(widthPixels, heightPixels) {
   snowContext.closePath();
   snowContext.fill();
   snowContext.restore();
+  // close / medium / far (user's ruling), just past the chevron's tip.
+  if (distanceMeters !== null) {
+    const word = distanceMeters < 3 ? 'close' : distanceMeters < 8 ? 'medium' : 'far';
+    const labelRadius = radius + 34 * scale;
+    snowContext.save();
+    snowContext.fillStyle = 'rgba(' + tint + ',' + alpha.toFixed(3) + ')';
+    snowContext.font = '600 ' + Math.round(12 * scale) + 'px ui-sans-serif, system-ui, sans-serif';
+    snowContext.textAlign = 'center';
+    snowContext.textBaseline = 'middle';
+    snowContext.fillText(word,
+      widthPixels / 2 + Math.sin(screenAngleRadians) * labelRadius,
+      heightPixels / 2 - Math.cos(screenAngleRadians) * labelRadius);
+    snowContext.restore();
+  }
 }
 
 const snowLayout = { width: 0, height: 0, ratio: 0, shown: false };
