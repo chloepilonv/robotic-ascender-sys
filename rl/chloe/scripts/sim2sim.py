@@ -5,7 +5,7 @@ targets and ratchet are re-implemented by hand on `mujoco.MjModel/MjData`, the
 way the Jetson deployment will do it. If the policy behaves the same here as in
 `play_mjlab.py`, the export + obs pipeline is right.
 
-    .venv-mjlab/bin/python -m rl.chloe.scripts.sim2sim rl/chloe/policies/g1_ascender_slope20.onnx
+    .venv-mjlab/bin/mjpython -m rl.chloe.scripts.sim2sim rl/chloe/policies/g1_ascender_slope20.onnx   # mjpython on macOS (python on Linux)
     ... --headless --seconds 10 --slope 20 --wind 5
 """
 
