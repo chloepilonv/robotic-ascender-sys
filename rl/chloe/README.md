@@ -66,13 +66,14 @@ Next steps: see `ROADMAP.md`.
 
 ## Policies (`rl/chloe/policies/`) — read this before using one
 
-Each policy = `.onnx` (deploy / sim2sim, 96 obs → 29 joint targets at 50 Hz) + `.pt` (resume training).
+Each policy = `.onnx` (deploy / sim2sim, obs → 29 joint targets at 50 Hz) + `.pt` (resume training).
+Name = `<task>_<version>_<HF run timestamp>`; the timestamp is the run folder on https://huggingface.co/iteratehack/g1-ascender.
 
 | File | Trained | Rope model it was trained on | Behaviour | Use it for |
 |---|---|---|---|---|
-| `g1_ascender_slope20_SMOKE` | 20 iterations | old | random, falls | plumbing tests only |
-| `g1_ascender_slope20_v1` | 3000 iterations | **old** (rope at the wrist joint, soft attachment) | climbed in its own world; **falls on the fixed rope** | record only — do not demo |
-| **`g1_ascender_slope20`** (v3) | 3000 iterations | **final** = `assets/robots/mujoco/rope_rail.py` | climbs: ~0.3 m/s uphill, ascender pushed 3–4 m in 10 s, no falls (4/4 envs with wind+ice DR); sim2sim +4.4 m in 12 s, standing | **the demo policy** → `sim2sim.py`, deployment |
+| `g1_ascender_slope20_SMOKE_2026-08-30_02-46-13` | 20 iterations | old | random, falls | plumbing tests only |
+| `g1_ascender_slope20_v1_2026-08-30_02-47-06` | 3000 iterations | **old** (rope at the wrist joint, soft attachment) | climbed in its own world; **falls on the fixed rope** | record only — do not demo |
+| **`g1_ascender_slope20_v3_2026-08-30_04-35-59`** | 3000 iterations | **final** = `assets/robots/mujoco/rope_rail.py` | climbs: ~0.3 m/s uphill, ascender pushed 3–4 m in 10 s, no falls (4/4 envs with wind+ice DR); sim2sim +4.4 m in 12 s, standing | **the demo policy** → `sim2sim.py`, deployment |
 
 **Rule: a policy is only valid with the rope model it was trained on.** The network's inputs (wrist
 position, joint angles) change meaning when the rope/anchor moves, so any change to `rope_rail.py`

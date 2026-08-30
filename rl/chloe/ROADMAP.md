@@ -10,9 +10,9 @@ MuJoCo viewer + exported ONNX. One slope, one policy. No curriculum.
 - [x] Train / play / export scripts, CPU smoke test, HF Jobs script
 
 ## Remaining (in order)
-1. [x] `Slope20` trained on HF (`a10g-large`, 3000 it, ~1 h) → `policies/g1_ascender_slope20.onnx`
+1. [x] `Slope20` trained on HF (`a10g-large`, 3000 it, ~1 h) → `policies/g1_ascender_slope20_v3_2026-08-30_04-35-59.onnx`
 2. [x] Curves rising; verified in mjlab env and sim2sim (climbs, no falls)
-3. [ ] Record the video: `mjpython -m rl.chloe.scripts.sim2sim rl/chloe/policies/g1_ascender_slope20.onnx`
+3. [ ] Record the video: `mjpython -m rl.chloe.scripts.sim2sim rl/chloe/policies/g1_ascender_slope20_v3_2026-08-30_04-35-59.onnx`
 
 ## Not in scope today
 Slope curriculum (10→40°), gait-quality rewards, storms (30 m/s), bare ice (0.05),
