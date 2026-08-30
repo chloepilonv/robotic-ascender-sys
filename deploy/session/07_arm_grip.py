@@ -27,7 +27,7 @@ import time
 import numpy as np
 from dataclasses import dataclass
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from deploy import constants as C                       # noqa: E402
 
 # --- geometry and IK, lifted verbatim from deploy/rope_walk.py ---------------

@@ -37,7 +37,7 @@ import time
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from deploy import constants as C                       # noqa: E402
 from deploy.observation import ObservationBuilder       # noqa: E402
 from deploy.policy import Policy                        # noqa: E402

@@ -28,7 +28,7 @@ BASE = (f"https://raw.githubusercontent.com/google-deepmind/mujoco_playground/"
         f"{PLAYGROUND_TAG}/mujoco_playground/_src/locomotion/g1/xmls")
 FILES = ("g1_mjx_feetonly.xml", "scene_mjx_feetonly_flat_terrain.xml",
          "sensor.xml")
-OUT = pathlib.Path(__file__).resolve().parent.parent / ".reference"
+OUT = pathlib.Path(__file__).resolve().parent.parent.parent / ".reference"
 
 
 def strip_meshes(xml: str) -> str:
