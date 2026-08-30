@@ -459,8 +459,10 @@ def print_facing_table(world, rows) -> None:
 # reporting. MEASURED: from 2 m with her back turned the robot closes, loses the
 # pack for about a second on the way in (it leaves the +/-29 deg frame -- she
 # stands 0.6 m left of the rope, so the bearing to her passes 29 deg at ~1.2 m),
-# goes to SEARCH, sweeps, re-finds her and reaches WAIT at 13.7 s. An 8 s window
-# would have reported SEARCH and called a recovery a failure.
+# goes LOST at close range (her orange pack leaves the frame), and with the
+# camera sweep retired -- 2026-08-30, the ears replaced it -- it now STAYS lost
+# until a voice re-cues it. An 8 s window would have reported LOST and called a
+# recovery a failure; a long one reports what the follower alone can do.
 STANDING_ROLLOUT_SECONDS = 20.0
 
 

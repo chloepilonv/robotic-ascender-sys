@@ -322,6 +322,8 @@ def follower_response(scene, episode, seconds=6.0,
         # Every mode the follower can be in, from ITS OWN authority. This was a
         # hand-written {"FOLLOW", "WAIT", "LOST"} and went stale the day SEARCH
         # was added: section H died on `KeyError: 'SEARCH'` before it could run.
+        # (SEARCH was retired again on 2026-08-30; reading the module's own
+        # table is what makes that a non-event here.)
         modes = {name: 0 for name in guide_module.GUIDE_MODE_CODES}
         looks = seen = 0
         for tick in range(ticks):

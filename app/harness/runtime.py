@@ -75,6 +75,7 @@ from app.harness import climb_worlds as climb_worlds_module  # noqa: E402
 from app.harness import chloe_worlds as chloe_worlds_module  # noqa: E402
 from app.harness import graphics as graphics_module  # noqa: E402
 from app.harness import guide as guide_module  # noqa: E402
+from app.harness import hearing as hearing_module  # noqa: E402
 from app.harness import snow as snow_module  # noqa: E402
 from app.harness import storm as storm_module  # noqa: E402
 from app.harness.natural_wind import NaturalWind  # noqa: E402
@@ -516,7 +517,10 @@ def run(arguments) -> str:
             # A policy trained with randomised ang_vel_yaw would earn a True
             # here and a steerable body with it. `--policy` supplies one.
             yaw_command_available=(arguments.policy is not None
-                                   and not autonomous))
+                                   and not autonomous),
+            # No rope means no line for her to be on: W/S walk her along her own
+            # heading and A/D turn it.
+            free_walk=not current_episode.rope_enabled)
         gate = HumanGate(guide_module.GuideVisionDetector(system),
                          clear_after_seconds=0.0)
         if system.available:
@@ -531,6 +535,27 @@ def run(arguments) -> str:
         return system, gate
 
     guide_system, guide_gate = make_guide(scene, model, episode)
+
+    # THE EARS (app/harness/hearing.py). The page streams the Mac microphone
+    # down the socket as `MIC0` PCM; the runtime emits that voice at the
+    # HIKER'S MOUTH and receives it at four virtual microphones on the robot's
+    # head, then decides from those four signals alone whether a human voice is
+    # there, whether the word was `stop`, and which way it came from. It is the
+    # same honesty as the eyes: truth geometry in, a sensor image out, and every
+    # decision downstream of the sensor image. With the knob off it is a no-op
+    # and the guide follower's command goes through untouched.
+    hearing_system = hearing_module.HearingSystem(
+        model, episode.control_hz, seed=arguments.seed,
+        walk_speed=arguments.command_speed)
+    for specification in arguments.inject_voice:
+        path, _, at_seconds = specification.partition("@")
+        hearing_system.add_injector(path, float(at_seconds or 0.5))
+    if server is not None:
+        server.knobs["hearing"] = 1.0 if arguments.hearing else 0.0
+        server.microphone = hearing_system.microphone
+    print(f"[hearing] starts {'ON' if arguments.hearing else 'OFF'}"
+          f" (knob `hearing`); it needs the GUIDE on, because the voice comes"
+          f" out of her mouth and the hand-over is to her eyes", flush=True)
 
     # FOOTSTEPS (app/harness/snow.py). The detector reads the solver's own
     # contacts and reports each landing; that one event counts a step and
@@ -612,6 +637,10 @@ def run(arguments) -> str:
         guide_enabled = bool(arguments.guide)
         walking = bool(arguments.hold_w)
         backing = False
+        # A/D as the HIKER's steering, +1 = left. Only ever non-zero on a
+        # rope-off world with the guide on; on the rope she is ON the line and
+        # there is nowhere for her to turn to (user's ruling, 2026-08-30).
+        guide_turning = 0.0
         if server is not None:
             latest = server.latest_input
             keys = set(latest.get("keys", []))
@@ -629,6 +658,13 @@ def run(arguments) -> str:
             turn = ((MANUAL_YAW_RATE_RADIANS_PER_SECOND if "a" in keys else 0.0)
                     - (MANUAL_YAW_RATE_RADIANS_PER_SECOND if "d" in keys else 0.0))
             steering = ("a" in keys) != ("d" in keys)
+            # WITH THE GUIDE ON AND NO ROPE, A AND D ARE HERS. They were already
+            # doing nothing to the robot -- the follower owns its command while
+            # the guide is on -- so this hands two idle keys to the one body
+            # that can use them.
+            if guide_enabled and not episode.rope_enabled:
+                guide_turning = ((1.0 if "a" in keys else 0.0)
+                                 - (1.0 if "d" in keys else 0.0))
             command = heading.command(
                 episode.data.qpos[3:7], walking="w" in keys,
                 manual_yaw_rate=turn if steering else None)
@@ -684,6 +720,10 @@ def run(arguments) -> str:
                     # of the new spawn.
                     guide_system.close()
                     guide_system, guide_gate = make_guide(scene, model, episode)
+                    # A new world is a new compiled model, so the head body id
+                    # the ears cached belongs to a model that is gone.
+                    hearing_system.bind(model)
+                    hearing_system.reset()
                     touchdowns = make_snow(model, meta)
                     # The friction knob still reads the OLD world; re-sync it or
                     # the next tick paints the previous mu over the new map.
@@ -699,6 +739,7 @@ def run(arguments) -> str:
                 server.reset_requested = False
                 episode.reset()
                 guide_system.place(episode.spawn_position_world)
+                hearing_system.reset()
                 wall_start = time.time()
                 continue
         else:
@@ -725,12 +766,29 @@ def run(arguments) -> str:
         # held), so switching the guide off does not snap the robot back to a
         # heading it drifted away from ten seconds ago.
         guide_command = guide_system.update(
-            episode.data, episode.tick, guide_enabled, walking, backing)
+            episode.data, episode.tick, guide_enabled, walking, backing,
+            guide_turning)
         if guide_command is not None:
             command = guide_command
             heading.desired_heading_radians = root_yaw_radians(
                 episode.data.qpos[3:7])
             heading.yaw_error_radians = 0.0
+
+        # THE EARS, AFTER THE EYES AND BEFORE THE GATE. They need this tick's
+        # vision verdict (that is what "if the eyes see her, vision drives"
+        # means) and they may hand back a different command, which the safety
+        # gate must then still be allowed to veto.
+        hearing_enabled = bool(arguments.hearing)
+        if server is not None:
+            hearing_enabled = bool(server.knobs.get("hearing", 0.0))
+            hearing_system.monitor_enabled = bool(
+                server.knobs.get("ear_monitor", 0.0))
+        hearing_command = hearing_system.update(
+            episode.data, episode.tick, hearing_enabled, guide_system,
+            guide_command, natural_wind.report()["wind_speed_mps"],
+            episode.tick / episode.control_hz)
+        if hearing_command is not None:
+            command = hearing_command
 
         gate = guide_gate if guide_command is not None else human_gate
         gate.update(episode.data, episode.tick / episode.control_hz)
@@ -764,6 +822,7 @@ def run(arguments) -> str:
 
         recorder.append(**{k: v for k, v in row.items() if k != "observation"})
         recorder.append(**guide_system.recorded())
+        recorder.append(**hearing_system.recorded())
         recorder.append(**storm_vision.recorded())
         recorder.append(step_count=float(
             touchdowns.step_count if touchdowns is not None else 0))
@@ -781,6 +840,12 @@ def run(arguments) -> str:
             eye_jpeg = guide_system.take_eye_jpeg()
             if eye_jpeg is not None:
                 server.broadcast(eye_jpeg)
+            # `EAR0` + int16 PCM: the front microphone's own signal, so the
+            # operator can listen to WHAT THE ROBOT HEARS rather than to what
+            # the room sounds like. Only while the page asks for it.
+            ear_pcm = hearing_system.take_ear_pcm()
+            if ear_pcm is not None:
+                server.broadcast(ear_pcm)
             latest_state[0] = {
                 "type": "state", "tick": episode.tick,
                 "time_seconds": row["time_seconds"],
@@ -799,6 +864,7 @@ def run(arguments) -> str:
                 # either way, so the page needs no new case.
                 **gate.state(),
                 "guide": guide_system.state(),
+                "hearing": hearing_system.state(),
                 # Landings that happened on THIS tick (usually none), and the
                 # running total. The page plays one crunch per event, at a
                 # volume set by the impact speed.
@@ -838,6 +904,24 @@ def run(arguments) -> str:
             sleep_for = wall_start + episode.tick / episode.control_hz - time.time()
             if sleep_for > 0:
                 time.sleep(sleep_for)
+
+        if (hearing_system.enabled
+                and episode.tick % int(episode.control_hz) == 0):
+            # ONCE A SECOND, WHAT THE MICROPHONE ACTUALLY DELIVERED. The page is
+            # asked for no automatic gain control, so this number really is how
+            # loudly the person spoke -- and a shout is what carries through
+            # wind.
+            print(hearing_system.microphone.describe(), flush=True)
+            print(f"[hearing] {hearing_system.behaviour.mode}"
+                  f"  voice p={hearing_system.ears.voice_probability:.2f}"
+                  f"  heard={hearing_system.ears.heard}"
+                  f" ({hearing_system.ears.stop_confidence:.2f})"
+                  f"  bearing="
+                  + ("--" if hearing_system.ears.bearing_radians is None else
+                     f"{math.degrees(hearing_system.ears.bearing_radians):+.0f}°")
+                  + f" (conf {hearing_system.ears.bearing_confidence:.2f})"
+                  f"  ear level {hearing_system.ears.level_db:.0f} dBFS"
+                  f"  | {hearing_system.describe_cost()[10:]}", flush=True)
 
         if episode.tick % int(episode.control_hz) == 0:
             print(f"[runtime] {episode.world_name:<9}"
@@ -913,6 +997,24 @@ def build_argument_parser() -> argparse.ArgumentParser:
                              " identical either way (PARITY.md has the"
                              " same-seed diff), but the eye cameras lose the"
                              " grain their block matcher matches on.")
+    parser.add_argument("--hearing", action="store_true",
+                        help="start with the EARS on: four virtual microphones"
+                             " on the robot's head hear the human's voice, and"
+                             " the robot comes when she calls and stops when"
+                             " she says stop. Live mode has the same thing as"
+                             " the `hearing` knob on the page. Needs the guide"
+                             " on. Sensor and command only; the physics is"
+                             " identical either way (test_hearing section 5).")
+    parser.add_argument("--inject-voice", action="append", default=[],
+                        metavar="PATH[@SECONDS]",
+                        help="play a wav into the microphone stream at that"
+                             " simulated time, as if someone had spoken it"
+                             " (repeatable). This is how the demo is driven"
+                             " with no microphone and how the screenshots are"
+                             " taken; it pushes into the SAME buffer the"
+                             " browser pushes into, so nothing downstream can"
+                             " tell the difference. Clips come from"
+                             " app.harness.hearing_corpus.")
     parser.add_argument("--guide", action="store_true",
                         help="start with the human guide ON: a guide walks the"
                              " rope route and the robot follows it by stereo"
