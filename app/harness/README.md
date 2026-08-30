@@ -159,6 +159,59 @@ The guide is available on the **ClimbScene** worlds only. The four `legacy_*`
 worlds hand back a compiled model with no `MjSpec`, so there is nothing to add
 the body and the cameras to, and the feature turns itself off there.
 
+## The storm (`app/harness/storm.py`)
+
+Turn the **`storm`** knob on and the weather closes in. **A storm here is FOG**,
+not a snow shower: what a white-out does is take DISTANCE away, so the far slope
+dissolves into white first, then the middle distance, and at the top of the dial
+you cannot see the hiker four metres in front of you. Nothing sits on the lens.
+
+Visibility follows the **instantaneous** wind speed, gusts included, so a gust
+really does blind the robot for a second:
+
+    visibility = 100 m x exp(-wind / 6)      100 / 37 / 14 / 3.6 m at 0 / 6 / 12 / 20 m/s
+
+**The same curve in two places.** The page's own fog is `stormVisibilityMeters`
+in `app/web/render3d.html` (a `FogExp2` density of `1.73 / visibility`, the sky
+mesh hidden and the clear colour set to the fog colour so there is no horizon at
+all); the robot's eyes use `storm.visibility_meters`. If one moves, move the
+other, or the picture and the robot stop being in the same weather.
+
+**On the robot's eyes** the fog is composited per pixel from the eye renderer's
+own DEPTH buffer, `out = colour*(1 - f) + white*f`, plus a couple of grey levels
+of Gaussian sensor noise drawn INDEPENDENTLY per eye -- the one thing fog does
+not reproduce, and what leaves the block matcher nothing to match. All of it
+lands BEFORE the matcher and the detector, which is the only placement that
+makes the degradation honest, and the eye-view PiP shows the degraded image
+because it IS the image the robot used.
+
+It legitimately breaks the follower, which is the point:
+
+| wind m/s | visibility | detected at 2 m | detected at 5 m | max detection range |
+|---|---|---|---|---|
+| storm off | -- | 100% | 100% | 10 m |
+| 0 | 100.0 m | 100% | 100% | 10 m |
+| 6 | 36.8 m | 100% | 100% | 10 m |
+| 12 | 13.5 m | 100% | 100% | 6 m |
+| 20 | 3.6 m | 100% | **0%** | **2 m** |
+
+and with the human parked at 9 m the follower goes to LOST on its own -- 100%
+of detections at 6 m/s, **0%** at 12 and 20, and the mode follows.
+
+    python -m app.harness.test_storm      # the tables above + the eye contact sheet
+    python -m app.harness.runtime --world flat_0 --duration 10 --hold-w --guide \
+        --storm --wind 20 0 --no-render
+
+**None of it is physics.** The fog is arithmetic on two rendered arrays and
+nothing writes to the model or to `MjData`. `test_storm` section H is a
+same-seed diff, storm off against a 20 m/s white-out with the guide on:
+**0.000e+00** across `qpos`, `qvel`, `ctrl`, `sensordata`, `qfrc_constraint`
+and `cfrc_ext`. Storm off is a row in every table and is identical to a clean
+run.
+
+`render3d_shots/storm_eyes.png` is the left eye at each speed;
+`render3d_shots/storm_after/page3d_{0,12,20}mps.png` is the 3D page.
+
 ## Snow, and footprints in it (`app/harness/snow.py`)
 
 The terrain wears a procedurally generated snow texture -- metre-scale drifts,

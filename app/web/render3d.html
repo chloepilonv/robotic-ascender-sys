@@ -1118,12 +1118,38 @@ $('worldSelect').addEventListener('change', event => {
 // ---------- THE FRAME LOOP ----------
 let lastAnimationMilliseconds = performance.now();
 let lastResizeCheck = 0, lastCanvasWidth = 0, lastCanvasHeight = 0;
-// The storm, in three dimensions. The flakes are the GPU cloud in three/world.js (gated
-// on `stormEnabled`, scaled there by the wind it is already given); what the page adds is
-// the AIR between the camera and the mountain -- exponential fog that thickens with the
-// wind and bleaches towards white as it does, which is what a whiteout actually is.
-const FOG_DENSITY_PER_METER_PER_SPEED = 0.15;   // density = base * (1 + 0.15 * speed)
-const FOG_WHITEOUT_COLOUR = 0xeef3f8;
+// THE STORM IS FOG (user's ruling, 2026-08-29). Not a snow shower: a whiteout takes
+// DISTANCE away. The far slope dissolves into white first, then the middle distance, and
+// at the top of the dial you cannot see the hiker four metres away. The flakes in
+// three/world.js stay, sparse and far-field -- never on the lens.
+//
+// ONE CURVE, TWO PLACES. This visibility law is the same one the ROBOT'S EYES use in
+// app/harness/storm.py (CLEAR_VISIBILITY_METERS, VISIBILITY_DECAY_MPS). If one moves,
+// move the other, or the picture and the robot stop being in the same weather.
+//
+//   visibility = 100 m * exp(-speed / 6)   ->  100 / 37 / 14 / 3.6 m at 0 / 6 / 12 / 20
+//
+// THREE's FogExp2 factor is 1 - exp(-(density*distance)^2), which reaches 95% at
+// distance = 1.73 / density, so a visibility of v metres is a density of 1.73 / v.
+const STORM_CLEAR_VISIBILITY_METERS = 100.0;
+const STORM_VISIBILITY_DECAY_MPS = 6.0;
+const STORM_MINIMUM_VISIBILITY_METERS = 1.5;
+const FOG_EXP2_95_PERCENT = 1.73;
+const STORM_WHITEOUT_FULL_AT_MPS = 8.0;   // the fog colour is fully white by here
+const FOG_WHITEOUT_COLOUR = 0xf7fafd;     // snow-and-sky white, not the clear blue-grey
+// HDR HEADROOM, and it is not a fudge. The renderer tone-maps ACES-filmic at
+// exposure 0.92, and ACES deliberately rolls off: a colour of 1.0 comes out of it at
+// about 0.77, so a fog painted at "white" renders as a MID GREY. Measured on the first
+// build of this whiteout: a full 20 m/s frame came back at RGB 150, not 250 -- a
+// convincing erasure of the mountain in a colour nobody would call snow. A whiteout is
+// BRIGHT, so it is given the linear headroom a bright thing has and the tone mapper
+// takes it to white on its own.
+const STORM_FOG_EXPOSURE_HEADROOM = 2.6;
+function stormVisibilityMeters(speed) {
+  return Math.max(STORM_MINIMUM_VISIBILITY_METERS,
+                  STORM_CLEAR_VISIBILITY_METERS
+                    * Math.exp(-speed / STORM_VISIBILITY_DECAY_MPS));
+}
 const stormFog = { baseDensity: null, baseColour: null, whiteout: null, lastWritten: null };
 function applySnowStorm() {
   if (!stage || !stage.world) return;
@@ -1141,11 +1167,25 @@ function applySnowStorm() {
     stormFog.whiteout = fog.color.clone().setHex(FOG_WHITEOUT_COLOUR);
   }
   const speed = stormState.on ? windScreen.speed : 0;
-  const share = Math.min(1, speed / 20);
-  fog.density = stormFog.baseDensity * (1 + FOG_DENSITY_PER_METER_PER_SPEED * speed);
-  fog.color.copy(stormFog.baseColour);
-  if (share > 0) fog.color.lerp(stormFog.whiteout, 0.75 * share);
+  if (!stormState.on) {
+    fog.density = stormFog.baseDensity;
+    fog.color.copy(stormFog.baseColour);
+  } else {
+    // Never CLEARER than clear weather, however light the wind.
+    const whiteness = Math.min(1, speed / STORM_WHITEOUT_FULL_AT_MPS);
+    fog.density = Math.max(stormFog.baseDensity,
+                           FOG_EXP2_95_PERCENT / stormVisibilityMeters(speed));
+    fog.color.copy(stormFog.baseColour).lerp(stormFog.whiteout, whiteness)
+      .multiplyScalar(1 + (STORM_FOG_EXPOSURE_HEADROOM - 1) * whiteness);
+  }
   stormFog.lastWritten = fog.density;
+  // THE SKY HAS TO GO WITH IT. `Sky.js` is a Preetham shader on a mesh at the far
+  // plane and it does NOT read scene.fog -- so a whiteout that only fogged the
+  // GEOMETRY left a clear blue sky sitting on top of an erased mountain, which is the
+  // one thing that reads instantly as fake. While the storm blows, the sky mesh is
+  // hidden and the clear colour IS the fog colour, so there is no horizon at all.
+  if (stage.sky) stage.sky.visible = !stormState.on;
+  stage.scene.background = stormState.on ? fog.color : null;
   // the flakes are lit by the same fog, so they must be told about it too
   const uniforms = stage.world.snow && stage.world.snow.material.uniforms;
   if (uniforms) {

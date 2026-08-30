@@ -291,12 +291,18 @@ function makeSnow() {
         // fade out at the box edge so flakes pop in and out invisibly
         float edge = length(world - uCentre) / (uBox * 0.5);
         float depth = -viewPosition.z;
-        // A flake that ends up a hand's width from the lens becomes a
-        // screen-filling white disc: at 14 m/s the first build of this whited
-        // the entire frame out. Fade the near ones away and cap the size.
-        vFade = (1.0 - smoothstep(0.55, 1.0, edge)) * smoothstep(0.9, 2.4, depth);
+        // NOTHING ON THE LENS (user's ruling: the storm is FOG, and what it had
+        // become was "particles slapping the camera"). A flake a hand's width
+        // from the lens is a screen-filling white disc, and a field of them
+        // reads as a windscreen rather than as weather. So the near fade starts
+        // far further out than a physical camera's would -- flakes are
+        // invisible inside 4 m and only reach full strength at 9 m -- and the
+        // size cap is tight enough that no flake can ever be more than a speck.
+        // The whiteout itself is the FOG; these are texture in the middle
+        // distance, nothing more.
+        vFade = (1.0 - smoothstep(0.55, 1.0, edge)) * smoothstep(4.0, 9.0, depth);
         gl_Position = projectionMatrix * viewPosition;
-        gl_PointSize = min(flakeSize * uPixels / max(depth, 0.6), 11.0);
+        gl_PointSize = min(flakeSize * uPixels / max(depth, 0.6), 3.5);
       }`,
     fragmentShader: /* glsl */`
       uniform float uOpacity; uniform vec3 uFogColour;
@@ -626,23 +632,24 @@ export class World {
     const uniforms = this.snow.material.uniforms;
     uniforms.uTime.value += elapsedSeconds;
     uniforms.uCentre.value.copy(cameraPosition);
-    // A flake's diameter in pixels is flakeSize * uPixels / distance. The first
-    // build used 0.42 * frame height, which drew 90-pixel beach balls at 5 m;
-    // 0.019 puts a mid-sized flake at about 4 px at 5 m, which is snow.
+    // THE FLAKES ARE NOT THE STORM -- the FOG is (user's ruling, and the page
+    // sets that fog from the wind). These are texture in the middle distance,
+    // deliberately sparse and small: a flake's diameter in pixels is
+    // flakeSize * uPixels / distance, and the vertex shader caps it at 3.5 px
+    // and fades everything inside 4 m to nothing. Turning them up was what made
+    // the whole thing read as particles on the lens.
     const speed = Math.hypot(windEast, windNorth);
-    // Storm strength IS the wind speed: a breeze is a drift, 20 m/s is a whiteout. The
-    // flakes get more numerous, bigger and more opaque together, because all three are
-    // what "thicker air" looks like.
     const stormShare = Math.min(1, speed / 20);
-    uniforms.uPixels.value = pixelHeight * 0.030 * (1 + 0.45 * stormShare);
+    uniforms.uPixels.value = pixelHeight * 0.012 * (1 + 0.35 * stormShare);
+    // Far fewer of them than there were, and the count barely grows: in a real
+    // whiteout you see LESS, not more, because the fog gets there first.
     this.snow.geometry.setDrawRange(0,
-      Math.round(SNOW_PARTICLE_COUNT * (0.18 + 0.82 * stormShare)));
-    // Below a breeze there is nothing in the air; a blizzard fills it. The
-    // horizontal drift is the WORLD wind vector, so orbiting the robot swings
-    // the snow around exactly as the ribbons over the JPEG do.
+      Math.round(SNOW_PARTICLE_COUNT * (0.10 + 0.25 * stormShare)));
+    // The horizontal drift is the WORLD wind vector, so orbiting the robot
+    // swings the snow around with the scene rather than with the camera.
     uniforms.uWind.value.set(windEast, windNorth, 0);
     uniforms.uOpacity.value = this.stormEnabled
-      ? Math.min(0.92, 0.12 + speed * 0.062) : 0;
+      ? Math.min(0.34, 0.08 + speed * 0.016) : 0;
   }
 }
 

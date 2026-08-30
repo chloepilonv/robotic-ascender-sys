@@ -968,17 +968,23 @@ class StereoEyes:
     """
 
     def __init__(self, model, width=EYE_WIDTH_PIXELS, height=EYE_HEIGHT_PIXELS,
-                 verbose=True):
+                 verbose=True, degradation=None):
         import cv2
         import mujoco
         from app.harness import graphics as graphics_module
 
         self.width, self.height = int(width), int(height)
         self.model = model
+        # `degradation(image) -> image`, run on EACH eye between the render and
+        # the matcher: `storm.StormVision.degrade` in the live loop, None
+        # otherwise. It belongs HERE and not further down because a degradation
+        # applied after the measurement is a special effect, not a sensor model.
+        self.degradation = degradation
         self.renderer = None
         self.left_image = None
         self.right_image = None
         self.render_milliseconds = 0.0
+        self.degrade_milliseconds = 0.0
         self.match_milliseconds = 0.0
         self.left_camera_id = mujoco.mj_name2id(
             model, mujoco.mjtObj.mjOBJ_CAMERA, EYE_LEFT_CAMERA_NAME)
@@ -1044,13 +1050,39 @@ class StereoEyes:
             self.renderer = None
 
     def render_pair(self, data) -> tuple:
+        """Both eyes, degraded if a storm is blowing. -> (left, right) RGB.
+
+        THE DEGRADATION RUNS WHILE THAT EYE'S SCENE IS STILL LOADED, which is
+        why it is interleaved with the renders rather than done to both images
+        at the end. `storm.StormVision.degrade` composites the white-out from the
+        renderer's own DEPTH buffer, and `Renderer.render` draws whatever scene
+        was last handed to `update_scene` -- so degrading the left eye after the
+        right had been set up would fog the left picture with the right eye's
+        depth. Six centimetres of error, and completely avoidable.
+
+        The order also matters for a second reason: the left is degraded before
+        the right is even rendered, so a stateful degradation (the storm's
+        seeded generator) hands the two eyes DIFFERENT sensor grain. Identical
+        grain would sit at zero disparity and the matcher would happily match
+        it.
+        """
         import time
         started = time.time()
         self.renderer.update_scene(data, camera=self.left_camera_id)
         left = self.renderer.render().copy()
+        degrade_started = time.time()
+        if self.degradation is not None:
+            left = self.degradation(left, self.renderer)
+        self.degrade_milliseconds = (time.time() - degrade_started) * 1000.0
+
         self.renderer.update_scene(data, camera=self.right_camera_id)
         right = self.renderer.render().copy()
-        self.render_milliseconds = (time.time() - started) * 1000.0
+        degrade_started = time.time()
+        if self.degradation is not None:
+            right = self.degradation(right, self.renderer)
+        self.degrade_milliseconds += (time.time() - degrade_started) * 1000.0
+        self.render_milliseconds = ((time.time() - started) * 1000.0
+                                    - self.degrade_milliseconds)
         self.left_image, self.right_image = left, right
         return left, right
 
@@ -1304,7 +1336,8 @@ class GuideSystem:
     behind `update(...)`.
     """
 
-    def __init__(self, scene, model, control_hz, verbose=True, enable=True):
+    def __init__(self, scene, model, control_hz, verbose=True, enable=True,
+                 degradation=None):
         import mujoco
         self._mujoco = mujoco
         # A legacy world has no MjSpec to operate on -- their old env hands back
@@ -1328,7 +1361,8 @@ class GuideSystem:
         if not self.available:
             return
         self.guide = Guide(scene.route, scene.terrain, self.model)
-        self.eyes = StereoEyes(self.model, verbose=verbose)
+        self.eyes = StereoEyes(self.model, verbose=verbose,
+                               degradation=degradation)
         self.available = self.eyes.available
         self._eye_camera_ids = (self.eyes.left_camera_id, self.eyes.right_camera_id)
 

@@ -66,6 +66,7 @@ from app.harness import climb_worlds as climb_worlds_module  # noqa: E402
 from app.harness import graphics as graphics_module  # noqa: E402
 from app.harness import guide as guide_module  # noqa: E402
 from app.harness import snow as snow_module  # noqa: E402
+from app.harness import storm as storm_module  # noqa: E402
 from app.harness.natural_wind import NaturalWind  # noqa: E402
 sys.path.insert(0, os.path.join(  # human-safety/ is a program, not a package
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "human-safety"))
@@ -515,10 +516,17 @@ def run(arguments) -> str:
     # instead of a second oracle detector disagreeing with it. Its own
     # hysteresis is off (0.0) because the follower already has two -- the
     # 1.0/1.3 m bands and the 1 s LOST timeout.
+    # THE STORM, as the robot experiences it (app/harness/storm.py). The page's
+    # `storm` knob closes the model's fog with the INSTANTANEOUS wind speed and
+    # paints blowing snow into the eye images between the render and the block
+    # matcher. Visual and sensor only: PARITY.md has the same-seed diff.
+    storm_vision = storm_module.StormVision(seed=arguments.seed)
+
     def make_guide(current_scene, current_model, current_episode):
         system = guide_module.GuideSystem(
             current_scene, current_model, current_episode.control_hz,
-            enable=not arguments.no_guide_body)
+            enable=not arguments.no_guide_body,
+            degradation=storm_vision.degrade)
         gate = HumanGate(guide_module.GuideVisionDetector(system),
                          clear_after_seconds=0.0)
         if system.available:
@@ -557,6 +565,13 @@ def run(arguments) -> str:
           f" in world {episode.world_name};"
           f" starts {'ON' if arguments.guide else 'OFF'}"
           f" (knob `guide`, W walks the human up the rope, S back down it)",
+          flush=True)
+    print(f"[storm] starts {'ON' if arguments.storm else 'OFF'} (knob `storm`):"
+          f" a WHITE-OUT -- visibility"
+          f" {storm_module.CLEAR_VISIBILITY_METERS:.0f} m *"
+          f" exp(-wind / {storm_module.VISIBILITY_DECAY_MPS:.0f}), composited"
+          f" from the eye renderer's depth buffer before the matcher"
+          f" ({', '.join(f'{s:.0f} m/s -> {storm_module.visibility_meters(s):.1f} m' for s in (6, 12, 20))})",
           flush=True)
 
     renderer = None
@@ -651,6 +666,7 @@ def run(arguments) -> str:
                 [server.knobs.get("wind_x", 0.0),
                  server.knobs.get("wind_y", 0.0)],
                 1.0 / episode.control_hz, episode.tick / episode.control_hz)
+            storm_enabled = bool(server.knobs.get("storm", 0.0))
             # The battery model's wind chill is live: the dial is m/s, hers is
             # km/h.
             if episode.bms is not None:
@@ -715,6 +731,19 @@ def run(arguments) -> str:
         else:
             command = np.array([
                 arguments.command_speed if arguments.hold_w else 0.0, 0.0, 0.0])
+            storm_enabled = bool(arguments.storm)
+            natural_wind.enabled = bool(arguments.wind_natural)
+            wind_velocity_world[:] = natural_wind.step(
+                arguments.wind, 1.0 / episode.control_hz,
+                episode.tick / episode.control_hz)
+
+        # THE STORM, before the guide: `degrade` has to know this tick's wind
+        # speed before the eye cameras render, which happens inside
+        # `guide_system.update` on the next line. The white-out on the PAGE is
+        # the 3D view's own fog (app/web/three/world.js), driven from the same
+        # `storm` knob and the same instantaneous speed in the state message.
+        storm_vision.update(storm_enabled,
+                            natural_wind.report()["wind_speed_mps"])
 
         # THE GUIDE OWNS THE COMMAND WHILE IT IS ON. W/A/D stop steering the
         # robot: W tells the HUMAN to walk, and what the robot does about that
@@ -769,6 +798,7 @@ def run(arguments) -> str:
 
         recorder.append(**{k: v for k, v in row.items() if k != "observation"})
         recorder.append(**guide_system.recorded())
+        recorder.append(**storm_vision.recorded())
         recorder.append(step_count=float(
             touchdowns.step_count if touchdowns is not None else 0))
         recorder.append_bms(episode.latest_bms)
@@ -832,6 +862,9 @@ def run(arguments) -> str:
                 # INSTANTANEOUS, not the dial: with natural wind on these surge
                 # and swing with every gust, and the ribbons/sound follow them.
                 **natural_wind.report(),
+                # The storm the ROBOT is in: whether it is on, and how far it
+                # can see. `visibility_meters` is null when the storm is off.
+                **storm_vision.state(),
                 # Whichever gate is live -- the guide's vision while the guide
                 # is on, the sim oracle otherwise. One set of `human_*` fields
                 # either way, so the page needs no new case.
@@ -938,6 +971,21 @@ def build_argument_parser() -> argparse.ArgumentParser:
                              " rope route and the robot follows it by stereo"
                              " vision. Live mode has the same thing as the"
                              " `guide` knob on the page.")
+    parser.add_argument("--storm", action="store_true",
+                        help="start with the STORM on: fog closes with the"
+                             " instantaneous wind speed and blowing snow is"
+                             " painted into the eye images before the block"
+                             " matcher. Live mode has the same thing as the"
+                             " `storm` knob on the page. Visual and sensor"
+                             " only; the physics is identical either way.")
+    parser.add_argument("--wind", type=float, nargs=2, default=(0.0, 0.0),
+                        metavar=("EAST", "NORTH"),
+                        help="headless only: the world-frame wind VELOCITY in"
+                             " m/s. Live mode takes it from the page's dial.")
+    parser.add_argument("--wind-natural", action="store_true",
+                        help="headless only: treat --wind as a target the"
+                             " gusting process wanders around, as the page's"
+                             " `natural` switch does.")
     parser.add_argument("--no-guide-body", action="store_true",
                         help="skip the guide's model surgery altogether, so the"
                              " model carries no guide bodies, no walking hinges"

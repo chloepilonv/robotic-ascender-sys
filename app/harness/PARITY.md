@@ -1038,6 +1038,131 @@ properties of the team's walking policy in these scenes, not of this layer:
 
 ---
 
+## The storm -- a white-out, and here is the proof it is only a picture
+
+`app/harness/storm.py`. The `storm` knob closes the weather in with the
+INSTANTANEOUS wind speed. It degrades what the robot SEES and nothing else.
+
+### The ledger
+
+| piece | status | what it actually is |
+|---|---|---|
+| the visibility law | ours, stated | `100 m x exp(-wind / 6)`, clamped at 1.5 m. 100 / 37 / 14 / 3.6 m at 0 / 6 / 12 / 20 m/s. Not a measurement of anything -- a look, specified by the user and fitted to three points. |
+| the fog on the eye images | **synthetic degradation** | composited per pixel from the eye renderer's own depth buffer: `out = colour*(1-f) + white*f`, `f` a linear ramp from `0.15 x visibility` to `visibility`. The same law GL's `GL_LINEAR` fog uses. |
+| the sensor grain | **synthetic degradation** | Gaussian noise, sigma `1.0 + 0.30 x wind` grey levels, drawn INDEPENDENTLY per eye from a seeded generator. |
+| the fog on the 3D page | **synthetic degradation** | `FogExp2` at density `1.73 / visibility` (FogExp2 is 95% opaque at `1.73 / density`), sky mesh hidden, clear colour = fog colour. Driven by the same knob and the same speed. |
+| the physics | **untouched** | nothing here writes to the model or to `MjData`. |
+
+### Why the fog is composited, and not left to MuJoCo
+
+MuJoCo has linear GL fog and it CANNOT BE MOVED at runtime from Python. Four
+measurements, each one a dead end:
+
+* `model.vis.map.fogstart` / `fogend` are multiples of `model.stat.extent`, and
+  `mjr_render(viewport, scene, context)` takes **no model** -- it cannot read
+  them. Writing them mid-run changes the rendered picture by **0.000**.
+* `context.fogStart` / `fogEnd` are metres and ARE writable from Python, but
+  they only reach GL through `glFogf` inside `mjr_makeContext`. Writing them
+  mid-run also changes the picture by **0.000**.
+* `mjr_makeContext` is not exposed in the Python bindings, so the context cannot
+  be rebuilt to pick them up.
+* `context.fogRGBA` IS read every frame (**14.06** mean pixel change). That is
+  the trap: the fog COLOUR is live while the fog DISTANCE is frozen at whatever
+  the model compiled with -- **2534 m** on `flat_0`, i.e. no fog at all. Driving
+  only the colour puts a flat white wash over every pixel at every depth, near
+  objects included, which is the "particles on the glass" look arrived at from
+  the other direction. The first build of this feature was doing exactly that.
+
+**A FINDING WHILE WE ARE HERE, left unfixed on purpose.** The same arithmetic
+says the scene's CLEAR-weather fog has never been visible either:
+`graphics.apply_alpine_look` writes `1.35 x terrain diagonal` into a field
+measured in EXTENTS, which on `flat_0` is a fog end of 2534 m. What reads as
+haze in the JPEG view is the haze layer and the skybox, not the fog. Changing it
+would change the look of every view and every recorded mp4, so it is written
+down rather than touched.
+
+### The white-out is by DISTANCE, not a wash
+
+`test_storm` section E0. The guide is at 5 m; the near half of the frame (depth
+<= 6 m) and the far half are reported apart, sensor noise off:
+
+| wind m/s | visibility | mean change NEAR | mean change FAR |
+|---|---|---|---|
+| off | -- | 0.0 | 0.0 |
+| 0 | 100.0 m | 0.0 | 38.3 |
+| 6 | 36.8 m | 0.0 | 41.2 |
+| 12 | 13.5 m | 15.7 | 53.6 |
+| 20 | 3.6 m | 114.6 | 63.8 |
+
+A flat colour wash would move both columns equally. Fog eats the far half first
+and only reaches the near half once the visibility falls below the subject's own
+range.
+
+On the 3D page the same thing, measured off the screenshots (far-field and
+near-ground mean RGB, 1920x1080, pointer-lock scrim hidden):
+
+| wind m/s | far-field | near-ground |
+|---|---|---|
+| 0 | 205, 221, 239 | 119, 127, 139 |
+| 12 | **251, 252, 253** | 180, 187, 198 |
+| 20 | **250, 251, 252** | **250, 251, 253** |
+
+The page's fog colour carries **2.6x linear headroom** on purpose: the renderer
+tone-maps ACES-filmic at exposure 0.92, ACES rolls a 1.0 off to about 0.77, and
+a fog painted at plain "white" renders as a mid grey. Measured before the
+headroom: a full 20 m/s frame came back at RGB 150.
+
+(A screenshot trap worth writing down: `#lockOverlay` is `rgba(9,9,11,.55)`
+across the viewport whenever the page does not hold the pointer, and **headless
+Chrome can never take pointer lock**, so it is always up. It dims the render by
+55% -- a white-out measured RGB 118 instead of 245 for that reason alone, and
+two rounds of chasing the tone mapper were spent on it.)
+
+### What it does to the follower
+
+| wind m/s | visibility | detected at 2 m | detected at 5 m | max detection range |
+|---|---|---|---|---|
+| storm off | -- | 100% | 100% | 10 m |
+| 0 | 100.0 m | 100% | 100% | 10 m |
+| 6 | 36.8 m | 100% | 100% | 10 m |
+| 12 | 13.5 m | 100% | 100% | 6 m |
+| 20 | 3.6 m | 100% | **0%** | **2 m** |
+
+Stereo error over the frames where she IS seen stays around -5% to -10% at 2 m
+and 5 m; what the storm takes is DETECTION, not accuracy, which is what a
+contrast-destroying fog should do to a colour threshold.
+
+And the follower's own verdict, human parked at 9 m, 6 s of real vision, robot
+not stepped -- nothing scripted, the detector simply misses and the 1 s timeout
+expires:
+
+| wind m/s | vision frames with a detection | FOLLOW | LOST |
+|---|---|---|---|
+| off | 100% | 100% | 0% |
+| 6 | 100% | 100% | 0% |
+| 12 | **0%** | 0% | **100%** |
+| 20 | **0%** | 0% | **100%** |
+
+LOST needs a whole second with no detection and the eyes run at 10 Hz, so ten
+consecutive misses: the mode only flips once detection falls well below half.
+
+### The physics claim
+
+`test_storm` section H -- the same scripted command flown twice from the same
+reset, once with no storm and once with a 20 m/s white-out and the guide on, so
+the fog is recomputed every tick and the eyes render through it every fifth:
+
+| array | max abs difference |
+|---|---|
+| `qpos` | 0.000e+00 |
+| `qvel` | 0.000e+00 |
+| `ctrl` | 0.000e+00 |
+| `sensordata` | 0.000e+00 |
+| `qfrc_constraint` | 0.000e+00 |
+| `cfrc_ext` | 0.000e+00 |
+
+---
+
 ## Snow and footprints -- visual only, and here is the proof
 
 `app/harness/snow.py`. The terrain wears a procedural snow texture and keeps the
