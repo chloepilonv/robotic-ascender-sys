@@ -832,6 +832,20 @@ async function playShout(name) {
   let buffer;
   try { buffer = await loadClip(name); }
   catch (error) { hearingState.playing = null; paintShoutButtons(); return; }
+  // The shout is AUDIBLE in the room at full quality -- this is the guide
+  // speaking, for the judges' ears. The EAR monitor stays the other channel:
+  // the same clip after distance and wind, i.e. what the ROBOT hears.
+  try {
+    if (!hearingState.shoutContext) {
+      hearingState.shoutContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    const shoutSource = hearingState.shoutContext.createBufferSource();
+    shoutSource.buffer = buffer;
+    const shoutGain = hearingState.shoutContext.createGain();
+    shoutGain.gain.value = 0.8;
+    shoutSource.connect(shoutGain).connect(hearingState.shoutContext.destination);
+    shoutSource.start();
+  } catch (error) { /* no speakers is no reason to lose the sim shout */ }
   // Mixed to mono and PACED IN REAL TIME. Dumping the whole clip in one frame
   // would overrun the runtime's two-second ring and most of the word would be
   // dropped before the ear model ever saw it -- and a clip that arrives faster
