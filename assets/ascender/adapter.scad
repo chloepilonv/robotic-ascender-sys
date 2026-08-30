@@ -49,7 +49,8 @@ cheek_w      = 26;
 bar_t        = 8;
 // tool pose in the wrist frame (from g1_unitree_ascender.usd, +8 mm X so the tool clears the flange)
 tool_pos     = [46.61, 0, -51.43];
-tool_rot_y   = 25.95;     // deg about Y (quat 0.2245 about Y)
+tool_axis    = [0.22453, 0, 0.97447];   // USD quat (w≈0, xyz=tool_axis) = 180° about this axis
+tool_ang     = 180;
 eye_tool     = [-9, 0, 19.4];   // eye centre in the tool frame
 
 // ── Derived ──────────────────────────────────────────────────────────────────────────────────
@@ -89,7 +90,7 @@ module cradle() {   // in the tool frame, origin at the frame's bottom edge unde
 }
 module arm() {   // from the bottom of the flange to the cradle bar
     a = [wall_x1 + flange_t / 2, hole_c[0], z_lo + rim / 2];
-    b = tool_pos + rot(a = [0, tool_rot_y, 0], p = [eye_tool[0], 0, -bar_t / 2]);
+    b = tool_pos + rot(a = tool_ang, v = tool_axis, p = [eye_tool[0], 0, -bar_t / 2]);
     d = b - a;  L = norm(d);
     translate(a) rot(from = [0, 0, 1], to = d) translate([0, 0, -6]) cuboid([12, 12, L + 12], anchor = BOTTOM, rounding = 2, edges = "Z");
 }
@@ -98,7 +99,7 @@ module adapter() {
     difference() {
         union() {
             plug(); flange(); collar(); arm();
-            translate(tool_pos) rotate([0, tool_rot_y, 0]) translate([eye_tool[0], 0, 0]) cradle();
+            translate(tool_pos) rotate(a = tool_ang, v = tool_axis) translate([eye_tool[0], 0, 0]) cradle();
         }
         clamp_bolts();
         split();
