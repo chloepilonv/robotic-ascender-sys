@@ -374,12 +374,14 @@ function windVelocityFromFrame(frame) {
   const velocity = frame.wind_velocity_world_meters_per_second;
   if (Array.isArray(velocity) && Number.isFinite(Number(velocity[0])))
     return [Number(velocity[0]) || 0, Number(velocity[1]) || 0];
-  // speed + heading is the other honest pair: heading is degrees clockwise from north
-  // (+Y), matching compassPointName's own convention, so east = sin, north = cos
+  // speed + heading is the other honest pair. app/harness/natural_wind.py builds the
+  // heading as atan2(north, east) and the vector back as speed * (cos, sin), i.e. it is
+  // measured COUNTERCLOCKWISE FROM EAST, not clockwise from north -- so east is the
+  // cosine. (compassPointName takes east/north and does its own bearing maths.)
   const speed = Number(frame.wind_speed_mps), heading = Number(frame.wind_heading_degrees);
   if (Number.isFinite(speed) && Number.isFinite(heading)) {
     const radians = heading * Math.PI / 180;
-    return [speed * Math.sin(radians), speed * Math.cos(radians)];
+    return [speed * Math.cos(radians), speed * Math.sin(radians)];
   }
   const force = frame.wind_force_world_newtons;
   if (Array.isArray(force)) {
