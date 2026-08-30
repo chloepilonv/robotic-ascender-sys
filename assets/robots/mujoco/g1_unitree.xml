@@ -1,5 +1,5 @@
-<mujoco model="g1_himalaya">
-  <compiler angle="radian" meshdir="g1" texturedir="g1" />
+<mujoco model="g1_unitree">
+  <compiler angle="radian" meshdir="." texturedir="." />
   <option integrator="implicitfast" />
   <default>
     <default class="g1">
@@ -20,61 +20,61 @@
   <asset>
     <material name="black" rgba="0.2 0.2 0.2 1" />
     <material name="metal" rgba="0.7 0.7 0.7 1" />
-    <mesh file="_menagerie/unitree_g1/assets/pelvis.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/pelvis_contour_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/left_hip_pitch_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/left_hip_roll_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/left_hip_yaw_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/left_knee_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/left_ankle_pitch_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/left_ankle_roll_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/right_hip_pitch_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/right_hip_roll_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/right_hip_yaw_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/right_knee_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/right_ankle_pitch_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/right_ankle_roll_link.STL" />
-    <mesh name="waist_yaw_link" file="_menagerie/unitree_g1/assets/waist_yaw_link_rev_1_0.STL" />
-    <mesh name="waist_roll_link" file="_menagerie/unitree_g1/assets/waist_roll_link_rev_1_0.STL" />
-    <mesh name="torso_link" file="_menagerie/unitree_g1/assets/torso_link_rev_1_0.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/logo_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/head_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/left_shoulder_pitch_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/left_shoulder_roll_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/left_shoulder_yaw_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/left_elbow_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/left_wrist_roll_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/left_wrist_pitch_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/left_wrist_yaw_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/left_rubber_hand.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/right_shoulder_pitch_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/right_shoulder_roll_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/right_shoulder_yaw_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/right_elbow_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/right_wrist_roll_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/right_wrist_pitch_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/right_wrist_yaw_link.STL" />
-    <mesh file="_menagerie/unitree_g1/assets/right_rubber_hand.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/pelvis.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/pelvis_contour_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/left_hip_pitch_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/left_hip_roll_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/left_hip_yaw_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/left_knee_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/left_ankle_pitch_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/left_ankle_roll_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/right_hip_pitch_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/right_hip_roll_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/right_hip_yaw_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/right_knee_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/right_ankle_pitch_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/right_ankle_roll_link.STL" />
+    <mesh name="waist_yaw_link" file="../g1/_menagerie/unitree_g1/assets/waist_yaw_link_rev_1_0.STL" />
+    <mesh name="waist_roll_link" file="../g1/_menagerie/unitree_g1/assets/waist_roll_link_rev_1_0.STL" />
+    <mesh name="torso_link" file="../g1/_menagerie/unitree_g1/assets/torso_link_rev_1_0.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/logo_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/head_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/left_shoulder_pitch_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/left_shoulder_roll_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/left_shoulder_yaw_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/left_elbow_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/left_wrist_roll_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/left_wrist_pitch_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/left_wrist_yaw_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/left_rubber_hand.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/right_shoulder_pitch_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/right_shoulder_roll_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/right_shoulder_yaw_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/right_elbow_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/right_wrist_roll_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/right_wrist_pitch_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/right_wrist_yaw_link.STL" />
+    <mesh file="../g1/_menagerie/unitree_g1/assets/right_rubber_hand.STL" />
     <material name="jacket" rgba="0.42 0.12 0.65 1" />
     <material name="boot" rgba="0.95 0.8 0.05 1" />
     <material name="boot_trim" rgba="0.1 0.1 0.1 1" />
-    <texture name="everest_logo" type="2d" file="mjcf_meshes/everest_logo.png" />
+    <texture name="everest_logo" type="2d" file="meshes/everest_logo.png" />
     <material name="logo" texture="everest_logo" specular="0.1" />
-    <texture name="ascender_basecolor" type="2d" file="mjcf_meshes/ascender_basecolor.png" />
+    <texture name="ascender_basecolor" type="2d" file="meshes/ascender_basecolor.png" />
     <material name="ascender" texture="ascender_basecolor" specular="0.6" shininess="0.5" />
-    <mesh name="logo_back" file="mjcf_meshes/logo_back.obj" />
-    <mesh name="logo_chest_right" file="mjcf_meshes/logo_chest_right.obj" />
-    <mesh name="left_ankle_pitch_link_boot_cuff" file="mjcf_meshes/left_ankle_pitch_link_boot_cuff.obj" />
-    <mesh name="left_ankle_roll_link_boot" file="mjcf_meshes/left_ankle_roll_link_boot.obj" />
-    <mesh name="right_ankle_pitch_link_boot_cuff" file="mjcf_meshes/right_ankle_pitch_link_boot_cuff.obj" />
-    <mesh name="right_ankle_roll_link_boot" file="mjcf_meshes/right_ankle_roll_link_boot.obj" />
-    <mesh name="torso_link_jacket_body" file="mjcf_meshes/torso_link_jacket_body.obj" />
-    <mesh name="left_shoulder_roll_link_jacket_sleeve" file="mjcf_meshes/left_shoulder_roll_link_jacket_sleeve.obj" />
-    <mesh name="left_shoulder_yaw_link_jacket_sleeve" file="mjcf_meshes/left_shoulder_yaw_link_jacket_sleeve.obj" />
-    <mesh name="left_elbow_link_jacket_sleeve" file="mjcf_meshes/left_elbow_link_jacket_sleeve.obj" />
-    <mesh name="right_shoulder_roll_link_jacket_sleeve" file="mjcf_meshes/right_shoulder_roll_link_jacket_sleeve.obj" />
-    <mesh name="right_shoulder_yaw_link_jacket_sleeve" file="mjcf_meshes/right_shoulder_yaw_link_jacket_sleeve.obj" />
-    <mesh name="right_elbow_link_jacket_sleeve" file="mjcf_meshes/right_elbow_link_jacket_sleeve.obj" />
+    <mesh name="logo_back" file="meshes/logo_back.obj" />
+    <mesh name="logo_chest_right" file="meshes/logo_chest_right.obj" />
+    <mesh name="left_ankle_pitch_link_boot_cuff" file="meshes/left_ankle_pitch_link_boot_cuff.obj" />
+    <mesh name="left_ankle_roll_link_boot" file="meshes/left_ankle_roll_link_boot.obj" />
+    <mesh name="right_ankle_pitch_link_boot_cuff" file="meshes/right_ankle_pitch_link_boot_cuff.obj" />
+    <mesh name="right_ankle_roll_link_boot" file="meshes/right_ankle_roll_link_boot.obj" />
+    <mesh name="torso_link_jacket_body" file="meshes/torso_link_jacket_body.obj" />
+    <mesh name="left_shoulder_roll_link_jacket_sleeve" file="meshes/left_shoulder_roll_link_jacket_sleeve.obj" />
+    <mesh name="left_shoulder_yaw_link_jacket_sleeve" file="meshes/left_shoulder_yaw_link_jacket_sleeve.obj" />
+    <mesh name="left_elbow_link_jacket_sleeve" file="meshes/left_elbow_link_jacket_sleeve.obj" />
+    <mesh name="right_shoulder_roll_link_jacket_sleeve" file="meshes/right_shoulder_roll_link_jacket_sleeve.obj" />
+    <mesh name="right_shoulder_yaw_link_jacket_sleeve" file="meshes/right_shoulder_yaw_link_jacket_sleeve.obj" />
+    <mesh name="right_elbow_link_jacket_sleeve" file="meshes/right_elbow_link_jacket_sleeve.obj" />
   </asset>
   <worldbody>
     <light pos="1 0 3.5" dir="0 0 -1" directional="true" />

@@ -65,19 +65,5 @@ tool frame `/G1/right_wrist_yaw_link/tool_ascender` (+Z = up through the cam hea
 the "hand" now points +Z of the wrist instead of +X, i.e. roughly a **-90° wrist-pitch offset** vs. the stock hand,
 plus the +0.11 kg on the link. Add that offset to the wrist default / target joint positions in the env cfg.
 
-## MJCF (MuJoCo) — same robot as the USD
-    python assets/robots/g1/build_g1_mjcf.py
-Reads the menagerie MJCF + the same tables as `build_g1_usd.py` (jacket/boot hulls, boot friction 0.8, D435i camera,
-Mid-360 site) and the ascender mount pose from `g1_unitree_ascender.usd`. Outputs:
-
-| File | Use |
-|---|---|
-| `assets/robots/g1_himalaya.xml` | robot only (hand) |
-| `assets/robots/g1_himalaya_ascender.xml` | robot + ascender on the right wrist, hand removed, +0.1 kg |
-| `assets/robots/g1_himalaya[_ascender]_scene.xml` | + floor and light — load THIS to simulate |
-| `assets/robots/g1/mjcf_meshes/*.obj` | generated gear + ascender meshes (4 MB, tracked) |
-
-Stock link STLs come from `g1/_menagerie/` (git-ignored, auto-cloned on first run).
-Textures: ascender basecolor + Everest logo patches (PNG). Not ported: metallic/roughness/normal maps (MuJoCo has no PBR).
-
-![validation](../../../img/g1_mjcf_validation.png)
+## MJCF (MuJoCo)
+See `../mujoco/README.md` — `g1_unitree.xml` / `g1_unitree_ascender.xml`, built by `../mujoco/build.py` from the same tables.

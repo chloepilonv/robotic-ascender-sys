@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
-"""Build the Himalaya G1 as MJCF for MuJoCo — same robot as g1_himalaya.usd, same source tables.
+"""Build the Himalaya G1 as MJCF for MuJoCo — same robot as the USD, same source tables (see README.md).
 
-Output: assets/robots/g1_himalaya.xml            (jacket, boots, boot friction, D435i, Mid-360)
-        assets/robots/g1_himalaya_ascender.xml   (+ ascender on the right wrist, rubber hand removed)
-        assets/robots/g1/mjcf_meshes/*.obj       (generated gear + ascender meshes)
-Stock link meshes stay in g1/_menagerie (git-ignored, auto-cloned by fetch_menagerie()).
-
-Usage:  python assets/robots/g1/build_g1_mjcf.py
-Deps :  pip install mujoco trimesh usd-core   (usd-core only to read the ascender mesh)
+Usage:  python assets/robots/mujoco/build.py            # rebuild g1_unitree*.xml, ascender.xml, meshes/
+        python assets/robots/mujoco/build.py --fetch    # only fetch the stock Unitree STLs (needed once per clone)
+Deps :  pip install mujoco trimesh usd-core pillow   (usd-core only to read the ascender USD)
 """
 import os, sys, warnings
 import xml.etree.ElementTree as ET
@@ -15,12 +11,12 @@ import numpy as np
 import mujoco, trimesh
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "..", "g1"))
 from build_g1_usd import (GEAR, GEAR_PRIMS, BOOT_FRICTION, JACKET_BLUE, BOOT_YELLOW, BOOT_TRIM,   # noqa: E402
                           fetch_menagerie, inflated_hull, mesh_arrays)
 
-OUT_DIR = os.path.join(HERE, "..")
-MESH_DIR = os.path.join(HERE, "mjcf_meshes")
+OUT_DIR = HERE
+MESH_DIR = os.path.join(OUT_DIR, "meshes")
 # sensor poses: torso frame = head_sensors offset (0.0039635, 0, -0.044) + local, exactly as build_g1_usd.py
 HEAD = np.array([0.0039635, 0.0, -0.044])
 D435I_POS, D435I_XYAXES, D435I_FOVY = HEAD + [0.075, 0, 0.43], "0 -1 0  0 0 1", 58   # looks +X (cam -Z -> +X, cam +Y -> +Z)
@@ -30,7 +26,7 @@ TOOL_LINK = "right_wrist_yaw_link"
 ASCENDER_USD = os.path.join(HERE, "..", "..", "ascender", "ascender.usd")
 ROBOT_TOOL_USD = os.path.join(HERE, "..", "g1_unitree_ascender.usd")
 ASCENDER_TEX = os.path.join(HERE, "..", "..", "ascender", "textures", "orange_metal_pulley_3d_model_basecolor.JPEG")
-LOGO_PNG = os.path.join(HERE, "textures", "everest_logo.png")
+LOGO_PNG = os.path.join(HERE, "..", "g1", "textures", "everest_logo.png")
 LOGOS = {"logo_back": ((0.0, 0.17), 0.17, -1), "logo_chest_right": ((-0.055, 0.235), 0.06, +1)}   # (center_yz, width, side) as build_g1_usd
 
 
@@ -91,7 +87,7 @@ def png_texture(src, name, max_size=2048):
     from PIL import Image
     im = Image.open(src).convert("RGB"); im.thumbnail((max_size, max_size))
     os.makedirs(MESH_DIR, exist_ok=True); im.save(os.path.join(MESH_DIR, name + ".png"))
-    return "mjcf_meshes/" + name + ".png"
+    return "meshes/" + name + ".png"
 
 
 def gear_meshes(model):
@@ -155,12 +151,12 @@ def ascender_meshes():
 def build(xml, with_tool):
     model = mujoco.MjModel.from_xml_path(xml)
     tree = ET.parse(xml); root = tree.getroot()
-    root.set("model", "g1_himalaya" + ("_ascender" if with_tool else ""))
-    # mesh paths: output xml lives in assets/robots/, stock STLs in g1/_menagerie/..., generated OBJs in g1/mjcf_meshes/
-    comp = root.find("compiler"); comp.set("meshdir", "g1"); comp.set("texturedir", "g1")
+    root.set("model", "g1_unitree" + ("_ascender" if with_tool else ""))
+    # paths relative to assets/robots/mujoco/: stock STLs in ../g1/_menagerie/..., generated OBJ/PNG in meshes/
+    comp = root.find("compiler"); comp.set("meshdir", "."); comp.set("texturedir", ".")
     asset = root.find("asset")
     for m in asset.findall("mesh"):
-        m.set("file", "_menagerie/unitree_g1/assets/" + m.get("file"))
+        m.set("file", "../g1/_menagerie/unitree_g1/assets/" + m.get("file"))
     for n, c in (("jacket", JACKET_BLUE), ("boot", BOOT_YELLOW), ("boot_trim", BOOT_TRIM)):
         ET.SubElement(asset, "material", name=n, rgba=rgba(c))
     ET.SubElement(asset, "texture", name="everest_logo", type="2d", file=png_texture(LOGO_PNG, "everest_logo", 1024))
@@ -173,10 +169,10 @@ def build(xml, with_tool):
     gear = gear_meshes(model); hv, hf = gear.pop("_torso_hull")
     for name, (cyz, width, side) in LOGOS.items():   # sponsor patches like a real jacket
         pv, pf, puv = logo_patch(hv, hf, cyz, width, side)
-        ET.SubElement(asset, "mesh", name=name, file="mjcf_meshes/" + write_obj_uv(name, pv, pf, puv) + ".obj")
+        ET.SubElement(asset, "mesh", name=name, file="meshes/" + write_obj_uv(name, pv, pf, puv) + ".obj")
         ET.SubElement(bodies["torso_link"], "geom", {"class": "visual", "mesh": name, "material": "logo"})
     for link, (mesh, color) in gear.items():
-        ET.SubElement(asset, "mesh", name=mesh, file="mjcf_meshes/" + mesh + ".obj")
+        ET.SubElement(asset, "mesh", name=mesh, file="meshes/" + mesh + ".obj")
         mat = "jacket" if color == JACKET_BLUE else "boot" if color == BOOT_YELLOW else "boot_trim"
         ET.SubElement(bodies[link], "geom", {"class": "visual", "mesh": mesh, "material": mat})
     for link, kind, pos, size, color in GEAR_PRIMS:
@@ -202,7 +198,7 @@ def build(xml, with_tool):
         vis, col, mt, ct, tpos, tquat = ascender_meshes()
         TOOL_POS, TOOL_QUAT = "%.6g %.6g %.6g" % tuple(tpos), "%.6g %.6g %.6g %.6g" % tuple(tquat)
         for n in (vis, col):
-            ET.SubElement(asset, "mesh", name=n, file="mjcf_meshes/" + n + ".obj")
+            ET.SubElement(asset, "mesh", name=n, file="meshes/" + n + ".obj")
         ET.SubElement(wrist, "geom", {"class": "visual", "mesh": vis, "material": "ascender", "pos": TOOL_POS, "quat": TOOL_QUAT})
         ET.SubElement(wrist, "geom", {"class": "collision", "mesh": col, "pos": TOOL_POS, "quat": TOOL_QUAT})
         # fold the tool mass into the explicit <inertial> (geom mass is ignored when <inertial> is present), as attach_tool.py
@@ -212,7 +208,7 @@ def build(xml, with_tool):
         I = np.array(inert.get("diaginertia").split(), dtype=float) + mt * (r.dot(r) - r * r)
         inert.set("mass", "%.6g" % (m0 + mt)); inert.set("pos", "%.6g %.6g %.6g" % tuple(c)); inert.set("diaginertia", "%.6g %.6g %.6g" % tuple(I))
 
-    out = os.path.join(OUT_DIR, "g1_himalaya" + ("_ascender" if with_tool else "") + ".xml")
+    out = os.path.join(OUT_DIR, "g1_unitree" + ("_ascender" if with_tool else "") + ".xml")
     ET.indent(tree, space="  "); tree.write(out, encoding="unicode")
     m = mujoco.MjModel.from_xml_path(out)   # compile check
     print(f"wrote {os.path.relpath(out)}: {m.nu} actuators, {m.nbody - 1} bodies, mass {sum(m.body_mass):.3f} kg, "
@@ -220,7 +216,37 @@ def build(xml, with_tool):
     return out
 
 
+ASCENDER_ALONE = """<mujoco model="ascender">
+  <compiler meshdir="." texturedir="."/>
+  <asset>
+    <mesh name="ascender_visual" file="meshes/ascender_visual.obj"/>
+    <mesh name="ascender_collision" file="meshes/ascender_collision.obj"/>
+    <texture name="ascender_basecolor" type="2d" file="meshes/ascender_basecolor.png"/>
+    <material name="ascender" texture="ascender_basecolor" specular="0.6" shininess="0.5"/>
+  </asset>
+  <worldbody>
+    <light pos="0 0 1"/>
+    <body name="ascender" pos="0 0 0.2">
+      <freejoint/>
+      <geom type="mesh" mesh="ascender_visual" material="ascender" contype="0" conaffinity="0" group="2"/>
+      <geom type="mesh" mesh="ascender_collision" mass="{mass}" group="3"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
+def write_ascender_alone(mass):
+    with open(os.path.join(OUT_DIR, "ascender.xml"), "w") as f:
+        f.write(ASCENDER_ALONE.format(mass=mass))
+    mujoco.MjModel.from_xml_path(os.path.join(OUT_DIR, "ascender.xml"))   # compile check
+    print("wrote ascender.xml")
+
+
 if __name__ == "__main__":
     xml = fetch_menagerie()
+    if "--fetch" in sys.argv:
+        print("stock STLs ready:", os.path.dirname(xml)); sys.exit()
     build(xml, with_tool=False)
     build(xml, with_tool=True)
+    write_ascender_alone(ascender_meshes()[2])

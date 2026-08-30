@@ -9,7 +9,7 @@ Library use (inside your own policy loop):
 Standalone demo (no policy, PD hold of the standing keyframe + arm swing), 60 s of sim in a few s real time:
     python app/bms/sim/mujoco_monitor.py --xml path/to/mujoco_menagerie/unitree_g1/g1.xml --seconds 60 --altitude 5300
 """
-import argparse, json, sys, time
+import argparse, json, os, sys, time
 from pathlib import Path
 import numpy as np
 import mujoco
@@ -78,13 +78,14 @@ def fmt(s):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--xml", required=True, help="assets/robots/g1_himalaya_ascender_scene.xml (must include a floor)")
+    p.add_argument("--xml", required=True, help="robot MJCF, e.g. assets/robots/mujoco/g1_unitree_ascender.xml (a floor is added)")
     p.add_argument("--seconds", type=float, default=30.0)
     p.add_argument("--altitude", type=float, default=0.0); p.add_argument("--wind", type=float, default=0.0)
     p.add_argument("--t_sea", type=float, default=15.0); p.add_argument("--soc0", type=float, default=100.0)
     p.add_argument("--log", default=str(HERE / "log.jsonl")); p.add_argument("--viewer", action="store_true")
     a = p.parse_args()
-    m = mujoco.MjModel.from_xml_path(a.xml); d = mujoco.MjData(m)
+    scene = f'<mujoco><include file="{os.path.abspath(a.xml)}"/><worldbody><light pos="0 0 3"/><geom type="plane" size="0 0 0.05"/></worldbody></mujoco>'
+    m = mujoco.MjModel.from_xml_string(scene); d = mujoco.MjData(m)
     mujoco.mj_resetDataKeyframe(m, d, 0); q0 = d.qpos[7:7 + m.nu].copy()
     # menagerie G1 actuators are position servos (kp=500 in the MJCF): ctrl = target joint angle (rad)
     mon = SimMonitor(m, Environment(a.altitude, a.wind, a.t_sea), a.soc0, a.log)
