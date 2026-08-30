@@ -1,0 +1,33 @@
+{
+  "name": "B_slope0",
+  "geometry_class": "real_location_SYNTHETIC_slope",
+  "slope_is_real": false,
+  "location_is_real": true,
+  "lat": 27.97047375,
+  "lon": 86.91547625,
+  "approx_altitude_m": 6879,
+  "real_slope_deg": 38.76,
+  "applied_slope_deg": 0.0,
+  "planar_slope_after_roughness_deg": 0.42,
+  "downhill_aspect_deg": 291.8,
+  "plane_fit_residual_m": 4.74,
+  "length_m": 25.0,
+  "width_m": 15.0,
+  "resolution_m": 0.05,
+  "vertical_gain_m": 0.0,
+  "synthetic_refinement": true,
+  "synthetic_rms_m": 0.12,
+  "synthetic_seed": 20270106,
+  "synthetic_octaves_m": [
+    2.0,
+    0.6,
+    0.2
+  ],
+  "native_dem_resolution_m": [
+    27.31,
+    30.71
+  ],
+  "real_dem_cells_in_patch": 0.447,
+  "source": "Copernicus GLO-30 (ESA) + OpenStreetMap camp nodes",
+  "WARNING": "Slope overridden to 0.0 deg. The real slope at this location is 38.76 deg. Training aid only -- this is the flat reference for checking a walking policy, not measured Everest terrain."
+}
