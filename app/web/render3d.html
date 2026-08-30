@@ -339,7 +339,10 @@ import { fnv1a32 } from '/app/web/three/world.js';
 const $ = id => document.getElementById(id);
 const canvas = $('canvas'), stage = new Stage(canvas);
 const stageElement = $('stage');
-window.stage = stage;                             // the verifier reads this
+// The two handles the headless verifier reads. Everything else stays module
+// scope; these exist so a CDP script can check that what is on screen agrees
+// with what came off the socket, which is the only way to prove it does.
+window.stage = stage;
 
 const ROPE_LOAD_FULL_SCALE_NEWTONS = 800;
 const CAMERA_MESSAGE_INTERVAL_MILLISECONDS = 20;
@@ -1088,6 +1091,12 @@ function frame(nowMilliseconds) {
     drawWindRibbons(snowLayout.width, snowLayout.height);
   }
 }
+
+// The second verifier handle. It sits HERE and not beside `window.stage`
+// because `state` is a `const` declared further down: assigning it up there
+// reads it inside its own temporal dead zone, which throws and takes the entire
+// module -- socket, loop, everything -- down with it.
+window.appState = state;
 
 setWindSoundMuted(readWindSoundMuted());
 paintGuideSwitch();

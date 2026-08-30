@@ -26,10 +26,10 @@ const SUN_AZIMUTH_DEGREES = 215.0;
 // second draw call -- and a 1024 canvas over a 25 m patch is 2.4 cm a pixel,
 // finer than a boot.
 const FOOTPRINT_CANVAS_PIXELS = 1024;
-const FOOTPRINT_LENGTH_METERS = 0.17;
-const FOOTPRINT_WIDTH_METERS = 0.085;
+const FOOTPRINT_LENGTH_METERS = 0.24;
+const FOOTPRINT_WIDTH_METERS = 0.13;
 // Prints fade so a long session does not end up a uniformly trampled sheet.
-const FOOTPRINT_FADE_PER_SECOND = 0.055;
+const FOOTPRINT_FADE_PER_SECOND = 0.018;
 const FOOTPRINT_FADE_INTERVAL_SECONDS = 0.35;
 
 const SNOW_PARTICLE_COUNT = 9000;
@@ -531,7 +531,7 @@ export class World {
              float inside = step(0.0, decalUv.x) * step(decalUv.x, 1.0)
                           * step(0.0, decalUv.y) * step(decalUv.y, 1.0);
              float print = texture2D(uDecal, decalUv).r * inside * (1.0 - rockShare);
-             terrainColour = mix(terrainColour, terrainColour * vec3(0.62, 0.66, 0.74),
+             terrainColour = mix(terrainColour, terrainColour * vec3(0.50, 0.56, 0.68),
                                  clamp(print, 0.0, 1.0));
            }
            diffuseColor.rgb = terrainColour;`)
