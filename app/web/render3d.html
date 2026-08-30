@@ -154,7 +154,7 @@
   #windDial { width: 78px; height: 78px; display: block; margin: 0 auto 2px;
               cursor: grab; touch-action: none; }
 
-  #telemetry { order: 2; }
+  #telemetry { order: 4; }   /* last card (user ruling 2026-08-30) */
   .hero { display: flex; align-items: baseline; gap: 6px; margin: -1px 0 8px; }
   .hero b { font-size: 30px; font-weight: 600; letter-spacing: -.02em; line-height: 1;
             font-variant-numeric: tabular-nums; }
@@ -174,7 +174,7 @@
   #motionBadge.waiting { color: var(--warn); }
   #motionBadge.fell { color: var(--bad); }
 
-  #guideCard { order: 3; }
+  #guideCard { order: 2; }   /* eyes AND ears, one card */
   #guideReadout { display: none; }
   .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-style: normal;
           font-weight: 600; font-size: 10px; letter-spacing: .1em;
@@ -189,7 +189,6 @@
   #eyeView { display: none; width: 100%; aspect-ratio: 4 / 3; margin-top: 10px;
              border: 1px solid var(--border); border-radius: 6px; background: #000; }
 
-  #hearingCard { order: 4; }
   #hearingReadout { display: none; }
   .pill.coming { background: rgba(34,197,94,.14); border-color: rgba(34,197,94,.4); color: var(--good); }
   .pill.stopped { background: rgba(239,68,68,.14); border-color: rgba(239,68,68,.4); color: var(--bad); }
@@ -214,7 +213,7 @@
   #levelBar { margin: 9px 0 0; }
   #levelBar i { background: var(--good); }
 
-  #bmsCard { display: none; order: 5; }
+  #bmsCard { display: none; order: 3; }   /* second last */
   #bmsCard.cutoff { border-color: rgba(239,68,68,.5); }
   #bmsSoc { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .bmsbar { grid-column: auto; margin: 1px 0 0; }
@@ -301,13 +300,9 @@
       <div class="windswitches">
         <button class="switchrow" id="naturalSwitch" role="switch" aria-checked="false">natural<i class="switch"></i></button>
       </div>
-    </section>
-
-    <!-- VISIBILITY is its own card because it is its own thing (user's ruling,
-         2026-08-30): it used to be a `storm` switch inside Wind whose thickness
-         came from the wind speed, and it is now a plain distance dial that the
-         wind has nothing to do with. Left is clear, right is a white-out. -->
-    <section class="card">
+      <!-- VISIBILITY shares the card but not the physics (user rulings,
+           2026-08-30): a plain distance dial the wind has nothing to do with.
+           Left clear, right white-out. -->
       <div class="head"><h2>Visibility</h2><output id="visibilityOut">100 m</output></div>
       <input type="range" id="visibility" min="0" max="1000" step="1" value="0">
       <div class="rangeends"><span>clear</span><span>white-out</span></div>
@@ -343,12 +338,10 @@
         <span>Eyes</span><b><button class="switchrow" id="eyesSwitch" role="switch" aria-checked="true" title="the robot may use vision"><i class="switch"></i></button></b>
       </div>
     </div>
-    <canvas id="eyeView" width="320" height="240"></canvas>
-  </section>
-
-  <!-- HEARING. Four virtual microphones on the robot's head; the voice is the
-       Mac's own, streamed up as MIC0 and emitted at the hiker's mouth. -->
-  <section class="card" id="hearingCard">
+    <!-- THE EARS live in the same card as the eyes (user ruling, 2026-08-30).
+         Four virtual microphones on the robot's head; the voice is the Mac's
+         own (or a recorded shout), streamed up as MIC0 and emitted at the
+         hiker's mouth. -->
     <div class="head"><h2>Hearing</h2>
       <span class="hearingtools">
         <span class="segmented" id="sourceMode">
@@ -371,6 +364,7 @@
       </div>
       <div id="shoutNow"></div>
     </div>
+    <canvas id="eyeView" width="320" height="240"></canvas>
   </section>
 
   <section class="card" id="bmsCard">
