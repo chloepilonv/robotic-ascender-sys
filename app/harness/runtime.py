@@ -64,6 +64,8 @@ from app.harness.playground_policy import (  # noqa: E402
 from app.harness.recorder import Recorder  # noqa: E402
 from app.harness import worlds as worlds_module  # noqa: E402
 from app.harness import climb_worlds as climb_worlds_module  # noqa: E402
+from app.harness import graphics as graphics_module  # noqa: E402
+from app.harness.natural_wind import NaturalWind  # noqa: E402
 
 RENDER_WIDTH, RENDER_HEIGHT = 960, 540    # 16:9 -- the page fills the viewport with it
 RENDER_MAXIMUM_WIDTH, RENDER_MAXIMUM_HEIGHT = 1920, 1080   # native-resolution cap (F = fullscreen in the page)
@@ -82,12 +84,22 @@ def clamp_render_size(viewport) -> tuple:
     return (int(width * scale) // 2) * 2, (int(height * scale) // 2) * 2
 
 
-def make_renderer(model, width: int, height: int):
+def make_renderer(model, width: int, height: int, alpine=True, shadows=None):
     """The offscreen framebuffer is sized from model.vis.global_ at context creation;
-    raise it to the cap once so any requested size up to 1920x1080 fits."""
+    raise it to the cap once so any requested size up to 1920x1080 fits.
+
+    Shadows measured at 1920x1080 on this machine: 14.9 ms/frame with, 9.2 ms
+    without -- 5.7 ms, against a 20 ms control tick. They stay ON at every size
+    we render, and `--no-shadows` is the escape hatch if a slower machine needs
+    it. (`graphics.shadows_affordable` keeps the width rule for that case.)"""
     model.vis.global_.offwidth = max(int(model.vis.global_.offwidth), RENDER_MAXIMUM_WIDTH)
     model.vis.global_.offheight = max(int(model.vis.global_.offheight), RENDER_MAXIMUM_HEIGHT)
-    return mujoco.Renderer(model, height, width)
+    renderer = mujoco.Renderer(model, height, width)
+    if alpine:
+        flags = graphics_module.apply_render_flags(
+            renderer, shadows=True if shadows is None else shadows)
+        print(f"[graphics] render flags {flags} at {width}x{height}", flush=True)
+    return renderer
 JPEG_QUALITY = 80
 
 # Third-person orbit, matching the browser's defaults so live and recorded
@@ -105,6 +117,9 @@ BROWSER_AZIMUTH_OFFSET_DEGREES = 180.0
 
 # Camera-relative driving, third-person-game style.
 HEADING_GAIN_PER_RADIAN = 2.0
+# A/D turn-in-place rate. The policy's ang_vel_yaw was trained over [-1, 1]
+# (walk_policy.CMD_LIMITS), so this is the fastest turn it has ever seen.
+MANUAL_YAW_RATE_RADIANS_PER_SECOND = 1.0
 MAXIMUM_YAW_RATE_RADIANS_PER_SECOND = 1.0
 HEADING_DEADBAND_RADIANS = math.radians(2.0)
 # Their lin_vel_x training range is [-1, 1] m/s; a demo wants a steady pace.
@@ -482,8 +497,27 @@ class HeadingController:
     def desired_heading_degrees(self) -> float:
         return float(math.degrees(wrap_to_pi(self.desired_heading_radians)))
 
-    def command(self, root_quaternion_wxyz, walking: bool) -> np.ndarray:
+    def command(self, root_quaternion_wxyz, walking: bool,
+                manual_yaw_rate=None) -> np.ndarray:
+        """`manual_yaw_rate` (rad/s) SUSPENDS the camera-follow while held.
+
+        A and D are the user steering by hand, and two controllers fighting for
+        the same channel is the worst of both: the camera-follow would drag the
+        yaw straight back the moment the key came up. So while A or D is down
+        the follow's output is ignored, and its target is RE-SEATED to the
+        robot's current yaw every tick -- whatever the yaw is at release becomes
+        the new target, and the deadband reopens on a zero error. The camera
+        only steers when the user isn't.
+        """
         current = root_yaw_radians(root_quaternion_wxyz)
+        if manual_yaw_rate is not None:
+            self.desired_heading_radians = current
+            self.yaw_error_radians = 0.0
+            forward = self.command_speed if walking else 0.0
+            return np.array([forward, 0.0, float(np.clip(
+                manual_yaw_rate,
+                -MAXIMUM_YAW_RATE_RADIANS_PER_SECOND,
+                MAXIMUM_YAW_RATE_RADIANS_PER_SECOND))])
         self.yaw_error_radians = wrap_to_pi(self.desired_heading_radians - current)
         if abs(self.yaw_error_radians) < HEADING_DEADBAND_RADIANS:
             yaw_rate = 0.0
@@ -623,6 +657,18 @@ def run(arguments) -> str:
         if kind == "climb_scene":
             scene, meta, definition = climb_library.load(
                 name, on_build_start=lambda: announce_build(name))
+            # Dress the scene BEFORE the episode binds to it: `add_skybox`
+            # recompiles the spec, so it must happen while nothing holds a
+            # reference to the old model or data. It verifies the swap and
+            # refuses if anything structural moved.
+            if not arguments.plain_graphics:
+                graphics_module.add_skybox(scene)
+                look = graphics_module.apply_alpine_look(
+                    scene.model, terrain_size_meters=scene.terrain.size_xy)
+                print(f"[graphics] {name}: fog"
+                      f" {look['fog_start_meters']:.0f}-{look['fog_end_meters']:.0f} m,"
+                      f" sun {look['sun']['elevation_degrees']:.0f} deg elevation,"
+                      f" shadows {look['shadow_texture']}, snow on", flush=True)
             episode = climb_worlds_module.ClimbSceneEpisode(
                 scene, meta, definition, name, seed=arguments.seed)
             model = scene.model
@@ -676,7 +722,9 @@ def run(arguments) -> str:
     heading = HeadingController(arguments.command_speed)
     rendered_model = None
     if not arguments.no_render:
-        renderer = make_renderer(model, *render_size)
+        renderer = make_renderer(model, *render_size,
+                                 alpine=not arguments.plain_graphics,
+                                 shadows=not arguments.no_shadows)
         rendered_model = model
 
     episodes_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "episodes")
@@ -700,6 +748,10 @@ def run(arguments) -> str:
 
     duration_seconds = arguments.duration if arguments.duration is not None else 1e9
     wind_velocity_world = np.zeros(2)
+    # The dial gives a TARGET; NaturalWind turns it into gusts and drift when
+    # the page asks for it. Seeded from --seed, advanced once per control tick,
+    # so a replay at the same seed sees the same weather.
+    natural_wind = NaturalWind(seed=arguments.seed)
     last_logged_command = last_logged_wind = None
     wall_start = time.time()
     realtime_factor = 0.0
@@ -723,7 +775,13 @@ def run(arguments) -> str:
             azimuth_degrees = browser_camera.get("azimuth_degrees")
             elevation_degrees = browser_camera.get("elevation_degrees")
             heading.set_browser_azimuth(azimuth_degrees)
-            command = heading.command(episode.data.qpos[3:7], walking="w" in keys)
+            # A = turn left (positive yaw), D = turn right, both down cancel.
+            turn = ((MANUAL_YAW_RATE_RADIANS_PER_SECOND if "a" in keys else 0.0)
+                    - (MANUAL_YAW_RATE_RADIANS_PER_SECOND if "d" in keys else 0.0))
+            steering = ("a" in keys) != ("d" in keys)
+            command = heading.command(
+                episode.data.qpos[3:7], walking="w" in keys,
+                manual_yaw_rate=turn if steering else None)
             if server.paused:
                 # Freeze: no physics, no policy, no recorded tick. Keep the last
                 # picture and a heartbeat flowing so the page stays live and
@@ -737,8 +795,11 @@ def run(arguments) -> str:
                 wall_start = time.time() - episode.tick / episode.control_hz
                 time.sleep(1.0 / PAUSED_BROADCAST_HZ)
                 continue
-            wind_velocity_world[:] = [server.knobs.get("wind_x", 0.0),
-                                      server.knobs.get("wind_y", 0.0)]
+            natural_wind.enabled = bool(server.knobs.get("wind_natural", 0.0))
+            wind_velocity_world[:] = natural_wind.step(
+                [server.knobs.get("wind_x", 0.0),
+                 server.knobs.get("wind_y", 0.0)],
+                1.0 / episode.control_hz, episode.tick / episode.control_hz)
             # The battery model's wind chill is live: the dial is m/s, hers is
             # km/h.
             if episode.bms is not None:
@@ -770,7 +831,9 @@ def run(arguments) -> str:
                         # share a model share the renderer; a different model
                         # needs a new one.
                         renderer.close()
-                        renderer = make_renderer(model, *render_size)
+                        renderer = make_renderer(model, *render_size,
+                                 alpine=not arguments.plain_graphics,
+                                 shadows=not arguments.no_shadows)
                         rendered_model = model
                     # The friction knob still reads the OLD world; re-sync it or
                     # the next tick paints the previous mu over the new map.
@@ -802,6 +865,7 @@ def run(arguments) -> str:
                 "ang_vel_yaw": float(row["command"][2])})
             last_logged_command = row["command"].tolist()
         wind_list = row["wind_velocity_world_meters_per_second"].tolist()
+        row.update(natural_wind.report())
         if wind_list != last_logged_wind:
             header["wind"].append({"time_seconds": row["time_seconds"],
                                    "wind_velocity_world_meters_per_second": wind_list})
@@ -814,7 +878,9 @@ def run(arguments) -> str:
             wanted = clamp_render_size(server.latest_input.get("viewport"))
             if wanted != render_size:
                 renderer.close()
-                renderer = make_renderer(episode.model, *wanted)
+                renderer = make_renderer(episode.model, *wanted,
+                                         alpine=not arguments.plain_graphics,
+                                         shadows=not arguments.no_shadows)
                 rendered_model = episode.model
                 render_size = wanted
                 print(f"[runtime] render size -> {wanted[0]}x{wanted[1]}", flush=True)
@@ -847,6 +913,9 @@ def run(arguments) -> str:
                 "wind_velocity_world_meters_per_second": wind_list,
                 "wind_force_world_newtons": row["wind_force_world_newtons"].tolist(),
                 "wind_in_training": meta.get("wind_in_training", False),
+                # INSTANTANEOUS, not the dial: with natural wind on these surge
+                # and swing with every gust, and the ribbons/sound follow them.
+                **natural_wind.report(),
                 "fell": bool(row["fell"]),
                 "fall_reason": episode.fall_reason,
                 "root_position_world": row["root_position_world"].tolist(),
@@ -919,6 +988,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
                         default=CLIMB_COMMAND_METERS_PER_SECOND,
                         help="lin_vel_x commanded while W is held, m/s"
                              " (their training range is [-1, 1])")
+    parser.add_argument("--plain-graphics", action="store_true",
+                        help="skip the alpine look (fog/sky/snow/sun). Visual"
+                             " only either way; physics is identical.")
+    parser.add_argument("--no-shadows", action="store_true",
+                        help="render without shadows (saves ~5.7 ms/frame at"
+                             " 1920x1080)")
     parser.add_argument("--bms", action="store_true",
                         help="accepted and ignored: the BMS is always on now")
     parser.add_argument("--policy", default=None, help="path to a policy npz")

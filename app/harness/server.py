@@ -75,7 +75,10 @@ class Server:
         # defaults are hers (app/bms_ui/bridge.py KNOB_DEFAULTS) so the page and
         # the plugin agree before the first message.
         self.knobs = {"wind_x": 0.0, "wind_y": 0.0, "friction": 0.8,
-                      "t_amb": 15.0, "soc0": 100.0}
+                      "t_amb": 15.0, "soc0": 100.0,
+                      # 0/1: the wind dial is a TARGET a gusting process
+                      # wanders around, instead of a constant.
+                      "wind_natural": 0.0}
         self.reset_requested = False
         self.paused = False
         self.world_requested = None

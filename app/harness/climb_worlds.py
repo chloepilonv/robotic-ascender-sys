@@ -71,9 +71,87 @@ TERRAIN_PATCHES = {
 
 DEFAULT_CLIMB_WORLD = "lhotse_B"
 
+# --- the sandbox ---------------------------------------------------------
+# The shipped DEM patches are FIXED at 25 x 15 m: `terrain.load_patch` reads a
+# whole `.npz` and there is no crop or window argument anywhere in that module.
+# So a bigger map cannot come from the DEM without new code, and writing a new
+# terrain pipeline was explicitly out of scope.
+#
+# `terrain.make_terrain(slope_deg, rough_rms, seed, length_m, width_m, res)`
+# DOES take an arbitrary size, and builds it from the same octave recipe and
+# the same `synth_roughness` the patches use. So the sandbox is big and it is
+# the same noise family -- but it is SYNTHETIC, not measured. Nothing about it
+# is Lhotse beyond the roughness statistics, and it must never be quoted as
+# terrain evidence. (The shipped patches are only measured above ~30 m anyway:
+# one 25 x 15 m patch covers 0.447 of a single DEM cell.)
+#
+# Size chosen by measurement, at 1920x1080 with an idle robot:
+#     25 x 15 m  res 0.05   300 x 500   60.9 fps   0.6 MB   (the patch size)
+#     60 x 60 m  res 0.10   600 x 600   54.4 fps   1.4 MB
+#    120 x 120 m res 0.15   800 x 800   39.0 fps   2.6 MB
+#    120 x 120 m res 0.20   600 x 600   48.8 fps   1.4 MB  <- chosen
+#    200 x 200 m res 0.25   800 x 800   37.9 fps   2.6 MB
+#    200 x 200 m res 0.30   667 x 667   43.7 fps   1.8 MB
+# Physics was 20-29x realtime at EVERY size -- the heightfield never bound the
+# solver. Render cost is what buys area, and it tracks the GRID, not the metres:
+# 200 x 200 m is affordable only by making cells so coarse (0.30 m) that the
+# finest roughness octave (0.6 m correlation) spans two cells and stops being
+# resolved. 120 x 120 m at 0.20 m keeps three cells per finest octave, leaves
+# ~10 fps of headroom for the graphics pass, and is still 38x the area of a
+# patch (14400 m2 against 375).
+SANDBOX_LENGTH_METERS = 120.0
+SANDBOX_WIDTH_METERS = 120.0
+SANDBOX_RESOLUTION_METERS = 0.20
+SANDBOX_SLOPE_DEGREES = 12.0   # gentle enough that the walking policy stands
+SANDBOX_ROUGHNESS_RMS = 0.12   # terrain.DEFAULT_ROUGH_RMS
+SANDBOX_SEED = 7
 
-def _definition(name, patch, label, description, robot="himalaya", rope=True):
-    slope, provenance = TERRAIN_PATCHES[patch]
+
+# --- Ines's uneven terrain at arbitrary slope --------------------------------
+# `terrain.load_patch` runs a least-squares DE-PLANE: it returns the patch's
+# real micro-roughness as a mean-zero grid (patch B: RMS 0.1138 m) and hands the
+# macro tilt to the terrain geom's quaternion. Slope and roughness are therefore
+# separable, and a `dataclasses.replace` on the slope field is the SAME
+# mechanism the shipped `B_slope*` family uses -- the surface keeps every
+# centimetre of the measured 12 cm roughness and only the macro tilt moves.
+# Verified: replace(slope_deg=10) leaves `rough` bit-identical to patch B's.
+#
+# This is used instead of the `B_slope*` files because those only exist at 0,
+# 25, 30, 35, 45 and 50 degrees, and each carries its OWN noise seed (roughness
+# correlation between B and B_slope25 is -0.06, i.e. unrelated draws). Reusing
+# patch B's actual roughness for all six means slope is the only variable that
+# changes across the ladder.
+UNEVEN_SLOPE_DEGREES = (5, 10, 15, 20, 25, 30)
+
+
+def make_uneven_terrain(slope_degrees):
+    """Patch B's measured roughness, re-tilted. -> a Terrain."""
+    import dataclasses
+    from rl.environment import terrain as terrain_module
+    patch = terrain_module.load_patch("B")
+    return dataclasses.replace(
+        patch, slope_deg=float(slope_degrees),
+        name=f"B_rough_slope{slope_degrees:g}",
+        source=f"patch:real/B re-tilted to {slope_degrees:g} deg")
+
+
+def make_sandbox_terrain():
+    """The free-roam map, through THEIR randomisation entry point."""
+    from rl.environment import terrain as terrain_module
+    return terrain_module.make_terrain(
+        slope_deg=SANDBOX_SLOPE_DEGREES,
+        rough_rms=SANDBOX_ROUGHNESS_RMS,
+        seed=SANDBOX_SEED,
+        length_m=SANDBOX_LENGTH_METERS,
+        width_m=SANDBOX_WIDTH_METERS,
+        res=SANDBOX_RESOLUTION_METERS,
+    )
+
+
+def _definition(name, patch, label, description, robot="himalaya", rope=True,
+                terrain_factory=None, slope=None, provenance=None):
+    if patch is not None:
+        slope, provenance = TERRAIN_PATCHES[patch]
     return name, {
         "kind": "climb_scene",
         "label": label,
@@ -83,6 +161,7 @@ def _definition(name, patch, label, description, robot="himalaya", rope=True):
         "slope_degrees": slope,
         "slope_provenance": provenance,
         "description": description,
+        "terrain_factory": terrain_factory,
     }
 
 
@@ -117,6 +196,28 @@ CLIMB_WORLD_DEFINITIONS = dict([
                 "Patch B with the bare mujoco_playground G1 instead of the"
                 " jacketed demo robot -- the mels policy's own training body,"
                 " for a like-for-like comparison.", robot="playground"),
+] + [
+    _definition(f"terrain_free_{degrees}", None,
+                f"Lhotse terrain {degrees}° · no rope",
+                "Patch B's measured micro-roughness (RMS 0.114 m) re-tilted to"
+                f" {degrees} degrees, rope off. Where does the walker give up"
+                " on rough ground? Spawns at the bottom facing uphill.",
+                rope=False,
+                terrain_factory=(lambda d=degrees: make_uneven_terrain(d)),
+                slope=float(degrees), provenance="real roughness, set slope")
+    for degrees in UNEVEN_SLOPE_DEGREES
+] + [
+    _definition("sandbox_free", None, "Sandbox · 120 x 120 m · 12° · no rope",
+                "Free roam. 1.44 hectares of synthetic Himalaya at a walkable"
+                " 12 degrees -- 38x the area of a measured patch. SYNTHETIC:"
+                " the same roughness family as the patches, but no DEM.",
+                rope=False, terrain_factory=make_sandbox_terrain,
+                slope=SANDBOX_SLOPE_DEGREES, provenance="synthetic"),
+    _definition("sandbox_rope", None, "Sandbox · 120 x 120 m · 12° · rope",
+                "The same free-roam map with a rope laid across it by the"
+                " scene's own route builder.",
+                rope=True, terrain_factory=make_sandbox_terrain,
+                slope=SANDBOX_SLOPE_DEGREES, provenance="synthetic"),
 ])
 
 
@@ -142,6 +243,12 @@ class ClimbSceneLibrary:
 
     @staticmethod
     def _key(definition):
+        if definition["terrain_factory"] is not None:
+            # Synthesised terrains have no patch name; the label's first field
+            # plus the slope identifies the build uniquely, and rope-on/rope-off
+            # twins still share one compiled scene.
+            return (definition["label"].split(" · ")[0],
+                    definition["slope_degrees"], definition["robot"])
         # Patch AND robot. The rope flag is a data-level switch on one compiled
         # scene, so it is deliberately NOT in the key: lhotse_B and
         # lhotse_B_free share a build.
@@ -160,11 +267,19 @@ class ClimbSceneLibrary:
                 on_build_start()
             provision_assets.ensure_all(verbose=self.verbose)
             started = time.time()
-            print(f"[climb] building {name}: patch {definition['patch']},"
+            print(f"[climb] building {name}:"
+                  f" {definition['patch'] or 'synthesised terrain'},"
                   f" robot {definition['robot']}", flush=True)
+            factory = definition["terrain_factory"]
+            terrain = (factory() if factory is not None
+                       else terrain_module.load_patch(definition["patch"]))
+            print(f"[climb] terrain {terrain.name}: {terrain.size_xy[0]:.1f} x"
+                  f" {terrain.size_xy[1]:.1f} m, grid {terrain.shape[0]}x"
+                  f"{terrain.shape[1]} at {terrain.res:g} m,"
+                  f" slope {terrain.slope_deg:.2f} deg,"
+                  f" roughness rms {terrain.rough.std():.3f} m", flush=True)
             scene = climb_scene_module.build_scene(
-                terrain_module.load_patch(definition["patch"]),
-                robot_scene=robot_scene_path(definition["robot"]),
+                terrain, robot_scene=robot_scene_path(definition["robot"]),
             )
             self._scenes[key] = (scene, describe_climb_scene(scene, definition))
             print(f"[climb] built {name} in {time.time() - started:.2f} s"
@@ -198,7 +313,7 @@ def describe_climb_scene(scene, definition) -> dict:
     return {
         "kind": "climb_scene",
         "robot": definition["robot"],
-        "patch": definition["patch"],
+        "patch": definition["patch"] or "synthetic",
         # --- control contract (his walk_policy's constants, not ours) -------
         "default_pose_radians": robot_module.KNEES_BENT_QPOS[7:joint_qpos_end].copy(),
         "action_scale": walk_policy.ACTION_SCALE,
@@ -312,7 +427,28 @@ class ClimbSceneEpisode:
         self.wind_velocity_world = np.zeros(2)
         self.wind_force_world_newtons = np.zeros(3)
         self._mujoco = mujoco
+        if not self.rope_enabled:
+            self._hide_rope_apparatus()
         self.reset()
+
+    def _hide_rope_apparatus(self) -> None:
+        """Make the rope and carrier invisible on a rope-off world.
+
+        Visual only -- alpha, not contype. A rope-off world still has the rope's
+        collider in the model, and leaving it there is deliberate: hiding a
+        thing the robot can still bump into would be a lie of a different kind.
+        What goes is the picture of an apparatus the robot is demonstrably not
+        using.
+        """
+        from rl.environment import climb_scene as climb_scene_module
+        hidden = 0
+        for geom_id in range(self.model.ngeom):
+            if self.model.geom_group[geom_id] == climb_scene_module.GROUP_ROPE:
+                self.model.geom_rgba[geom_id, 3] = 0.0
+                hidden += 1
+        print(f"[climb] {self.world_name}: rope off, {hidden} rope/carrier geoms"
+              " hidden (alpha only -- the collider stays)", flush=True)
+
 
     # ------------------------------------------------------------- state
     def reset(self) -> None:
@@ -587,7 +723,7 @@ def fingerprint_climb_scene(scene, meta, definition) -> dict:
     run = float(np.linalg.norm(points[-1][:2] - points[0][:2]))
     return {
         "world": definition["label"],
-        "patch": definition["patch"],
+        "patch": definition["patch"] or "synthetic",
         "robot": definition["robot"],
         "robot_scene_file": robot_scene_path(definition["robot"]),
         "source": "rl.environment.climb_scene.build_scene",
@@ -601,7 +737,7 @@ def fingerprint_climb_scene(scene, meta, definition) -> dict:
             "total_mass_kilograms": float(model.body_subtreemass[0]),
         },
         "terrain": {
-            "patch": definition["patch"],
+            "patch": definition["patch"] or "synthetic",
             "slope_degrees": float(scene.terrain.slope_deg),
             "slope_provenance": definition["slope_provenance"],
             "hfield_size": model.hfield_size[0].tolist() if model.nhfield else None,

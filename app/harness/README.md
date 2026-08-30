@@ -34,8 +34,14 @@ resets, **Esc** pauses. Map selector, twelve **ClimbScene** worlds then four **l
 | `lhotse_B_playground` | patch B with the bare Playground G1, for comparison |
 | the four `legacy_*` | the old flat tilted plane + slide joint, which the trainer still uses |
 
-Wind dial is in m/s and goes through **his** `WindParams` into
-`ClimbScene.step`. Neither the wind nor this terrain is in training yet — the
+Also `terrain_free_5/10/15/20/25/30` (patch B's measured roughness re-tilted,
+rope off — the walker gives up between 10° and 15°) and `sandbox_free` /
+`sandbox_rope`, a 120 × 120 m free-roam map.
+
+Keys: **W** walk, **A/D** turn in place (they suspend the camera-follow while
+held). Wind dial is in m/s and goes through **his** `WindParams` into
+`ClimbScene.step`; the `wind_natural` knob turns the dial into a target that
+gusts and drifts. Neither the wind nor this terrain is in training yet — the
 trainer is still on the old `climb_env` — so the state message keeps saying
 `wind_in_training: false` and `terrain_in_training: false`.
 

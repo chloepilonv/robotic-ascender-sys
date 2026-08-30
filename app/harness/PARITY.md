@@ -340,6 +340,192 @@ Still open from earlier: **G6** (brax → npz export for trained checkpoints),
 **P5** (MJX CCD warning on mesh/cylinder pairs — now more relevant, since the
 merged scene has a rope cylinder *and* mesh collision geoms).
 
+## Graphics, natural wind, the sandbox, and A/D — all visual or input-side
+
+### Physics is untouched, and that is MEASURED
+
+The alpine look sets `model.vis`, `geom_rgba`, `light_*` and render-time flags,
+and installs a skybox by recompiling the spec. None of it is read by the
+solver, but a spec recompile is exactly the kind of change that could move
+something quietly, so it is checked rather than asserted. Same world, same
+seed, 6 s, W held, with and without `--plain-graphics`:
+
+| metric | alpine | plain | delta |
+|---|---|---|---|
+| pelvis displacement | 0.768703118 m | 0.768703118 m | **0** |
+| height gained | −0.750794943 m | −0.750794943 m | **0** |
+| rope travel | 0.002006123 m | 0.002006123 m | **0** |
+| max rope force | 304.229107608 N | 304.229107608 N | **0** |
+| hand off line | 0.002243983 m | 0.002243983 m | **0** |
+| `frames.npz` root_position_world | | | **0** |
+| `frames.npz` rope_force_newtons | | | **0** |
+
+**Bit-identical.** The graphics pass cannot change a result.
+
+### The skybox, and why a recompile is safe
+
+A skybox is a TEXTURE and textures are fixed at compile time; the merged scene
+compiles with `ntex 2`, both `mjTEXTURE_2D`. Without a skybox texture
+`mjRND_SKYBOX` does nothing and the background renders BLACK — which is what
+the first attempt looked like.
+
+`build_scene` returns `scene.spec`, so `graphics.add_skybox` adds a gradient
+skybox there and recompiles. A texture is an ASSET, not structure: measured,
+all 14 structural fields come back bit-identical (`nq nv nu nbody njnt neq
+ngeom nsite nsensor nkey`, `jnt_qposadr`, `jnt_dofadr`, `body_mass`, actuator
+targets), with only `ntex` going 2 → 3. `add_skybox` re-checks that list on
+every call and REFUSES the swap if anything moved, so the day this stops being
+true it fails loudly. One real gotcha it also handles: `vis.global_.offwidth`
+lives on the compiled model, not the spec, so a recompile resets the offscreen
+framebuffer to 640 and the next 1920-wide renderer raises
+`Image width 1920 > framebuffer width 640`. It is carried across explicitly.
+
+### Exposure — the first pass was worse than stock
+
+Snow 0.90 + ambient 0.42 + sun 1.00 summed past 1.0 everywhere and clipped: the
+rendered face came back a **featureless white sheet with less visible relief
+than the stock grey**. Looking at the frame is what caught it; the fps numbers
+were fine. Snow is bright but a camera is not, and what sells snow is the
+CONTRAST between the lit and shaded sides of the roughness. Now: snow 0.82,
+ambient 0.20, sun 0.78, total near 1.0 and mostly directional, sun at 16° so it
+rakes. Measured saturation (pixels > 250) is **0.0%**.
+
+### Render cost, 1920×1080, lhotse_B
+
+| | ms/frame | fps |
+|---|---|---|
+| stock visuals | 16.2 | 61.9 |
+| alpine, shadows ON | 14.9 | 67.1 |
+| alpine, shadows OFF | 9.2 | 109.0 |
+
+Shadows cost **5.7 ms/frame** against a 20 ms control tick, and the alpine look
+is *faster* than stock because fog culls distant geometry. So shadows stay ON
+at every size we render — the "off above 1280 wide" contingency was not needed,
+and `graphics.shadows_affordable` keeps that rule available for a slower
+machine. `--no-shadows` and `--plain-graphics` are the escape hatches.
+**Live at 1920×1080 with shadows: realtime factor 1.00.**
+
+No noise texture on the snow, deliberately: a texture needs a compile-time
+asset for the same reason a skybox does, and the heightfield's own 12 cm
+roughness under a raking sun already gives the surface its texture — real
+geometry rather than a painted-on pattern.
+
+### Natural wind
+
+`wind_natural` (0/1, default 0) makes the dial a TARGET rather than a constant.
+
+    speed   = target * clamp(1 + OU(sigma 0.25, tau 4 s), 0.4, 1.6) * (1 + gust)
+    heading = target + OU(sigma 15 deg, tau 6 s)
+    gust    = raised cosine, arrivals every 3-8 s, +20-60%, lasting 0.5-1.5 s
+
+The OU processes are integrated EXACTLY (`x <- x e^(-dt/tau) + sigma sqrt(1 -
+e^(-2dt/tau)) N(0,1)`), not Euler-stepped, so sigma and tau do not drift with
+the tick rate. Everything draws from one generator seeded from `--seed` and
+advances once per control tick, so a replay at the same seed sees the same
+weather. Measured over 300 s at a 12 m/s target:
+
+| seed | speed mean | sd | min | max | heading sd | gusts |
+|---|---|---|---|---|---|---|
+| 0 | 12.54 | 2.90 | 4.80 | 27.48 | 16.09° | 45 in 300 s |
+| 1 | 11.78 | 2.94 | 4.80 | 24.18 | 15.83° | 47 in 300 s |
+
+Determinism at equal seed: PASS. Disabled: **bit-exact pass-through** of the
+dial value — verified, not assumed.
+
+Live, the state message carries `wind_speed_mps`, `wind_heading_degrees`,
+`wind_gain`, `wind_gust` and `wind_natural` alongside the existing
+`wind_velocity_world_meters_per_second` and `wind_force_world_newtons`; all of
+them are recorded, because a replay that stored only the dial could not
+reproduce the gust that knocked the robot over. Measured live at a 12 m/s dial:
+off → exactly 12.00 every tick; on → mean 13.53, sd 1.47, range 10.81–18.03,
+heading sd 8°.
+
+### The sandbox map
+
+**The shipped DEM patches are fixed at 25 × 15 m.** `terrain.load_patch` reads
+a whole `.npz`; there is no crop or window argument anywhere in that module, so
+a bigger map cannot come from the DEM without new code. `terrain.make_terrain`
+DOES take an arbitrary `length_m`/`width_m` and builds from the same octave
+recipe, so the sandbox uses that — **synthetic, not measured**, and it must
+never be quoted as terrain evidence.
+
+Measured at 1920×1080 with an idle robot:
+
+| size | res | grid | fps | hfield MB |
+|---|---|---|---|---|
+| 25 × 15 m | 0.05 | 300 × 500 | 60.9 | 0.6 |
+| 60 × 60 m | 0.10 | 600 × 600 | 54.4 | 1.4 |
+| 120 × 120 m | 0.15 | 800 × 800 | 39.0 | 2.6 |
+| **120 × 120 m** | **0.20** | **600 × 600** | **48.8** | **1.4** |
+| 200 × 200 m | 0.25 | 800 × 800 | 37.9 | 2.6 |
+| 200 × 200 m | 0.30 | 667 × 667 | 43.7 | 1.8 |
+
+**Physics was 20–29× realtime at every size** — the heightfield never bound the
+solver. Render cost is what buys area, and it tracks the GRID, not the metres.
+200 × 200 m is affordable only by making cells so coarse (0.30 m) that the
+finest roughness octave (0.6 m correlation) spans two cells and stops being
+resolved. 120 × 120 m at 0.20 m keeps three cells per finest octave, leaves
+headroom for the graphics pass, and is still **38× the area of a patch**
+(14 400 m² against 375). `sandbox_free` and `sandbox_rope` (the scene's own
+route builder lays a 120.7 m rope across it); live realtime factor 1.00.
+
+### Uneven-terrain ladder, rope off
+
+`load_patch` runs a least-squares DE-PLANE, returning patch B's real
+micro-roughness as a mean-zero grid (RMS 0.1138 m) with the macro tilt on the
+geom's quaternion. So `dataclasses.replace(patch, slope_deg=X)` is the
+roughness-preserving path — verified: `rough` stays bit-identical to patch B's.
+This is used instead of the `B_slope*` files because those exist only at 0, 25,
+30, 35, 45, 50 **and each carries its own noise seed** (roughness correlation
+between B and B_slope25 is −0.06, i.e. unrelated draws). Reusing B's actual
+roughness makes slope the only variable that changes across the ladder.
+
+mels, W held, 10 s, rope off, jacketed robot, spawned at the bottom facing
+uphill:
+
+| world | slope | fell | at | displacement | height |
+|---|---|---|---|---|---|
+| `terrain_free_5` | 5° | **no** | — | 2.04 m | −0.36 m |
+| `terrain_free_10` | 10° | **no** | — | 1.97 m | −0.52 m |
+| `terrain_free_15` | 15° | yes | 3.00 s | 2.60 m | −1.46 m |
+| `terrain_free_20` | 20° | yes | 2.04 s | 149.95 m | −149.65 m |
+| `terrain_free_25` | 25° | yes | 2.88 s | 2.43 m | −1.69 m |
+| `terrain_free_30` | 30° | *no* | — | 2.31 m | −1.74 m |
+
+**The flat-ground walker gives up between 10° and 15°** on real micro-roughness
+with nothing to hold. 20° is the one that finds a clean fall line and slides
+150 m. Read the 30° "no" with the C3 caveat above: our fall test is upright < 0
+with no self-collision term, and at −1.74 m of height that row is a robot
+sitting on the slope, not one walking.
+
+### A/D turn-in-place — works, but the policy tracks yaw poorly
+
+A = +1.0 rad/s, D = −1.0 rad/s, both held cancel, all inside the policy's
+trained `ang_vel_yaw` range. While A or D is held the camera-follow
+`HeadingController` is SUSPENDED and its target re-seated to the robot's
+current yaw every tick, so releasing does not snap the robot back toward the
+camera.
+
+The wiring is right — the issued command is exactly `[0, 0, ±1.0]` — but the
+achieved turn is far below it. flat_0, 3 s, measured:
+
+| rope | command | achieved | note |
+|---|---|---|---|
+| off | +1.0 (A) | **+9.4 °/s** | correct direction |
+| off | −1.0 (D) | −1.9 °/s | correct direction, weak |
+| on | +1.0 (A) | +1.7 °/s | tether dominates |
+| on | +1.0 (A) + W | **−7.9 °/s** | **wrong direction** |
+
+Commanded +1.0 rad/s is 57.3 °/s, so the policy delivers roughly a sixth of it
+at best, asymmetrically. Two causes, both his and both documented upstream:
+the mels policy only initiates a gait above ~0.4 command and a yaw-only command
+leaves it shuffling in place; and his `HeadingController` docstring already
+warns that the rope point-attaches the palm to a fixed line, so a heading
+change drags the robot around its own hand. **Flagged, not fixed** — it is a
+policy/tether limitation, not a wiring bug, and per the standing rule the fix
+is not mine to choose. Yaw also oscillates ±2° per gait step, so "monotonic"
+is ~0.5 at tick level even when the trend is clean.
+
 ## Pemba robot variant — the real demo robot on the rope
 
 The four `*_pemba` worlds fly the robot the team actually built

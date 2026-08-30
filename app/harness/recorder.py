@@ -29,6 +29,11 @@ HUD_FIELD_NAMES = [
     "wind_force_world_newtons", "root_position_world", "fell",
     "rope_travel_meters", "climb_meters", "height_gained_meters",
     "rope_force_newtons", "hand_height_on_line_meters",
+    # The INSTANTANEOUS wind, which differs from the dial once natural wind is
+    # on -- a replay that only stored the dial could not reproduce the gust
+    # that knocked the robot over.
+    "wind_speed_mps", "wind_heading_degrees", "wind_gain", "wind_gust",
+    "wind_natural",
 ]
 
 
