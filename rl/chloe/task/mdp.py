@@ -234,3 +234,93 @@ def rope_tension_rate(env: ManagerBasedRlEnv) -> torch.Tensor:
     prev = t.clone()
   env._prev_tension = t.clone()  # type: ignore[attr-defined]
   return torch.abs(t - prev)
+
+
+# ----------------------------------------------------------------------------
+# Per-env slope (0-40 deg) inside one run
+# ----------------------------------------------------------------------------
+# Global gravity is tilted for NOMINAL_SLOPE_DEG. Each env gets a constant extra
+# force on every body, m_i * (g_slope - g_nominal), which is exactly its own
+# tilted gravity. The reset pose comes from a table solved per slope, and the
+# "IMU" observation / upright reward use the effective gravity.
+
+_G = 9.81
+
+
+def _g_dir(slope_deg: torch.Tensor) -> torch.Tensor:
+  s = torch.deg2rad(slope_deg)
+  return torch.stack((-torch.sin(s), torch.zeros_like(s), -torch.cos(s)), dim=-1)
+
+
+def reset_slope_wind(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | None,
+  slope_range: tuple[float, float],
+  speed_range: tuple[float, float],
+) -> None:
+  """Sample slope + wind per env; write spawn pose and the constant per-body forces."""
+  import numpy as np
+
+  asset: Entity = env.scene["robot"]
+  if env_ids is None:
+    env_ids = torch.arange(env.num_envs, device=env.device)
+  n = len(env_ids)
+  table = R.spawn_table()
+  keys = np.array(sorted(table))
+  slopes = torch.empty(n, device=env.device).uniform_(*slope_range)
+  # snap the spawn pose to the nearest table entry (physics uses the exact slope)
+  snapped = keys[np.abs(keys[None, :] - slopes.cpu().numpy()[:, None]).argmin(1)]
+  env.slope_deg[env_ids] = slopes  # type: ignore[attr-defined]
+
+  # --- spawn pose per env ---
+  root = torch.zeros(n, 13, device=env.device)
+  jpos = asset.data.default_joint_pos[env_ids].clone()
+  names = asset.joint_names
+  slide_i = names.index(R.SLIDE_JOINT)
+  cx20 = table[R.NOMINAL_SLOPE_DEG][3]
+  import re
+  for k, sd in enumerate(snapped):
+    pos, rot, jp, cx = table[float(sd)]
+    root[k, :3] = torch.tensor(pos, dtype=torch.float32)
+    root[k, 3:7] = torch.tensor(rot, dtype=torch.float32)
+    for j, nm in enumerate(names):
+      for pat, val in jp.items():
+        if re.fullmatch(pat, nm):
+          jpos[k, j] = val
+    jpos[k, slide_i] = cx - cx20  # carriage sits where this pose puts the channel
+  asset.write_root_state_to_sim(root, env_ids=env_ids)
+  asset.write_joint_state_to_sim(jpos, torch.zeros_like(jpos), env_ids=env_ids)
+
+  # --- constant forces: gravity correction on every body (+ wind on the torso) ---
+  m = env.sim.mj_model
+  body_ids = list(range(len(asset.body_names)))
+  masses = torch.tensor([float(m.body(f"robot/{b}").mass[0]) for b in asset.body_names], device=env.device, dtype=torch.float32)
+  dg = _g_dir(slopes) - _g_dir(torch.full_like(slopes, R.NOMINAL_SLOPE_DEG))  # [n,3]
+  forces = (_G * masses[None, :, None] * dg[:, None, :]).float()  # [n, nbody, 3]
+  speed = torch.empty(n, device=env.device).uniform_(*speed_range)
+  heading = torch.empty(n, device=env.device).uniform_(-math.pi, math.pi)
+  mag = 0.5 * AIR_DENSITY * DRAG_COEF * TORSO_AREA * speed**2
+  ti = asset.body_names.index(R.TORSO_BODY)
+  forces[:, ti, 0] += mag * torch.cos(heading)
+  forces[:, ti, 1] += mag * torch.sin(heading)
+  asset.write_external_wrench_to_sim(forces, torch.zeros_like(forces), env_ids=env_ids, body_ids=body_ids)
+
+
+def projected_gravity_eff(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """What the IMU would read: the env's own gravity direction in the pelvis frame."""
+  asset: Entity = env.scene[ROBOT.name]
+  return quat_apply_inverse(asset.data.root_link_quat_w, _g_dir(env.slope_deg))  # type: ignore[attr-defined]
+
+
+def upright_eff(env: ManagerBasedRlEnv, std: float, asset_cfg: SceneEntityCfg = TORSO) -> torch.Tensor:
+  """Torso upright w.r.t. the env's own gravity."""
+  asset: Entity = env.scene[asset_cfg.name]
+  q = asset.data.body_link_quat_w[:, asset_cfg.body_ids, :].reshape(env.num_envs, 4)
+  g_b = quat_apply_inverse(q, _g_dir(env.slope_deg))  # type: ignore[attr-defined]
+  return torch.exp(-torch.sum(torch.square(g_b[:, :2]), dim=1) / std**2)
+
+
+def bad_orientation_eff(env: ManagerBasedRlEnv, limit_angle: float) -> torch.Tensor:
+  asset: Entity = env.scene[ROBOT.name]
+  g_b = quat_apply_inverse(asset.data.root_link_quat_w, _g_dir(env.slope_deg))  # type: ignore[attr-defined]
+  return torch.acos(torch.clamp(-g_b[:, 2], -1.0, 1.0)) > limit_angle

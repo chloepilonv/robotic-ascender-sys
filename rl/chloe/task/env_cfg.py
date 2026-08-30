@@ -73,6 +73,7 @@ class RatchetEnv(ManagerBasedRlEnv):
 
   def __init__(self, cfg, device: str, **kwargs):
     self.climb_mode = torch.zeros(cfg.scene.num_envs, device=device)  # obs term reads it during init
+    self.slope_deg = torch.full((cfg.scene.num_envs,), R.NOMINAL_SLOPE_DEG, device=device)
     super().__init__(cfg, device=device, **kwargs)
     n, a = self.num_envs, self.action_manager.total_action_dim
     self._act_hist = torch.zeros(self.MAX_ACTION_DELAY + 1, n, a, device=self.device)
@@ -85,6 +86,7 @@ class RatchetEnv(ManagerBasedRlEnv):
     self.climb_mode = torch.zeros(self.num_envs, device=self.device)
     self._slide_at_switch = torch.zeros(self.num_envs, device=self.device)
     self._phase_t = torch.zeros(self.num_envs, device=self.device)
+    self.slope_deg = torch.full((self.num_envs,), R.NOMINAL_SLOPE_DEG, device=self.device)
     self._slide_qadr = int(model.jnt_qposadr[jid])
     self._slide_dadr = int(model.jnt_dofadr[jid])
     self._sim_step = self.sim.step
@@ -129,7 +131,7 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
       func=base_mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2)
     ),
     "projected_gravity": ObservationTermCfg(
-      func=base_mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05)
+      func=mdp.projected_gravity_eff, noise=Unoise(n_min=-0.05, n_max=0.05)
     ),
     "joint_pos": ObservationTermCfg(
       func=base_mdp.joint_pos_rel,
@@ -171,33 +173,13 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
   }
 
   events = {
-    "reset_base": EventTermCfg(
-      func=base_mdp.reset_root_state_uniform,
+    # Per-env slope 0-40 deg (+ wind): spawn pose from the per-slope table and
+    # constant per-body forces = the env's own tilted gravity. Replaces the
+    # root/joint/slide resets (they are written here) and the wind event.
+    "reset_slope_wind": EventTermCfg(
+      func=mdp.reset_slope_wind,
       mode="reset",
-      params={
-        # No pose jitter: the carriage resets to the rope start = the ascender
-        # channel of the nominal reset pose, so the weld starts satisfied.
-        "pose_range": {},
-        "velocity_range": {},
-      },
-    ),
-    "reset_joints": EventTermCfg(
-      func=base_mdp.reset_joints_by_offset,
-      mode="reset",
-      params={
-        "position_range": (-0.05, 0.05),
-        "velocity_range": (0.0, 0.0),
-        "asset_cfg": NOISY_JOINTS,
-      },
-    ),
-    "reset_slide": EventTermCfg(
-      func=base_mdp.reset_joints_by_offset,
-      mode="reset",
-      params={
-        "position_range": (0.0, 0.0),
-        "velocity_range": (0.0, 0.0),
-        "asset_cfg": SLIDE_JOINT_CFG,
-      },
+      params={"slope_range": (0.0, 40.0), "speed_range": (0.0, 15.0)},
     ),
     # Ground friction, fixed per env for the run.
     "ice_friction": EventTermCfg(
@@ -236,12 +218,6 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
         "ranges": {0: (-0.03, 0.03), 1: (-0.03, 0.03), 2: (-0.03, 0.03)},
       },
     ),
-    # Wind: steady, random horizontal direction, resampled each episode.
-    "wind": EventTermCfg(
-      func=mdp.wind_on_torso,
-      mode="reset",
-      params={"speed_range": (0.0, 15.0), "asset_cfg": mdp.TORSO},  # v0; storms (30) later
-    ),
   }
 
   rewards = {
@@ -266,7 +242,7 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
       func=mdp.stillness, weight=-0.02, params={"asset_cfg": G1_JOINTS}
     ),
     "upright": RewardTermCfg(
-      func=vel_mdp.upright,
+      func=mdp.upright_eff,
       weight=1.0,
       params={"std": math.sqrt(0.2), "asset_cfg": mdp.TORSO},
     ),
@@ -289,7 +265,7 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
   terminations = {
     "time_out": TerminationTermCfg(func=base_mdp.time_out, time_out=True),
     "fell_over": TerminationTermCfg(
-      func=base_mdp.bad_orientation, params={"limit_angle": math.radians(60.0)}
+      func=mdp.bad_orientation_eff, params={"limit_angle": math.radians(60.0)}
     ),
     "facing_downhill": TerminationTermCfg(func=mdp.facing_downhill),
     "base_low": TerminationTermCfg(
@@ -300,7 +276,7 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
   cfg = ManagerBasedRlEnvCfg(
     scene=SceneCfg(
       terrain=TerrainEntityCfg(terrain_type="plane"),
-      entities={"robot": R.get_robot_cfg(slope_deg)},
+      entities={"robot": R.get_robot_cfg(R.NOMINAL_SLOPE_DEG)},
       num_envs=16 if play else 4096,
       env_spacing=0.0,  # envs share the same rope line; MuJoCo worlds don't collide.
     ),
@@ -327,7 +303,7 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
         timestep=0.005,
         iterations=10,
         ls_iterations=20,
-        gravity=R.gravity_for_slope(slope_deg),
+        gravity=R.gravity_for_slope(R.NOMINAL_SLOPE_DEG),  # per-env slope = extra body forces
       ),
     ),
     decimation=4,  # 50 Hz policy, the G1 deployment rate.
