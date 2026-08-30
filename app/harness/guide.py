@@ -311,8 +311,8 @@ GUIDE_MINIMUM_VALUE = 40
 GUIDE_MINIMUM_PIXELS = 24            # below this it is noise, not a person
 
 # ------------------------------------------------------------ the decision
-FOLLOW_RANGE_METERS = 1.3            # start following beyond this
-WAIT_RANGE_METERS = 1.0              # stop within this
+FOLLOW_RANGE_METERS = 1.8            # start following beyond this
+WAIT_RANGE_METERS = 1.5              # stop within this (user ruling 2026-08-30: follow if > 1.5 m)
 LOST_AFTER_SECONDS = 1.0
 FOLLOW_SPEED_METERS_PER_SECOND = 0.5
 BEARING_GAIN_PER_RADIAN = 2.0
@@ -1652,11 +1652,11 @@ class GuideFollower:
     THE THREE FOLLOWING BANDS overlap on purpose. A single 1.0 m threshold makes
     the robot chatter between walking and standing at exactly the distance it is
     trying to hold, because each decision changes the very number the next
-    decision reads. So the switch out of WAIT is at 1.3 m and the switch into it
-    at 1.0 m, and the 30 cm in between belongs to whichever state is running:
+    decision reads. So the switch out of WAIT is at 1.8 m and the switch into it
+    at 1.5 m, and the 30 cm in between belongs to whichever state is running:
 
-        FOLLOW   range > 1.3 m, or > 1.0 m while already following
-        WAIT     range <= 1.0 m, or <= 1.3 m while already waiting
+        FOLLOW   range > 1.8 m, or > 1.5 m while already following
+        WAIT     range <= 1.5 m, or <= 1.8 m while already waiting
         LOST     nothing detected for a whole second
 
     LOST MEANS STAND STILL AND LISTEN (user's ruling, 2026-08-30). There used to
