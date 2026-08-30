@@ -22,8 +22,8 @@ import cadquery as cq
 import trimesh
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-WRIST_STL = os.path.join(HERE, "..", "robots", "g1", "_menagerie", "unitree_g1", "assets", "right_wrist_yaw_link.STL")
-ROBOT_USD = os.path.join(HERE, "..", "robots", "g1_unitree_ascender.usd")
+WRIST_STL = os.path.join(HERE, "..", "..", "robots", "g1", "_menagerie", "unitree_g1", "assets", "right_wrist_yaw_link.STL")
+ROBOT_USD = os.path.join(HERE, "..", "..", "robots", "g1_unitree_ascender.usd")
 
 # ---- measured wrist (mm) ----
 WALL_X0, WALL_X1 = 39.5, 41.5
@@ -35,11 +35,12 @@ PLUG_D, PLUG_L = HOLE_D - 0.35, 25.0         # TODO: add the internal retention 
 PLATE_T, RIM = 6.0, 5.0
 COLLAR_T, SPLIT_GAP, M3_CLEAR = 4.0, 1.0, 3.4
 # ---- ascender interface (Petzl frame at its attachment hole; tune from the real part) ----
-FRAME_T, PIN_D = 4.5, 12.0                  # scan: plate 4.1 mm at the eye; Ø12 shoulder bolt + Ø18/12 sleeve in the Ø18 eye
-HOLE_TOOL = np.array([-9.0, 0.0, 19.4])     # attachment eye centre in the tool frame (mm), Ø18 — measured on the scan
+FRAME_T, PIN_D = 6.2, 12.0                  # scan: plate 4.1 mm at the eye; Ø12 shoulder bolt + Ø18/12 sleeve in the Ø18 eye
+HOLE_TOOL = np.array([-9.0, 4.9, 19.4])     # attachment eye centre in the tool frame (mm), Ø18 — measured on the scan
 CHEEK_T, CHEEK_W, BAR_T = 6.0, 26.0, 8.0
 ARM_W = 12.0
-TOOL_SHIFT_X = PLATE_T + 2.0                 # push the tool out so it clears the face plate
+ARM_Y = 1.2                   # arm centred on the outer cheek; the Petzl plate occupies wrist y -7..-2
+TOOL_SHIFT_X = PLATE_T + 6.5                 # push the tool out so it clears the face plate
 
 
 def shell_outline(x_mm=34.0):
@@ -105,13 +106,13 @@ def build():
         cheek = (cq.Workplane("XY").box(CHEEK_W, CHEEK_T, CHEEK_W, centered=(True, True, False))
                  .translate((0, side * (FRAME_T + CHEEK_T) / 2, 0)))
         cradle = cradle.union(cheek)
-    cradle = cradle.cut(cq.Workplane("XZ").center(HOLE_TOOL[0], HOLE_TOOL[2]).circle(PIN_D / 2 + 0.1).extrude(50, both=True))
+    cradle = cradle.cut(cq.Workplane("XZ").center(0, HOLE_TOOL[2]).circle(PIN_D / 2 + 0.1).extrude(50, both=True))   # centred on the eye
     p, R, q = tool_pose()
-    cradle_w = placed(cradle, R, p + R @ (HOLE_TOOL - [0, 0, HOLE_TOOL[2]]))   # cradle origin = frame bottom under the hole
+    cradle_w = placed(cradle, R, p + R @ (HOLE_TOOL - [0, 0, HOLE_TOOL[2]]))   # cradle origin under the eye, on the plate mid-plane   # cradle origin = frame bottom under the hole
     # arm: from the bottom of the face plate to the cradle bar, along the straight line between them
-    a = np.array([WALL_X1 + PLATE_T / 2, HOLE_C[0], min(z for _, z in outer) + RIM / 2])
-    b = p + R @ np.array([0, 0, -BAR_T / 2]); d = b - a; L = np.linalg.norm(d)
-    arm = cq.Workplane("XY").box(ARM_W, ARM_W, L + ARM_W, centered=(True, True, False)).translate((0, 0, -ARM_W / 2))
+    a = np.array([WALL_X1 + PLATE_T / 2, ARM_Y, min(z for _, z in outer) + RIM / 2])   # beside the Petzl plate
+    b = p + R @ np.array([HOLE_TOOL[0], HOLE_TOOL[1] - (FRAME_T + CHEEK_T) / 2, CHEEK_W / 2]); d = b - a; L = np.linalg.norm(d)   # to the outer cheek
+    arm = cq.Workplane("XY").box(ARM_W, CHEEK_T, L + ARM_W, centered=(True, True, False)).translate((0, 0, -ARM_W / 2))
     ez = d / L; ex = np.cross([0, 1, 0], ez); ex /= np.linalg.norm(ex); ey = np.cross(ez, ex)
     arm_w = placed(arm, np.c_[ex, ey, ez], a)
     body = body.union(arm_w).union(cradle_w)

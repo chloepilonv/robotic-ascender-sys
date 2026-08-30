@@ -13,7 +13,7 @@
 //   COLLAR    D-sleeve over the shell, split top/bottom, 4x M3 along Z (same axis as Unitree's stock clamp
 //             screws); anti-rotation only — the shell is plastic
 //   CRADLE    U-bracket on the Petzl's Ø18 attachment eye: 2 cheeks + Ø12 shoulder bolt with Ø18/12 sleeve
-// Render:  OPENSCADPATH="~/Library/Application Support/OpenSCAD/libraries" openscad -o adapter.stl adapter.scad
+// Render (from this folder):  OPENSCADPATH="~/Library/Application Support/OpenSCAD/libraries" openscad -o adapter.stl adapter.scad
 //          OPENSCADPATH="~/Library/Application Support/OpenSCAD/libraries" openscad -o /dev/null --export-format=echo adapter.scad   (design checks only)
 
 include <BOSL2/std.scad>
@@ -41,17 +41,18 @@ m3_clear     = 3.4;
 process      = "FDM";     // "FDM" (PA12-CF / PETG-CF) or "CNC" (6061-T6)
 
 // ── Parameters: Petzl interface (measured on the scan) ───────────────────────────────────────
-frame_t      = 4.5;       // plate thickness at the eye (4.1 measured + clearance)
+frame_t      = 6.2;       // plate at the eye spans tool y +2.0..+7.8 (5.8 mm, measured on the scan) + clearance
 eye_d        = 18;        // attachment eye
 pin_d        = 12;        // shoulder bolt; sleeve Ø18/12 fills the eye
 cheek_t      = 6;
 cheek_w      = 26;
 bar_t        = 8;
+arm_y        = 1.2;       // arm centred on the outer cheek (wrist y +1.2); the Petzl plate occupies wrist y −7..−2
 // tool pose in the wrist frame (from g1_unitree_ascender.usd, +8 mm X so the tool clears the flange)
-tool_pos     = [46.61, 0, -51.43];
+tool_pos     = [51.11, 0, -51.43];   // USD pose + 12.5 mm X: tool clears the 6 mm flange by 1 mm
 tool_axis    = [0.22453, 0, 0.97447];   // USD quat (w≈0, xyz=tool_axis) = 180° about this axis
 tool_ang     = 180;
-eye_tool     = [-9, 0, 19.4];   // eye centre in the tool frame
+eye_tool     = [-9, 4.9, 19.4];   // eye centre in the tool frame (plate mid-plane at y = +4.9)
 
 // ── Derived ──────────────────────────────────────────────────────────────────────────────────
 function offset_poly(p, d) = let(c = [mean([for (q = p) q[0]]), mean([for (q = p) q[1]])])
@@ -85,21 +86,21 @@ module cradle() {   // in the tool frame, origin at the frame's bottom edge unde
             translate([0, 0, -bar_t / 2]) cuboid([cheek_w, frame_t + 2 * cheek_t, bar_t]);
             for (s = [-1, 1]) translate([0, s * (frame_t + cheek_t) / 2, cheek_w / 2]) cuboid([cheek_w, cheek_t, cheek_w]);
         }
-        translate([eye_tool[0], 0, eye_tool[2]]) rotate([90, 0, 0]) cyl(d = pin_d + 0.2, l = 60);
+        translate([0, 0, eye_tool[2]]) rotate([90, 0, 0]) cyl(d = pin_d + 0.2, l = 60);   // cradle is centred on the eye
     }
 }
-module arm() {   // from the bottom of the flange to the cradle bar
-    a = [wall_x1 + flange_t / 2, hole_c[0], z_lo + rim / 2];
-    b = tool_pos + rot(a = tool_ang, v = tool_axis, p = [eye_tool[0], 0, -bar_t / 2]);
+module arm() {   // from the bottom of the flange to the OUTER cheek (beside the Petzl plate, never through it)
+    a = [wall_x1 + flange_t / 2, arm_y, z_lo + rim / 2];
+    b = tool_pos + rot(a = tool_ang, v = tool_axis, p = [eye_tool[0], eye_tool[1] - (frame_t + cheek_t) / 2, cheek_w / 2]);
     d = b - a;  L = norm(d);
-    translate(a) rot(from = [0, 0, 1], to = d) translate([0, 0, -6]) cuboid([12, 12, L + 12], anchor = BOTTOM, rounding = 2, edges = "Z");
+    translate(a) rot(from = [0, 0, 1], to = d) translate([0, 0, -6]) cuboid([12, cheek_t, L + 12], anchor = BOTTOM, rounding = 2, edges = "Z");
 }
 
 module adapter() {
     difference() {
         union() {
             plug(); flange(); collar(); arm();
-            translate(tool_pos) rotate(a = tool_ang, v = tool_axis) translate([eye_tool[0], 0, 0]) cradle();
+            translate(tool_pos) rotate(a = tool_ang, v = tool_axis) translate([eye_tool[0], eye_tool[1], 0]) cradle();
         }
         clamp_bolts();
         split();
