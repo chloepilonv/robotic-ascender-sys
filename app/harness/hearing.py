@@ -137,16 +137,29 @@ AIR_ABSORPTION_RANGE_SCALE_METERS = 40.0
 # same physics arriving at the same exponent.
 #
 # THE ANCHOR, and it is the one number in this file that is a judgement call: a
-# 20 m/s gale on an UNWINDSHIELDED microphone sits about 10 dB below a shout at
-# one metre. That fixes `WIND_NOISE_AT_REFERENCE` at 10^(-10/20) = 0.316 of
-# `VOICE_AMPLITUDE_AT_ONE_METER`. A foam windshield would be worth 15-20 dB and
-# this robot is not wearing one.
+# 20 m/s gale on an UNWINDSHIELDED microphone sits about 10 dB below a VOICE AT
+# ONE METRE. A foam windshield would be worth another 15-20 dB and this robot is
+# not wearing one.
 #
-#     0 m/s -> 0.0005      6 m/s -> 0.029      12 m/s -> 0.115     20 m/s -> 0.316
+# BOTH SIDES OF THAT COMPARISON ARE RMS, and getting that wrong is how this file
+# was first written: the anchor was applied to the corpus's PEAK level instead
+# of its rms, which is 15.6 dB higher, and the whole grid collapsed -- a 6 m/s
+# breeze wiped out a shout at two metres and every table below 0 m/s read 0.0%.
+# So the voice's reference level is stated explicitly and MEASURED:
+# `VOICE_REFERENCE_RMS_AT_ONE_METER` is the median rms of a `say` utterance at
+# unity gain, and `test_hearing` prints the corpus's own measured median beside
+# it so a drift shows up rather than hiding.
 #
-# The floor is the electronics, not the weather: a real preamp is never silent.
+#     WIND_NOISE_AT_REFERENCE = VOICE_REFERENCE_RMS_AT_ONE_METER * 10^(-10/20)
+#
+#     0 m/s -> 0.0005     6 m/s -> 0.0038     12 m/s -> 0.0136    20 m/s -> 0.0369
+#
+# Equivalently: the gale equals the voice at 3.2 m, and would equal it at 1 m in
+# a 63 m/s hurricane. The floor is the electronics, not the weather: a real
+# preamp is never silent.
 WIND_NOISE_FLOOR = 0.0005
-WIND_NOISE_AT_REFERENCE = 0.316
+VOICE_REFERENCE_RMS_AT_ONE_METER = 0.115
+WIND_NOISE_AT_REFERENCE = VOICE_REFERENCE_RMS_AT_ONE_METER * 10.0 ** (-10.0 / 20.0)
 WIND_NOISE_REFERENCE_MPS = 20.0
 # THE CHARACTER, ported from the page's own wind synthesis (`render3d.html`,
 # `makePinkNoiseBuffer` + the 300 Hz bandpass and 700 Hz low-pass): pink noise,
@@ -167,8 +180,17 @@ WIND_NOISE_GUST_DEPTH = 0.45      # +/- share of the mean level
 DETECTOR_EVERY_N_TICKS = 5        # 10 Hz against the 50 Hz control tick
 VOICE_ACTIVITY_AGGRESSIVENESS = 2  # webrtcvad 0 (permissive) .. 3 (strict)
 VOICE_ACTIVITY_FRAME_MILLISECONDS = 30    # webrtcvad accepts 10, 20 or 30
-VOICE_ACTIVITY_WINDOW_SECONDS = 0.48      # 16 frames -> the reported share
-VOICE_PRESENT_SHARE = 0.35        # above this share, "a human voice is present"
+VOICE_ACTIVITY_WINDOW_SECONDS = 0.48      # 16 frames -> the REPORTED share
+# WHICH SHARE OPENS AND CLOSES A SEGMENT, and it is deliberately NOT the
+# rolling window's. The window is a display number: it lags speech by up to
+# 480 ms in both directions, so a segment machine driven by it stays "voiced"
+# for half a second after the speaker has stopped, and the utterance takes
+# 0.7 s to close instead of 0.2. MEASURED: with the window driving it, a 0.5 s
+# tail of silence was not enough to close a single segment in the whole corpus
+# and every table came back empty. The segment machine therefore reads the
+# share of the frames consumed by THIS detector tick -- three 30 ms frames, so
+# one voiced frame out of three opens an utterance and none closes it.
+VOICE_PRESENT_SHARE = 0.30
 # A SEGMENT is one utterance: it opens when the VAD says voice and closes a
 # short silence later. Both the word decision and the bearing are made ONCE per
 # segment, on the whole utterance, which is why they are as good as they are --
@@ -184,6 +206,14 @@ BEARING_INTERPOLATION_FACTOR = 8  # sub-sample resolution: 1/8 of 62.5 us
 # How far below the strongest spectral bin the phase transform stops whitening.
 # See `Bearing._pair` for the measurement that set it.
 PHASE_TRANSFORM_FLOOR = 0.02
+# How far past the physically possible lag range the peak's SHARPNESS is
+# measured against. See `Bearing._pair` for the measurement that set it.
+BEARING_FLOOR_SPAN_MULTIPLIER = 12
+# Peak sharpness -> a [0, 1] confidence. A correlation peak no taller than
+# `_FLOOR` times the background is not a direction; `_SPAN` above that is a
+# clean one. Both read off the measured sharpnesses in `test_hearing` table 3b.
+BEARING_SHARPNESS_FLOOR = 2.0
+BEARING_SHARPNESS_SPAN = 8.0
 # The vosk grammar. Exactly one word plus the escape hatch, which is what makes
 # a 40 MB model usable at all: with the grammar the decoder can only ever emit
 # `stop` or `[unk]`, so a shout of "come here" cannot be scored as a partial
@@ -205,7 +235,24 @@ HEARD_CODES = {"none": 0.0, "voice": 1.0, "stop": 2.0}
 # hand-over from ears to eyes is not also a change of pace.
 EAR_WALK_SPEED_METERS_PER_SECOND = 0.5
 EAR_BEARING_GAIN_PER_RADIAN = 2.0
-EAR_MAXIMUM_YAW_RATE_RADIANS_PER_SECOND = 1.0
+# CAPPED AT HALF THE POLICY'S TRAINING RANGE, and the cap is measured. The
+# walking policy's `ang_vel_yaw` was trained over [-1, 1], but this jacketed
+# robot does not survive the top of it: MEASURED on `sandbox_free`, 10 s of
+# `lin_vel_x` 0.5 with `ang_vel_yaw` +1.0 rad/s ends upright, while +0.2, +0.35
+# and +0.5 all TIP THE ROBOT OVER inside four seconds, and none of the six
+# rates produces a turn that tracks what was asked (see `test_hearing` table
+# 4a). The cap is the largest rate that is not obviously worse than zero. What
+# actually aims the cameras is the WAIST, below.
+EAR_MAXIMUM_YAW_RATE_RADIANS_PER_SECOND = 0.5
+# THE WAIST IS THE EAR LAYER'S REAL AIMING ACTUATOR, for exactly the reason
+# `guide.WaistYaw` exists: the G1 has no neck and this policy has no usable
+# yaw. While the ear cue is fresher than this, `COMING_BY_EARS` points the
+# waist -- and therefore the stereo pair -- at the direction the shout came
+# from, which is the whole job of the ear cue: get her into the picture so
+# vision can take over. Once the cue is older than this the waist is handed
+# back to the follower's own SEARCH sweep, because a stale bearing is a worse
+# place to look than everywhere.
+EAR_WAIST_AIM_SECONDS = 3.0
 EAR_BEARING_DEADBAND_RADIANS = math.radians(4.0)
 # TURN FIRST, THEN WALK. Beyond this the robot pivots on the spot: walking while
 # turning 120 degrees traces a long arc away from the person, and the whole
@@ -217,7 +264,23 @@ EAR_BEARING_MINIMUM_CONFIDENCE = 0.25
 # How long an ear cue stays worth steering by with no new voice. She is not
 # moving much, and re-shouting every second is not how people talk.
 EAR_CUE_VALID_SECONDS = 20.0
+# How far back the yaw history reaches. An utterance plus its measurement
+# window is under two seconds; three is headroom.
+YAW_HISTORY_SECONDS = 3.0
 NO_MEASUREMENT = -1.0             # hud.json cannot carry NaN; see guide.py
+
+
+_LFILTER = None
+
+
+def _lfilter():
+    """`scipy.signal.lfilter`, looked up once. Imported lazily so that importing
+    this module on a machine with no scipy still lets `--help` run."""
+    global _LFILTER
+    if _LFILTER is None:
+        from scipy.signal import lfilter
+        _LFILTER = lfilter
+    return _LFILTER
 
 
 def wind_noise_amplitude(wind_speed_meters_per_second: float) -> float:
@@ -232,14 +295,22 @@ def wind_noise_amplitude(wind_speed_meters_per_second: float) -> float:
 
 def describe_wind_law() -> str:
     """One line, printed by every entry point that hears anything."""
-    points = ", ".join(f"{speed:.0f} m/s -> {wind_noise_amplitude(speed):.4f}"
-                       for speed in (0, 6, 12, 20))
-    return (f"[hearing] wind noise = {WIND_NOISE_FLOOR}"
-            f" + {WIND_NOISE_AT_REFERENCE} * (speed /"
-            f" {WIND_NOISE_REFERENCE_MPS:.0f})^2  (quadratic: turbulent"
-            f" pressure goes as the dynamic head; anchored at a 20 m/s gale"
-            f" 10 dB under a shout at 1 m):  {points}"
-            f"  -- independent draw per microphone")
+    points = ", ".join(
+        f"{speed:.0f} m/s -> {wind_noise_amplitude(speed):.4f} rms"
+        f" ({decibels(wind_noise_amplitude(speed) / VOICE_REFERENCE_RMS_AT_ONE_METER):+.0f} dB"
+        f" vs a voice at 1 m)" for speed in (0, 6, 12, 20))
+    return (f"[hearing] wind noise (rms) = {WIND_NOISE_FLOOR}"
+            f" + {WIND_NOISE_AT_REFERENCE:.4f} * (speed /"
+            f" {WIND_NOISE_REFERENCE_MPS:.0f})^2  -- quadratic, because"
+            f" turbulent pressure goes as the dynamic head; anchored at a"
+            f" 20 m/s gale 10 dB under a voice at 1 m, whose rms is taken as"
+            f" {VOICE_REFERENCE_RMS_AT_ONE_METER}. {points}."
+            f"  Drawn INDEPENDENTLY per microphone.")
+
+
+def _wrap_to_pi(angle_radians: float) -> float:
+    """Fold an angle into (-pi, pi]. The same helper `runtime.py` carries."""
+    return float((float(angle_radians) + math.pi) % (2.0 * math.pi) - math.pi)
 
 
 def decibels(amplitude) -> float:
@@ -457,9 +528,8 @@ class EarArray:
         # `lfilter` rather than a Python loop: 320 samples x 4 mics x 50 Hz is
         # 64000 samples a second and a loop would be the most expensive thing
         # in the tick.
-        from scipy.signal import lfilter
-        filtered, state = lfilter([alpha], [1.0, -(1.0 - alpha)], signal,
-                                  zi=[self.low_pass_state[index]])
+        filtered, state = _lfilter()([alpha], [1.0, -(1.0 - alpha)], signal,
+                                     zi=[self.low_pass_state[index]])
         self.low_pass_state[index] = float(state[0])
         return filtered.astype(np.float32)
 
@@ -510,32 +580,33 @@ class WindNoise:
         return (rolled / rms * amplitude).astype(np.float32)
 
     def _pink(self, white):
-        """Paul Kellet's three-row pink filter -- the page's own coefficients."""
-        output = np.empty_like(white)
-        row0, row1, row2 = (self.pink_rows[:, 0], self.pink_rows[:, 1],
-                            self.pink_rows[:, 2])
-        for index in range(white.shape[1]):
-            sample = white[:, index]
-            row0 = 0.99765 * row0 + sample * 0.0990460
-            row1 = 0.96300 * row1 + sample * 0.2965164
-            row2 = 0.57000 * row2 + sample * 1.0526913
-            output[:, index] = (row0 + row1 + row2 + sample * 0.1848) * 0.22
-        self.pink_rows[:, 0], self.pink_rows[:, 1], self.pink_rows[:, 2] = (
-            row0, row1, row2)
-        return output
+        """Paul Kellet's three-row pink filter -- the page's own coefficients.
+
+        Written as THREE ONE-POLE FILTERS rather than the page's per-sample
+        loop, because they are exactly that and `lfilter` runs them in C. The
+        page can afford a JavaScript loop: it fills a three-second buffer once
+        and then loops the buffer forever. This runs inside a 20 ms control
+        tick, 50 times a second, four channels at a time.
+        """
+        rows = ((0.99765, 0.0990460), (0.96300, 0.2965164),
+                (0.57000, 1.0526913))
+        output = white * 0.1848
+        for index, (pole, gain) in enumerate(rows):
+            filtered, state = _lfilter()(
+                [gain], [1.0, -pole], white, axis=-1,
+                zi=self.pink_rows[:, index:index + 1])
+            self.pink_rows[:, index] = state[:, 0]
+            output = output + filtered
+        return output * 0.22
 
     def _roll_off(self, signal):
-        from scipy.signal import lfilter
         alpha = 1.0 - math.exp(-2.0 * math.pi * WIND_NOISE_LOW_PASS_HZ
                                / SAMPLE_RATE_HZ)
-        output = np.empty_like(signal)
-        for index in range(signal.shape[0]):
-            filtered, state = lfilter([alpha], [1.0, -(1.0 - alpha)],
-                                      signal[index],
-                                      zi=[self.low_pass_state[index]])
-            output[index] = filtered
-            self.low_pass_state[index] = float(state[0])
-        return output
+        filtered, state = _lfilter()(
+            [alpha], [1.0, -(1.0 - alpha)], signal, axis=-1,
+            zi=self.low_pass_state[:, None])
+        self.low_pass_state[:] = state[:, 0]
+        return filtered
 
 
 # ---------------------------------------------------------------- detector a
@@ -557,6 +628,10 @@ class VoiceActivity:
                                         * 1000 / VOICE_ACTIVITY_FRAME_MILLISECONDS))
         self.pending = np.zeros(0, dtype=np.float32)
         self.recent = []
+        # The share of the frames consumed by the most recent `feed` -- what the
+        # segment machine reads. `probability` is the rolling window, which is
+        # what the HUD reads.
+        self.latest_share = 0.0
         self.available = False
         self.detector = None
         self.milliseconds = 0.0
@@ -572,14 +647,21 @@ class VoiceActivity:
     def reset(self) -> None:
         self.pending = np.zeros(0, dtype=np.float32)
         self.recent = []
+        self.latest_share = 0.0
 
-    def feed(self, channel) -> None:
-        """Append audio and consume whole 30 ms frames. Cheap; call at 10 Hz."""
+    def feed(self, channel) -> float:
+        """Append audio and consume whole 30 ms frames. -> this call's share.
+
+        Cheap; call at 10 Hz. One 100 ms detector tick is three whole 30 ms
+        frames with 10 ms carried to the next call, so the returned share takes
+        the values 0, 1/3, 2/3, 1.
+        """
         if not self.available:
-            return
+            return 0.0
         started = time.time()
         self.pending = np.concatenate((self.pending,
                                        np.asarray(channel, dtype=np.float32)))
+        verdicts = []
         while self.pending.size >= self.frame_samples:
             frame = self.pending[:self.frame_samples]
             self.pending = self.pending[self.frame_samples:]
@@ -588,20 +670,25 @@ class VoiceActivity:
                 voiced = bool(self.detector.is_speech(pcm, SAMPLE_RATE_HZ))
             except Exception:
                 voiced = False
+            verdicts.append(voiced)
             self.recent.append(voiced)
         if len(self.recent) > self.window_frames:
             self.recent = self.recent[-self.window_frames:]
+        self.latest_share = float(np.mean(verdicts)) if verdicts else 0.0
         self.milliseconds = (time.time() - started) * 1000.0
+        return self.latest_share
 
     @property
     def probability(self) -> float:
+        """The rolling 480 ms window -- the number the HUD's meter shows."""
         if not self.recent:
             return 0.0
         return float(np.mean(self.recent))
 
     @property
     def voice_present(self) -> bool:
-        return self.probability >= VOICE_PRESENT_SHARE
+        """THIS detector tick's verdict. See `VOICE_PRESENT_SHARE`."""
+        return self.latest_share >= VOICE_PRESENT_SHARE
 
 
 # ---------------------------------------------------------------- detector b
@@ -619,6 +706,11 @@ class StopWord:
     "voice", never "stop". Said out loud on stdout rather than silently.
     """
 
+    # ONE MODEL PER PROCESS. `test_hearing` builds thousands of these -- one per
+    # clip per grid cell -- and a 40 MB acoustic model loaded four thousand
+    # times is nine minutes of nothing.
+    _shared_model = None
+
     def __init__(self, verbose=True):
         self.available = False
         self.model = None
@@ -627,10 +719,12 @@ class StopWord:
             import vosk
             vosk.SetLogLevel(-1)
             started = time.time()
-            self.model = vosk.Model(lang="en-us")
+            if StopWord._shared_model is None:
+                StopWord._shared_model = vosk.Model(lang="en-us")
+            self.model = StopWord._shared_model
             self.available = True
             if verbose:
-                print(f"[hearing] vosk small en-us loaded in"
+                print(f"[hearing] vosk small en-us ready in"
                       f" {(time.time() - started) * 1000:.0f} ms, grammar"
                       f" {VOSK_GRAMMAR}", flush=True)
         except Exception as error:      # pragma: no cover - reporting only
@@ -731,7 +825,8 @@ class Bearing:
         # Both pairs have to agree that there is a peak; the weaker one is the
         # one that decides, because a bearing is only as good as its worse axis.
         sharpness = min(forward_sharpness, lateral_sharpness)
-        confidence = float(np.clip((sharpness - 1.0) / 3.0, 0.0, 1.0))
+        confidence = float(np.clip((sharpness - BEARING_SHARPNESS_FLOOR)
+                                   / BEARING_SHARPNESS_SPAN, 0.0, 1.0))
         return float(azimuth), confidence
 
     def _pair(self, first, second):
@@ -768,10 +863,22 @@ class Bearing:
         window = np.concatenate((correlation[-span:], correlation[:span + 1]))
         lags = np.arange(-span, span + 1) / BEARING_INTERPOLATION_FACTOR
         peak = int(np.argmax(window))
-        floor = float(np.sqrt(np.mean(window ** 2))) or 1e-12
-        sharpness = float(window[peak] / floor)
         lag = float(np.clip(lags[peak], -self.maximum_lag_samples,
                             self.maximum_lag_samples))
+        # THE FLOOR IS MEASURED WELL OUTSIDE THE PHYSICAL LAG RANGE, and that is
+        # not arbitrary. The array's whole lag range is +/-6.8 samples, so a
+        # peak-to-rms taken over that range is mostly the peak dividing itself
+        # and the ratio saturates: MEASURED, it read 0.25 for every cell of the
+        # grid from a flat calm to a gale, which is a number reading the dial
+        # rather than the world. Taken over a lag range the source CANNOT
+        # occupy, the denominator is the correlator's genuine background and the
+        # ratio moves.
+        wide = int(self.maximum_lag_samples * BEARING_INTERPOLATION_FACTOR
+                   * BEARING_FLOOR_SPAN_MULTIPLIER)
+        background = np.concatenate((correlation[span + 1:wide],
+                                     correlation[-wide:-span]))
+        floor = float(np.sqrt(np.mean(background ** 2))) if background.size else 0.0
+        sharpness = float(window[peak] / (floor or 1e-12))
         return lag, sharpness
 
 
@@ -804,6 +911,20 @@ class Ears:
         self.bearing_confidence = 0.0
         self.segments_heard = 0
         self.new_segment = False        # True for exactly one tick per utterance
+        # HOW LONG AGO THE BEARING'S OWN AUDIO HAPPENED. A bearing is measured
+        # on the loudest 300 ms of an utterance, and the utterance is only
+        # decided once it has ENDED -- so by the time a cue is published, the
+        # sound it was measured from is up to a second old, and the robot may
+        # have turned in the meantime. Anything that converts this bearing into
+        # a world heading must use the yaw the robot had THEN, and this is the
+        # number that lets it. MEASURED on terrain_free_5, where the stock
+        # walker swings its yaw about 50 deg/s at zero command: using the
+        # current yaw instead put the cue 25 to 60 degrees out.
+        self.bearing_age_seconds = 0.0
+        # The loudest the rolling VAD window got during the last utterance --
+        # reported by `test_hearing` so a miss can be told from a near-miss.
+        self.segment_peak_voice_probability = 0.0
+        self._segment_peak = 0.0
 
         self._segment = []
         self._segment_channels = []
@@ -835,6 +956,9 @@ class Ears:
         self.bearing_radians = None
         self.bearing_confidence = 0.0
         self.new_segment = False
+        self.bearing_age_seconds = 0.0
+        self.segment_peak_voice_probability = 0.0
+        self._segment_peak = 0.0
         self._segment = []
         self._segment_channels = []
         self._silence_seconds = 0.0
@@ -876,6 +1000,7 @@ class Ears:
 
         self.voice_activity.feed(monitor)
         self.voice_probability = self.voice_activity.probability
+        self._segment_peak = max(self._segment_peak, self.voice_probability)
         voiced = self.voice_activity.voice_present
         seconds = block.shape[1] / SAMPLE_RATE_HZ
 
@@ -905,14 +1030,21 @@ class Ears:
         speech_seconds = self._segment_seconds - self._silence_seconds
         self._segment_seconds = 0.0
         self._silence_seconds = 0.0
+        peak, self._segment_peak = self._segment_peak, 0.0
         if speech_seconds < SEGMENT_MINIMUM_SECONDS:
             return
+        self.segment_peak_voice_probability = peak
         self.segments_heard += 1
         self.new_segment = True
         self.stop_confidence = self.stop_word.confidence(monitor)
         self.heard = ("stop" if self.stop_confidence >= STOP_CONFIDENCE_THRESHOLD
                       else "voice")
-        window = self._loudest_window(channels)
+        window, window_start = self._loudest_window(channels)
+        # The centre of the window the bearing came from, counted back from the
+        # end of the utterance (which is NOW).
+        self.bearing_age_seconds = float(
+            (channels.shape[1] - (window_start + window.shape[1] / 2.0))
+            / SAMPLE_RATE_HZ)
         azimuth, confidence = self.bearing_estimator.estimate(window)
         if azimuth is not None:
             self.bearing_radians = azimuth
@@ -922,7 +1054,8 @@ class Ears:
 
     @staticmethod
     def _loudest_window(channels):
-        """The loudest `BEARING_WINDOW_SECONDS` of the utterance. -> (4, m).
+        """The loudest `BEARING_WINDOW_SECONDS` of the utterance.
+        -> ((4, m), start_index).
 
         The head and tail of an utterance are mostly noise floor, and
         cross-correlating the noise floor with itself is how a bearing table
@@ -931,12 +1064,12 @@ class Ears:
         width = int(BEARING_WINDOW_SECONDS * SAMPLE_RATE_HZ)
         total = channels.shape[1]
         if total <= width:
-            return channels
+            return channels, 0
         energy = channels[0] ** 2
         cumulative = np.concatenate(([0.0], np.cumsum(energy)))
         sums = cumulative[width:] - cumulative[:-width]
         start = int(np.argmax(sums))
-        return channels[:, start:start + width]
+        return channels[:, start:start + width], start
 
     def timing(self) -> dict:
         return {
@@ -982,18 +1115,34 @@ class HearingBehaviour:
         self.mode = "IDLE"
         self.stopped = False
         self.called = False
-        self.cue_bearing_radians = None
+        # THE CUE IS STORED AS A WORLD HEADING, NOT AS A BODY BEARING, and this
+        # is the single most important line in the class. The ears measure a
+        # direction relative to the ROBOT; the robot then turns, which makes
+        # that number stale immediately. Steering by the stored body bearing is
+        # therefore a positive feedback loop dressed as a controller: the robot
+        # keeps commanding the same +31 degrees whatever it is now facing and
+        # walks a circle. MEASURED before this was fixed -- on terrain_free_5
+        # the robot spiralled for eleven seconds and fell over
+        # (`tipped_over`, upright -0.08), having got no closer than 2.7 m to a
+        # person 6 m away. Converting the bearing to a world heading ONCE, at
+        # the moment it is measured, and re-deriving the body-frame error from
+        # the current yaw every tick, is the whole fix.
+        self.cue_heading_world_radians = None
+        self.cue_bearing_radians = None      # as measured, for the HUD
         self.cue_confidence = 0.0
         self.cue_age_seconds = 0.0
+        self.bearing_error_radians = 0.0     # what the yaw command is closing
         self._command = np.zeros(3)
 
     def reset(self) -> None:
         self.mode = "IDLE"
         self.stopped = False
         self.called = False
+        self.cue_heading_world_radians = None
         self.cue_bearing_radians = None
         self.cue_confidence = 0.0
         self.cue_age_seconds = 0.0
+        self.bearing_error_radians = 0.0
         self._command = np.zeros(3)
 
     @staticmethod
@@ -1006,8 +1155,19 @@ class HearingBehaviour:
                 < guide_module.LOST_AFTER_SECONDS
                 and follower.mode in ("FOLLOW", "WAIT"))
 
-    def update(self, ears: "Ears", follower, guide_command, dt_seconds: float):
-        """One control tick. -> the (3,) command to fly."""
+    def update(self, ears: "Ears", follower, guide_command, dt_seconds: float,
+               robot_yaw_radians: float = 0.0,
+               measurement_yaw_radians: float = None):
+        """One control tick. -> the (3,) command to fly.
+
+        `robot_yaw_radians` is the robot's heading about world +z NOW, and
+        `measurement_yaw_radians` is the heading it had when the bearing's own
+        audio arrived (`Ears.bearing_age_seconds` ago). The cue is converted
+        with the second and closed with the first. See the comment on
+        `cue_heading_world_radians`.
+        """
+        if measurement_yaw_radians is None:
+            measurement_yaw_radians = robot_yaw_radians
         self.cue_age_seconds += dt_seconds
 
         if ears.new_segment:
@@ -1020,6 +1180,9 @@ class HearingBehaviour:
                 if (ears.bearing_radians is not None
                         and ears.bearing_confidence >= EAR_BEARING_MINIMUM_CONFIDENCE):
                     self.cue_bearing_radians = float(ears.bearing_radians)
+                    self.cue_heading_world_radians = _wrap_to_pi(
+                        float(measurement_yaw_radians)
+                        + float(ears.bearing_radians))
                     self.cue_confidence = float(ears.bearing_confidence)
                     self.cue_age_seconds = 0.0
 
@@ -1045,16 +1208,19 @@ class HearingBehaviour:
             self._command = np.asarray(guide_command, dtype=float).copy()
             return self._command
 
-        if (self.cue_bearing_radians is None
+        if (self.cue_heading_world_radians is None
                 or self.cue_age_seconds > EAR_CUE_VALID_SECONDS):
             # Called, but with no direction worth steering by. The follower's
             # SEARCH sweep is the right thing and it is already running.
             self.mode = "COMING_BY_EARS"
+            self.bearing_error_radians = 0.0
             self._command = np.asarray(guide_command, dtype=float).copy()
             return self._command
 
         self.mode = "COMING_BY_EARS"
-        self._command = self._walk_toward(self.cue_bearing_radians)
+        self.bearing_error_radians = _wrap_to_pi(
+            self.cue_heading_world_radians - float(robot_yaw_radians))
+        self._command = self._walk_toward(self.bearing_error_radians)
         return self._command
 
     def _walk_toward(self, bearing_radians) -> np.ndarray:
@@ -1100,6 +1266,9 @@ class HearingSystem:
         self.ear_pcm = None
         self.injectors = []
         self.samples_per_tick = self.ears.samples_per_tick
+        # (time_seconds, yaw) for the last few seconds. See
+        # `Ears.bearing_age_seconds` for why a cue needs the OLD yaw.
+        self._yaw_history = []
         self._monitor_pending = []
         self.head_body_id = self._find_head_body(model, verbose=verbose)
 
@@ -1138,6 +1307,15 @@ class HearingSystem:
         self.microphone.clear()
         self.ear_pcm = None
         self._monitor_pending = []
+        self._yaw_history = []
+
+    def _yaw_at(self, time_seconds: float) -> float:
+        """The robot's yaw at (or nearest to) a time in the recent past."""
+        if not self._yaw_history:
+            return 0.0
+        best = min(self._yaw_history,
+                   key=lambda row: abs(row[0] - float(time_seconds)))
+        return float(best[1])
 
     # ------------------------------------------------------------- geometry
     def head_frame(self, data):
@@ -1208,8 +1386,47 @@ class HearingSystem:
                 self.ear_pcm = EAR_MESSAGE_PREFIX + np.clip(
                     mix * 32767.0, -32768, 32767).astype("<i2").tobytes()
         follower = guide_system.follower if guide_system is not None else None
-        return self.behaviour.update(self.ears, follower, guide_command,
-                                     self.dt_seconds)
+        # The robot's heading about world +z, from the free joint's quaternion.
+        # The ear cue is remembered in the WORLD frame, so the behaviour needs
+        # it -- see `HearingBehaviour.cue_heading_world_radians`.
+        w, x, y, z = [float(v) for v in data.qpos[3:7]]
+        robot_yaw = math.atan2(2.0 * (w * z + x * y),
+                               1.0 - 2.0 * (y * y + z * z))
+        self._yaw_history.append((float(time_seconds), robot_yaw))
+        horizon = float(time_seconds) - YAW_HISTORY_SECONDS
+        while self._yaw_history and self._yaw_history[0][0] < horizon:
+            self._yaw_history.pop(0)
+        measurement_yaw = self._yaw_at(
+            float(time_seconds) - self.ears.bearing_age_seconds)
+        command = self.behaviour.update(self.ears, follower, guide_command,
+                                        self.dt_seconds, robot_yaw,
+                                        measurement_yaw)
+        self._aim_waist(guide_system)
+        return command
+
+    def _aim_waist(self, guide_system) -> None:
+        """Point the stereo pair at the shout while the cue is fresh.
+
+        The waist is written AFTER `GuideSystem.update` has advanced it, so a
+        target set here lands on the next tick -- 20 ms, which nothing can
+        notice. It deliberately does NOT rate-limit or clamp anything itself:
+        `guide.WaistYaw` owns both, and duplicating them here is how two
+        clamps end up disagreeing.
+
+        Handing the waist back once the cue goes stale matters more than it
+        looks. A wrong bearing held for ever is a robot staring at an empty
+        slope, which is precisely the failure SEARCH was built to end.
+        """
+        behaviour = self.behaviour
+        if (guide_system is None or getattr(guide_system, "waist", None) is None
+                or behaviour.mode != "COMING_BY_EARS"
+                or behaviour.cue_bearing_radians is None
+                or behaviour.cue_age_seconds > EAR_WAIST_AIM_SECONDS):
+            return
+        # The cue in the BODY's frame right now: the remembered world heading
+        # minus where the body is pointing. `bearing_error_radians` is already
+        # exactly that.
+        guide_system.waist.target_radians = behaviour.bearing_error_radians
 
     def take_ear_pcm(self):
         """The newest monitor mix, ONCE. -> bytes or None."""
