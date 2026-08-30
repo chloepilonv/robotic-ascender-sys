@@ -31,7 +31,7 @@ In  (text)    : {"type":"input", "keys":["w"],
                     azimuth/elevation convention, defaults 180 / -15. The camera's
                     viewing direction is ALSO the steering input: the robot turns
                     to face it, W walks (climbs) that way.
-                {"type":"knob", "name":"wind_x"|"wind_y"|"friction", "value":f}
+                {"type":"knob", "name":"wind_x"|"wind_y"|"friction"|"t_amb"|"soc0", "value":f}
                     wind_x / wind_y are the world-frame XY WIND VELOCITY in m/s
                     (NOT newtons -- the force is the quadratic drag law from
                     rl/environment/wind_env.py). friction is the foot geoms' mu.
@@ -71,7 +71,8 @@ class Server:
         self.clients = set()
         self.latest_input = {"keys": [], "camera": {}}
         # wind_x / wind_y are metres per second, not newtons; see the docstring.
-        self.knobs = {"wind_x": 0.0, "wind_y": 0.0, "friction": 0.8}
+        self.knobs = {"wind_x": 0.0, "wind_y": 0.0, "friction": 0.8,
+                      "t_amb": 15.0, "soc0": 100.0}   # t_amb in C, soc0 in %
         self.reset_requested = False
         self.paused = False
         self.world_requested = None
