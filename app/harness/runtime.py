@@ -64,6 +64,7 @@ from app.harness.recorder import Recorder  # noqa: E402
 from app.harness import worlds as worlds_module  # noqa: E402
 from app.harness import climb_worlds as climb_worlds_module  # noqa: E402
 from app.harness import graphics as graphics_module  # noqa: E402
+from app.harness import guide as guide_module  # noqa: E402
 from app.harness.natural_wind import NaturalWind  # noqa: E402
 sys.path.insert(0, os.path.join(  # human-safety/ is a program, not a package
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "human-safety"))
@@ -417,6 +418,13 @@ def run(arguments) -> str:
         if kind == "climb_scene":
             scene, meta, definition = climb_library.load(
                 name, on_build_start=lambda: announce_build(name))
+            # THE GUIDE'S SURGERY GOES FIRST, before anything dresses the model.
+            # It recompiles the spec, and `apply_alpine_look` writes to the
+            # COMPILED model (lights, fog, the snow colour) -- so doing it the
+            # other way round throws the alpine look away and the picture comes
+            # back dark. `add_skybox` survives either order because a texture
+            # lives in the spec, but the ordering rule is the same for both.
+            guide_module.attach_guide(scene)
             # Dress the scene BEFORE the episode binds to it: `add_skybox`
             # recompiles the spec, so it must happen while nothing holds a
             # reference to the old model or data. It verifies the swap and
@@ -448,10 +456,26 @@ def run(arguments) -> str:
                   f"  lean {meta['lean_degrees']:.1f} deg"
                   f"  ankle {meta['ankle_degrees']:.1f} deg"
                   f"  upright {episode.torso_upright:+.3f}", flush=True)
-            return episode, model, meta
+            return episode, model, meta, scene
 
 
-    episode, model, meta = open_world(arguments.world)
+    # THE 3-D PAGE'S SEAM (app/web/render3d.html). A wrapper rather than edits
+    # inside `open_world`: every episode -- the first and every map switch --
+    # gets a pose broadcaster on its physics_step_hooks, and this file keeps one
+    # hunk. Arity-agnostic on purpose (`open_world` grew a fourth return value
+    # while this was being written); it only ever touches element 0.
+    # Costs tens of microseconds of a 20 ms tick, prints that measurement
+    # itself, and is invisible to app/web/index.html, which reads only JPEGs.
+    if arguments.pose_stream and server is not None:
+        from app.harness import pose_stream as pose_stream_module
+        _open_world_without_poses = open_world
+
+        def open_world(name):
+            opened = _open_world_without_poses(name)
+            pose_stream_module.attach(opened[0], server, opened[0].world_name)
+            return opened
+
+    episode, model, meta, scene = open_world(arguments.world)
     print(f"[runtime] observation noise OFF (training level {meta['noise_level']});"
           f" wind NOT in training; friction knob starts at"
           f" {meta['foot_friction']}", flush=True)
@@ -470,6 +494,33 @@ def run(arguments) -> str:
             episode.spawn_position_world, root_yaw_radians(episode.data.qpos[3:7]),
             distance)
         print(f"[safety] human spawned {distance:.1f} m ahead", flush=True)
+
+    # THE GUIDE FOLLOWER (app/harness/guide.py). A human guide walks ahead along
+    # the rope; the robot measures its distance by STEREO from two head cameras
+    # and drives itself. Off until the page's `guide` knob (or --guide) says so.
+    #
+    # ONE NOTION OF "A HUMAN IS THERE". While the guide is on, Chloe's gate is
+    # driven from the same vision measurement the follower uses, so the gate
+    # blocks UP over exactly the band in which the follower commands zero,
+    # instead of a second oracle detector disagreeing with it. Its own
+    # hysteresis is off (0.0) because the follower already has two -- the
+    # 1.0/1.3 m bands and the 1 s LOST timeout.
+    def make_guide(current_scene, current_model, current_episode):
+        system = guide_module.GuideSystem(
+            current_scene, current_model, current_episode.control_hz)
+        gate = HumanGate(guide_module.GuideVisionDetector(system),
+                         clear_after_seconds=0.0)
+        if system.available:
+            system.place(current_episode.spawn_position_world)
+        return system, gate
+
+    guide_system, guide_gate = make_guide(scene, model, episode)
+    if server is not None:
+        server.knobs["guide"] = 1.0 if arguments.guide else 0.0
+    print(f"[guide] {'available' if guide_system.available else 'NOT available'}"
+          f" in world {episode.world_name};"
+          f" starts {'ON' if arguments.guide else 'OFF'}"
+          f" (knob `guide`, W drives the human)", flush=True)
 
     renderer = None
     render_size = (RENDER_WIDTH, RENDER_HEIGHT)   # follows the browser viewport in live mode
@@ -523,9 +574,13 @@ def run(arguments) -> str:
             break
 
         azimuth_degrees = elevation_degrees = None
+        guide_enabled = bool(arguments.guide)
+        walking = bool(arguments.hold_w)
         if server is not None:
             latest = server.latest_input
             keys = set(latest.get("keys", []))
+            walking = "w" in keys
+            guide_enabled = bool(server.knobs.get("guide", 0.0))
             browser_camera = latest.get("camera") or {}
             azimuth_degrees = browser_camera.get("azimuth_degrees")
             elevation_degrees = browser_camera.get("elevation_degrees")
@@ -579,7 +634,13 @@ def run(arguments) -> str:
                     # -- `announce_build` warns the page first.
                     recorder.finalize(episode_outcome(
                         episode, realtime_factor, frames_rendered))
-                    episode, model, meta = open_world(requested)
+                    episode, model, meta, scene = open_world(requested)
+                    # A new world is a new compiled model, so the eyes' renderer
+                    # and every id the guide cached belong to a model that is
+                    # gone. Build both again, and re-place the human 2.5 m ahead
+                    # of the new spawn.
+                    guide_system.close()
+                    guide_system, guide_gate = make_guide(scene, model, episode)
                     if not arguments.no_render and model is not rendered_model:
                         # The GL context is NOT garbage collected, and it is
                         # bound to the model it was made for. Two worlds that
@@ -604,14 +665,31 @@ def run(arguments) -> str:
             if server.reset_requested:
                 server.reset_requested = False
                 episode.reset()
+                guide_system.place(episode.spawn_position_world)
                 wall_start = time.time()
                 continue
         else:
             command = np.array([
                 arguments.command_speed if arguments.hold_w else 0.0, 0.0, 0.0])
 
-        human_gate.update(episode.data, episode.tick / episode.control_hz)
-        command = human_gate.mask(command)
+        # THE GUIDE OWNS THE COMMAND WHILE IT IS ON. W/A/D stop steering the
+        # robot: W tells the HUMAN to walk, and what the robot does about that
+        # is the follower's business -- which is the whole point of the feature.
+        # The camera-follow controller is stood down too (its target is re-seated
+        # to the robot's actual yaw every tick, exactly as it is while A or D is
+        # held), so switching the guide off does not snap the robot back to a
+        # heading it drifted away from ten seconds ago.
+        guide_command = guide_system.update(
+            episode.data, episode.tick, guide_enabled, walking)
+        if guide_command is not None:
+            command = guide_command
+            heading.desired_heading_radians = root_yaw_radians(
+                episode.data.qpos[3:7])
+            heading.yaw_error_radians = 0.0
+
+        gate = guide_gate if guide_command is not None else human_gate
+        gate.update(episode.data, episode.tick / episode.control_hz)
+        command = gate.mask(command)
         row = episode.step(command, wind_velocity_world)
 
         if row["command"].tolist() != last_logged_command:
@@ -628,6 +706,7 @@ def run(arguments) -> str:
                                    "wind_velocity_world_meters_per_second": wind_list})
             last_logged_wind = wind_list
         recorder.append(**{k: v for k, v in row.items() if k != "observation"})
+        recorder.append(**guide_system.recorded())
         recorder.append_bms(episode.latest_bms)
 
         jpeg = None
@@ -664,6 +743,12 @@ def run(arguments) -> str:
         if server is not None:
             if jpeg is not None:
                 server.broadcast(jpeg)
+            # The left eye, at the vision rate: `EYE0` then a JPEG. The page
+            # tells the two streams apart by the first four bytes -- a main
+            # frame is a raw JPEG and starts 0xFFD8.
+            eye_jpeg = guide_system.take_eye_jpeg()
+            if eye_jpeg is not None:
+                server.broadcast(eye_jpeg)
             latest_state[0] = {
                 "type": "state", "tick": episode.tick,
                 "time_seconds": row["time_seconds"],
@@ -674,7 +759,11 @@ def run(arguments) -> str:
                 # INSTANTANEOUS, not the dial: with natural wind on these surge
                 # and swing with every gust, and the ribbons/sound follow them.
                 **natural_wind.report(),
-                **human_gate.state(),
+                # Whichever gate is live -- the guide's vision while the guide
+                # is on, the sim oracle otherwise. One set of `human_*` fields
+                # either way, so the page needs no new case.
+                **gate.state(),
+                "guide": guide_system.state(),
                 "fell": bool(row["fell"]),
                 "fall_reason": episode.fall_reason,
                 "root_position_world": row["root_position_world"].tolist(),
@@ -720,6 +809,7 @@ def run(arguments) -> str:
 
     outcome = episode_outcome(episode, realtime_factor, frames_rendered)
     recorder.finalize(outcome)
+    guide_system.close()
     if renderer is not None:
         renderer.close()
     print("[runtime] SUMMARY " + "  ".join(
@@ -760,6 +850,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--randomise-reset-velocity", action="store_true",
                         help="reproduce their reset base-velocity draw U(-0.5, 0.5)")
     parser.add_argument("--no-render", action="store_true")
+    parser.add_argument("--guide", action="store_true",
+                        help="start with the human guide ON: a guide walks the"
+                             " rope route and the robot follows it by stereo"
+                             " vision. Live mode has the same thing as the"
+                             " `guide` knob on the page.")
     parser.add_argument("--human", type=float, action="append", default=[],
                         help="spawn a virtual human this many metres ahead of"
                              " the spawn point (repeatable)")
@@ -768,6 +863,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--human-clear-seconds", type=float, default=1.0,
                         help="hysteresis: seconds without a detection before UP re-arms")
     parser.add_argument("--output-name", default=None)
+    parser.add_argument("--pose-stream", dest="pose_stream",
+                        action="store_true", default=True,
+                        help="broadcast per-body world poses for the WebGL page"
+                             " app/web/render3d.html. ON by default; the JPEG"
+                             " stream is unaffected either way.")
+    parser.add_argument("--no-pose-stream", dest="pose_stream",
+                        action="store_false")
     parser.add_argument("--port", type=int, default=8765)
     return parser
 
