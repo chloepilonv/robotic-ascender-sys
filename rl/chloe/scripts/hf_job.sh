@@ -13,7 +13,8 @@ ITERS=${ITERS:-3000}
 HF_REPO=${HF_REPO:?set HF_REPO=<org>/<model-repo>}
 export PATH="$HOME/.local/bin:$PATH"
 
-apt-get update -qq && apt-get install -y -qq curl ca-certificates git > /dev/null
+apt-get update -qq && apt-get install -y -qq curl ca-certificates git libegl1 libgl1 libglvnd0 > /dev/null
+export MUJOCO_GL=egl PYOPENGL_PLATFORM=egl
 curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null
 uv tool install -q huggingface_hub
 hf download "$HF_REPO" code.tar.gz --local-dir /dl
