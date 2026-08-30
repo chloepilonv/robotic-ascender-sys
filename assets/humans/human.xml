@@ -1,7 +1,7 @@
 <!-- A Himalayan hiker to be DETECTED, not simulated: assets/humans/README.md.
      One mocap body (set data.mocap_pos / mocap_quat to place it), primitive
      limbs sized to a 1.75 m adult in a down jacket, beanie, backpack, boots,
-     trekking poles, mid-stride. Faces +X. All geoms group 2 (rendered by
+     gripping the fixed line, mid-stride. Faces +X. All geoms group 2 (rendered by
      default), class `human`, names human_*. Collision OFF: the robot may not
      walk into a person in the first place -- that is the gate's job -- so a
      contact response would only hide gate failures behind a physics wall. -->
@@ -14,7 +14,6 @@
     <material name="beanie" rgba="0.75 0.10 0.15 1" />
     <material name="boots" rgba="0.30 0.20 0.12 1" />
     <material name="pack" rgba="0.15 0.30 0.55 1" />
-    <material name="pole" rgba="0.55 0.55 0.58 1" specular="0.6" />
     <material name="glove" rgba="0.08 0.08 0.10 1" />
   </asset>
   <default>
@@ -39,20 +38,16 @@
       <geom name="human_pack" class="human" type="box" pos="-0.20 0 1.20" size="0.10 0.16 0.24" material="pack" />
       <geom name="human_pack_lid" class="human" type="box" pos="-0.19 0 1.46" size="0.09 0.15 0.03" material="pack" />
       <geom name="human_mat" class="human" fromto="-0.22 0.19 0.96 -0.22 -0.19 0.96" size="0.055" material="beanie" />
-      <!-- arms: bent, hands forward on the poles -->
+      <!-- arms -->
       <geom name="human_shoulder_l" class="human" type="sphere" pos="0.02 0.22 1.40" size="0.09" material="jacket" />
       <geom name="human_shoulder_r" class="human" type="sphere" pos="0.02 -0.22 1.40" size="0.09" material="jacket" />
       <geom name="human_upper_arm_l" class="human" fromto="0.02 0.24 1.40 0.00 0.28 1.12" size="0.075" material="jacket" />
       <geom name="human_upper_arm_r" class="human" fromto="0.02 -0.24 1.40 0.00 -0.28 1.12" size="0.075" material="jacket" />
-      <geom name="human_forearm_l" class="human" fromto="0.00 0.28 1.12 0.24 0.27 1.02" size="0.065" material="jacket" />
-      <geom name="human_forearm_r" class="human" fromto="0.00 -0.28 1.12 0.24 -0.27 1.02" size="0.065" material="jacket" />
-      <geom name="human_hand_l" class="human" type="sphere" pos="0.28 0.27 1.00" size="0.05" material="glove" />
-      <geom name="human_hand_r" class="human" type="sphere" pos="0.28 -0.27 1.00" size="0.05" material="glove" />
-      <!-- trekking poles: from the hands down to the ground, planted ahead/behind -->
-      <geom name="human_pole_l" class="human" type="cylinder" fromto="0.28 0.28 1.00 0.42 0.30 0.00" size="0.012" material="pole" />
-      <geom name="human_pole_r" class="human" type="cylinder" fromto="0.28 -0.28 1.00 0.05 -0.31 0.00" size="0.012" material="pole" />
-      <geom name="human_pole_grip_l" class="human" fromto="0.27 0.28 0.98 0.30 0.28 1.10" size="0.02" material="glove" />
-      <geom name="human_pole_grip_r" class="human" fromto="0.27 -0.28 0.98 0.30 -0.28 1.10" size="0.02" material="glove" />
+      <!-- arms: on the fixed line -- right hand high on the rope, left lower -->
+      <geom name="human_forearm_l" class="human" fromto="0.00 0.28 1.12 0.26 0.14 1.18" size="0.065" material="jacket" />
+      <geom name="human_forearm_r" class="human" fromto="0.00 -0.28 1.12 0.30 -0.10 1.42" size="0.065" material="jacket" />
+      <geom name="human_hand_l" class="human" type="sphere" pos="0.30 0.12 1.19" size="0.05" material="glove" />
+      <geom name="human_hand_r" class="human" type="sphere" pos="0.34 -0.08 1.46" size="0.05" material="glove" />
       <!-- legs: mid-stride, left forward, right trailing -->
       <geom name="human_thigh_l" class="human" fromto="0 0.10 0.92 0.16 0.11 0.50" size="0.09" material="pants" />
       <geom name="human_thigh_r" class="human" fromto="0 -0.10 0.92 -0.14 -0.11 0.52" size="0.09" material="pants" />
