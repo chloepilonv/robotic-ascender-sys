@@ -45,13 +45,13 @@ Everything in the obs is available on the real G1 (IMU, encoders, wrist FK).
 
 Next steps: see `ROADMAP.md`.
 
-## Policies (`rl/policies/`)
+## Policies (`rl/chloe/policies/`)
 | File | What |
 |---|---|
-| `mels_g1_joystick.npz` | pretrained G1 walker (JAX) — legs of the climb mime |
+| `rl/policies/mels_g1_joystick.npz` | colleagues' pretrained G1 walker (JAX) — legs of the climb mime |
 | `g1_ascender_slope20_SMOKE.{pt,onnx}` | climb policy, **20 iterations only** (pipeline test, does not climb) — same I/O as the real one |
 | `g1_ascender_slope20.{pt,onnx}` | the trained climb policy — lands here when the HF job finishes |
 
 Full runs + checkpoints: https://huggingface.co/iteratehack/g1-ascender (org members only).
 ONNX I/O: input `obs` float32 [1, 96], output `action` float32 [1, 29] (see `scripts/export_onnx.py` docstring for the obs order).
-Load in Python: `onnxruntime.InferenceSession("rl/policies/g1_ascender_slope20_SMOKE.onnx").run(None, {"obs": obs})[0]`
+Load in Python: `onnxruntime.InferenceSession("rl/chloe/policies/g1_ascender_slope20_SMOKE.onnx").run(None, {"obs": obs})[0]`
