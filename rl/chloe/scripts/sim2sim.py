@@ -19,6 +19,9 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 import onnxruntime as ort
+import torch
+
+from rl.chloe.task import climb_mode as CM
 
 
 def quat_inv_rotate(q: np.ndarray, v: np.ndarray) -> np.ndarray:
@@ -85,6 +88,9 @@ def main() -> None:
   wind_f = 0.5 * 0.55 * 1.0 * 0.45 * args.wind**2
 
   sess = ort.InferenceSession(args.onnx)
+  has_mode = sess.get_inputs()[0].shape[1] == 97  # v4+: mode command in the obs
+  mode = torch.tensor([CM.SLIDE])
+  slide_at_switch = torch.tensor([float(d.qpos[s_q])])
   last_action = np.zeros(len(jid), dtype=np.float32)
   decimation, dt = 4, m.opt.timestep
 
@@ -92,13 +98,17 @@ def main() -> None:
     q, w = d.qpos[3:7], d.qvel[3:6]  # free joint: ang vel already in body frame
     grav_b = quat_inv_rotate(q, g_dir)
     rel = quat_inv_rotate(q, d.xpos[carrier] - d.qpos[0:3])
-    return np.concatenate(
-      [w, grav_b, d.qpos[qadr] - offset, d.qvel[dadr], last_action, rel]
-    ).astype(np.float32)[None]
+    parts = [w, grav_b, d.qpos[qadr] - offset, d.qvel[dadr], last_action, rel]
+    if has_mode:
+      parts.append(mode.numpy())
+    return np.concatenate(parts).astype(np.float32)[None]
 
   viewer = None if args.headless else mujoco.viewer.launch_passive(m, d)
   t0, step = time.time(), 0
   while (d.time < args.seconds) if args.headless else viewer.is_running():
+    if has_mode:
+      rel_x = torch.tensor([float(d.xpos[carrier][0] - d.qpos[0])])
+      mode, slide_at_switch = CM.update_mode(mode, torch.tensor([float(d.qpos[s_q])]), slide_at_switch, rel_x)
     action = sess.run(None, {"obs": obs()})[0][0]
     last_action = action.astype(np.float32)
     target = offset + scale * action
@@ -110,7 +120,8 @@ def main() -> None:
     step += 1
     if step % 50 == 0:
       gap = np.linalg.norm(d.site_xpos[anchor] - d.xpos[carrier])
-      print(f"t={d.time:5.1f}s x={d.qpos[0]:+.2f} z={d.qpos[2]:.2f} rope={d.qpos[s_q]:+.2f} m  channel-rope gap={gap*100:.1f} cm")
+      m_str = ("SLIDE" if mode.item() > 0.5 else "WALK ") if has_mode else ""
+      print(f"t={d.time:5.1f}s {m_str} x={d.qpos[0]:+.2f} z={d.qpos[2]:.2f} rope={d.qpos[s_q]:+.2f} m  channel-rope gap={gap*100:.1f} cm")
     if viewer is not None:
       viewer.sync()
       time.sleep(max(0.0, d.time - (time.time() - t0)))

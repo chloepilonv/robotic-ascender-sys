@@ -9,7 +9,7 @@ import torch
 from mjlab.entity import Entity
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.managers.scene_entity_config import SceneEntityCfg
-from mjlab.utils.lab_api.math import quat_apply_inverse
+from mjlab.utils.lab_api.math import quat_apply, quat_apply_inverse
 
 from . import robot as R
 
@@ -126,3 +126,48 @@ def wind_on_torso(
 def rope_tension(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = SLIDE) -> torch.Tensor:
   """|constraint force| on the rope slide dof, N — the sim twin of the load cell."""
   return env.sim.data.qfrc_constraint[:, env._slide_dadr].abs()  # type: ignore[attr-defined]
+
+
+# ----------------------------------------------------------------------------
+# Heading (face uphill) and the climb rhythm (mode command)
+# ----------------------------------------------------------------------------
+
+
+def _forward_x(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Cosine between the pelvis forward axis and world +x (uphill)."""
+  asset: Entity = env.scene[ROBOT.name]
+  fwd = torch.tensor([1.0, 0.0, 0.0], device=env.device).expand(env.num_envs, 3)
+  return quat_apply(asset.data.root_link_quat_w, fwd)[:, 0]
+
+
+def face_uphill(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Reward: 1 when the torso faces uphill, -1 when it faces downhill."""
+  return _forward_x(env)
+
+
+def facing_downhill(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Termination: turned more than 90 deg away from uphill."""
+  return _forward_x(env) < 0.0
+
+
+def climb_mode(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Observation: the mode command (0 walk, 1 slide), kept by RatchetEnv."""
+  return env.climb_mode.unsqueeze(-1)  # type: ignore[attr-defined]
+
+
+def mode_uphill_velocity(env: ManagerBasedRlEnv, target: float, std: float) -> torch.Tensor:
+  """WALK: track `target` uphill speed. SLIDE: stand still (track 0)."""
+  asset: Entity = env.scene[ROBOT.name]
+  vx = asset.data.root_link_lin_vel_w[:, 0]
+  want = torch.where(env.climb_mode > 0.5, torch.zeros_like(vx), torch.full_like(vx, target))  # type: ignore[attr-defined]
+  return torch.exp(-torch.square(vx - want) / std**2)
+
+
+def mode_ascender_progress(
+  env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = SLIDE, max_vel: float = 1.0
+) -> torch.Tensor:
+  """SLIDE: reward pushing the ascender up. WALK: penalise moving it."""
+  asset: Entity = env.scene[asset_cfg.name]
+  vel = asset.data.joint_vel[:, asset_cfg.joint_ids].reshape(env.num_envs)
+  slide = env.climb_mode > 0.5  # type: ignore[attr-defined]
+  return torch.where(slide, torch.clamp(vel, 0.0, max_vel), -torch.abs(vel))

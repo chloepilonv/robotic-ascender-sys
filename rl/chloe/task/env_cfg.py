@@ -26,6 +26,7 @@ from mjlab.viewer import ViewerConfig
 
 from mjlab.asset_zoo.robots.unitree_g1.g1_constants import G1_ACTION_SCALE
 
+from . import climb_mode as CM
 from . import mdp
 from . import robot as R
 
@@ -51,9 +52,25 @@ class RatchetEnv(ManagerBasedRlEnv):
   def reset(self, *args, **kwargs):
     out = super().reset(*args, **kwargs)
     self._ratchet_release(torch.arange(self.num_envs, device=self.device))
+    self._mode_reset(torch.arange(self.num_envs, device=self.device))
     return out
 
+  # --- climb rhythm (mode command) ---------------------------------------
+  def _mode_reset(self, env_ids: torch.Tensor) -> None:
+    n = len(env_ids)
+    self.climb_mode[env_ids] = torch.randint(0, 2, (n,), device=self.device).float()
+    self._slide_at_switch[env_ids] = self.sim.data.qpos[env_ids, self._slide_qadr]
+
+  def _mode_update(self) -> None:
+    robot = self.scene["robot"]
+    carrier_x = robot.data.body_link_pos_w[:, self._carrier_body, 0]
+    rel_x = carrier_x - robot.data.root_link_pos_w[:, 0]
+    self.climb_mode, self._slide_at_switch = CM.update_mode(
+      self.climb_mode, self.sim.data.qpos[:, self._slide_qadr], self._slide_at_switch, rel_x
+    )
+
   def __init__(self, cfg, device: str, **kwargs):
+    self.climb_mode = torch.zeros(cfg.scene.num_envs, device=device)  # obs term reads it during init
     super().__init__(cfg, device=device, **kwargs)
     n, a = self.num_envs, self.action_manager.total_action_dim
     self._act_hist = torch.zeros(self.MAX_ACTION_DELAY + 1, n, a, device=self.device)
@@ -62,6 +79,9 @@ class RatchetEnv(ManagerBasedRlEnv):
     jid = model.joint(f"robot/{R.SLIDE_JOINT}").id
     self._slide_jid = jid
     self.sim.expand_model_fields(("jnt_range",))  # per-env lower limit (the cam)
+    self._carrier_body = self.scene["robot"].find_bodies(R.CARRIER_BODY)[0][0]
+    self.climb_mode = torch.zeros(self.num_envs, device=self.device)
+    self._slide_at_switch = torch.zeros(self.num_envs, device=self.device)
     self._slide_qadr = int(model.jnt_qposadr[jid])
     self._slide_dadr = int(model.jnt_dofadr[jid])
     self._sim_step = self.sim.step
@@ -73,10 +93,12 @@ class RatchetEnv(ManagerBasedRlEnv):
     self._act_hist[0] = action
     idx = torch.arange(self.num_envs, device=self.device)
     delayed = self._act_hist[self._act_delay, idx]
+    self._mode_update()
     out = super().step(delayed)
     done = self.reset_buf.nonzero(as_tuple=False).flatten()
     if len(done):
       self._ratchet_release(done)
+      self._mode_reset(done)
       self._act_hist[:, done] = 0.0
       self._act_delay[done] = torch.randint(
         0, self.MAX_ACTION_DELAY + 1, (len(done),), device=self.device
@@ -120,6 +142,7 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
     "ascender_pos_b": ObservationTermCfg(
       func=mdp.ascender_pos_b, params={"asset_cfg": mdp.CARRIER}
     ),
+    "climb_mode": ObservationTermCfg(func=mdp.climb_mode),
   }
   critic_terms = {
     **actor_terms,
@@ -220,11 +243,12 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
 
   rewards = {
     "uphill_velocity": RewardTermCfg(
-      func=mdp.uphill_velocity, weight=2.0, params={"target": 0.3, "std": 0.3}
+      func=mdp.mode_uphill_velocity, weight=2.0, params={"target": 0.3, "std": 0.3}
     ),
     "ascender_progress": RewardTermCfg(
-      func=mdp.ascender_progress, weight=1.0, params={"asset_cfg": mdp.SLIDE}
+      func=mdp.mode_ascender_progress, weight=2.0, params={"asset_cfg": mdp.SLIDE}
     ),
+    "face_uphill": RewardTermCfg(func=mdp.face_uphill, weight=1.0),
     "upright": RewardTermCfg(
       func=vel_mdp.upright,
       weight=1.0,
@@ -251,6 +275,7 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
     "fell_over": TerminationTermCfg(
       func=base_mdp.bad_orientation, params={"limit_angle": math.radians(60.0)}
     ),
+    "facing_downhill": TerminationTermCfg(func=mdp.facing_downhill),
     "base_low": TerminationTermCfg(
       func=base_mdp.root_height_below_minimum, params={"minimum_height": 0.35}
     ),
