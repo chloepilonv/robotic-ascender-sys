@@ -417,6 +417,14 @@ class ClimbSceneEpisode:
         # The BMS seam, unchanged: callable(model, data) -> dict | None, called
         # after every substep.
         self.physics_step_hooks = []
+        # THE CONTROL SEAM: callable(model, data) -> None, called after the
+        # policy has written `data.ctrl` and BEFORE the `mj_step` that acts on
+        # it. That is the only place a supervisory layer can bend one joint's
+        # PD target without touching the policy, the observation, or anything
+        # the policy will see next tick. The guide's SEARCH waist-yaw offset is
+        # the only user (`guide.WaistYaw.apply`). Empty by default, so a run
+        # with no hooks is exactly the run that was there before.
+        self.control_hooks = []
         self.latest_bms = None
         # Chloe's BMS, always on. Once per CONTROL tick -- her plugin
         # integrates with dt = timestep * substeps, so a per-substep call would
@@ -559,6 +567,8 @@ class ClimbSceneEpisode:
 
         for _ in range(self.substeps):
             self.controller.substep(self.data)   # writes data.ctrl
+            for hook in self.control_hooks:      # bends a PD target, see above
+                hook(self.model, self.data)
             self.scene.step(wind)                # mj_step + carrier + ratchet
             for hook in self.physics_step_hooks:
                 value = hook(self.model, self.data)

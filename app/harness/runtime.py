@@ -526,11 +526,23 @@ def run(arguments) -> str:
         system = guide_module.GuideSystem(
             current_scene, current_model, current_episode.control_hz,
             enable=not arguments.no_guide_body,
-            degradation=storm_vision.degrade)
+            degradation=storm_vision.degrade,
+            # ASK TO MRINAL, and the reason this is a flag rather than a
+            # constant: the climb policy was trained with ang_vel_yaw ~ 0, so a
+            # commanded turn does nothing and the waist has to do the aiming.
+            # A policy trained with randomised ang_vel_yaw would earn a True
+            # here and a steerable body with it. `--policy` supplies one.
+            yaw_command_available=arguments.policy is not None)
         gate = HumanGate(guide_module.GuideVisionDetector(system),
                          clear_after_seconds=0.0)
         if system.available:
             system.place(current_episode.spawn_position_world)
+            # THE "NECK", REGISTERED ON THE CONTROL SEAM. `control_hooks` runs
+            # after the policy writes `data.ctrl` and before the `mj_step` that
+            # acts on it, which is the only place a waist-yaw offset can be
+            # added without touching the policy. It is a no-op whenever the
+            # offset is zero, i.e. whenever the robot is not searching.
+            current_episode.control_hooks.append(system.waist.apply)
         return system, gate
 
     guide_system, guide_gate = make_guide(scene, model, episode)

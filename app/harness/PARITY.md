@@ -1038,6 +1038,106 @@ properties of the team's walking policy in these scenes, not of this layer:
 
 ---
 
+## SEARCH -- turning the cameras, and what that costs
+
+`app/harness/guide.py`. When the follower loses the human it sweeps its cameras
+to find her again. The G1 has no neck, so the cameras are panned by WAIST YAW.
+
+### The mount, checked rather than assumed
+
+The `d435i` camera sits on `torso_link`, and the parent chain is
+
+    pelvis -> waist_yaw_link (waist_yaw_joint, +z, +/-150 deg, actuator 12)
+           -> waist_roll_link -> torso_link   [the cameras]
+
+so `waist_yaw_joint` is above the cameras in the tree and is the joint that pans
+them. `WaistYaw.bind` looks the actuator up by name and turns the search off with
+a message if it is not there.
+
+### What is written where
+
+| piece | status | what it actually is |
+|---|---|---|
+| the waist offset | ours, a supervisory command | one number added to the walking policy's OWN waist-yaw PD target, at `ClimbSceneEpisode.control_hooks` -- after `WalkController.substep` writes `data.ctrl` and before the `mj_step` that acts on it. The policy is not retrained, not consulted and not modified. |
+| the rate limit | ours | 1.5 rad/s on the offset. A step change in a PD target is a kick, and this robot hangs off a rope by one palm. |
+| the clamp | ours, and MEASURED | +/-60 deg (see below), applied on ASSIGNMENT to `target_radians`. |
+| `theta_waist` | **read from `data.qpos`**, not from the command | the achieved joint angle. See the windup note. |
+| `ang_vel_yaw` | **zero unless a policy can use it** | `yaw_command_available`, False for every climb world. |
+
+### Two bugs this found, both worth keeping written down
+
+**1. Feeding the COMMAND back is a windup loop.** The bearing to the human in the
+body's frame is `theta_waist + beta`. The first version used the COMMANDED
+offset for `theta_waist` -- but the offset is added to a PD target the policy is
+also writing, so the policy pulls back and the joint settles short. The image
+bearing therefore never closes, the target grows every vision tick, and on
+`flat_0` the waist wound to **168 degrees** and the robot fell at **7.3 s**.
+`WaistYaw.measure` reads the achieved angle out of `qpos` instead.
+
+**2. Tracking her in FOLLOW/WAIT is a fall.** Keeping the waist on her after the
+search ended looks obviously right and is not: with the palm clipped to the rope,
+twisting the waist counter-rotates the PELVIS, so the image bearing never closes
+and the waist chases it to the clamp. On `flat_0` that is a fall at **1.9 s**.
+The waist straightens once REALIGN hands over, and REALIGN does not hand over
+until she is inside the cone the straightened cameras will still see.
+
+### The clamp is measured, not chosen
+
+Sweeping `flat_0`, roped, 25 s, 1.5 rad/s:
+
+| peak sweep | outcome |
+|---|---|
+| 90 deg | fell at 9.5 s |
+| 80 deg | fell at 8.3 s |
+| 75 deg | fell at 5.6 s |
+| 70 deg | survived |
+| 65 deg | fell at 21.6 s |
+| **60 deg** | **survived, upright 0.96** |
+
+So `WAIT_LIMIT` is 60 deg. The 20/60/90 ladder stays in the source because it is
+the design; the clamp is what binds. A robot that can hold 90 gets it by raising
+one line.
+
+### The acquisition, measured
+
+`python -m app.harness.test_search`. The human is placed **60 degrees** off the
+robot's axis -- the camera's horizontal half-FOV is 36.5 deg, so she is outside
+it and the detector sees nothing at t = 0. The camera-bearing error is read from
+the simulator (a LABELLED CHEAT, grading only) so the same detector that did the
+aiming cannot flatter it.
+
+| world | rope | ACQUIRE | hand-over | camera-bearing error at hand-over | waist peak | fell |
+|---|---|---|---|---|---|---|
+| `flat_0` | on | 0.20 s | 0.24 s -> FOLLOW | **10.2 deg** | 58.4 deg | no |
+| `terrain_free_10` | off | 0.40 s | 1.00 s -> FOLLOW | **3.2 deg** | 20.1 deg | no |
+
+Rope-off is the cleaner of the two, as expected: nothing is counter-rotating the
+pelvis, so the waist barely has to move and the error is 3 deg.
+
+### The limit of a neck that only turns 60 degrees
+
+The searchable cone is 60 (waist) + 36.5 (half-FOV) = **+/-96.5 deg**. A human
+BEHIND the robot cannot be found. Held **S** on `flat_0` until she walks back
+past the robot: FOLLOW -> WAIT (2.5 s) -> SEARCH/sweep, and she is never
+re-acquired, correctly. **ASK to Mrinal: randomise `ang_vel_yaw` in the training
+commands if a steerable turn is wanted.** Everything here is a workaround for a
+policy that cannot turn; `realign_mode: "body+waist"` is already written for one
+that can.
+
+### The physics claim, stated the only way it can be true
+
+A SEARCHING robot's physics is NOT identical to a still one's, and must not be:
+the waist offset is a real command on a real actuator, and the feature IS that
+the torso turns. What must be identical is the OFF case -- the machinery built,
+the hook registered and running on every substep, the knob off:
+
+    no guide system at all   vs   guide built + waist hook registered, knob OFF
+
+Same reset, same scripted command, 6 s, `flat_0`: `qpos`, `qvel`, `ctrl`,
+`sensordata`, `qfrc_constraint` all **0.000e+00**.
+
+---
+
 ## The storm -- a white-out, and here is the proof it is only a picture
 
 `app/harness/storm.py`. The `storm` knob closes the weather in with the

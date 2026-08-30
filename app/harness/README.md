@@ -159,6 +159,69 @@ The guide is available on the **ClimbScene** worlds only. The four `legacy_*`
 worlds hand back a compiled model with no `MjSpec`, so there is nothing to add
 the body and the cameras to, and the feature turns itself off there.
 
+## SEARCH: finding her again
+
+The follower no longer gives up. A second with no detection used to mean LOST,
+which commanded zero for ever -- the robot stood facing an empty slope. It now
+goes and looks.
+
+**THE G1 HAS NO NECK.** The stereo pair rides `torso_link`, and the chain from
+the pelvis is `pelvis -> waist_yaw_link -> waist_roll_link -> torso_link`, so
+**waist yaw** is the joint that pans the cameras and the only one. "Turn the
+head" is therefore a waist-yaw offset added to the walking policy's OWN PD
+target, after the policy writes it and before the `mj_step` that acts on it
+(`ClimbSceneEpisode.control_hooks`). The policy is not retrained, not asked for
+anything, and not modified.
+
+| phase | what it does |
+|---|---|
+| `sweep` | zero locomotion; the waist swings left/right at 20°, then 60°, then 90° (clamped -- see below) until the detector sees her on **two consecutive** vision updates |
+| `acquire` | one tick: `θ_waist + β` is the direction to her in the BODY's frame. The image bearing alone is relative to wherever the waist is pointing |
+| `realign` | keep the waist on her, resume walking up the rope. Hands over to FOLLOW/WAIT once she is centred in the picture AND inside the cone the cameras will still see when the waist straightens |
+| `idle` | 15 s of sweeping with nothing found: stop, sit still, sweep again every 5 s |
+
+**The body does not turn, by default.** `yaw_command_available` is False for
+every climb world: the policy was trained with `ang_vel_yaw ≈ 0` and the palm is
+clipped to a fixed line, so a commanded turn does almost nothing (PARITY.md:
++1.0 and −1.0 rad/s for 3 s end 10° apart). With it False, `ang_vel_yaw` is zero
+in **every** guide state and `realign_mode` is `"waist"`. `--policy` (a mels npz,
+trained to turn) sets it True and the mode becomes `"body+waist"`.
+
+**Measured** (`python -m app.harness.test_search`), human placed 60° off-axis,
+outside the ±36.5° half-FOV so the robot genuinely cannot see her at t = 0:
+
+| world | rope | time to ACQUIRE | hand-over | camera-bearing error at hand-over | fell |
+|---|---|---|---|---|---|
+| `flat_0` | on | **0.20 s** | 0.24 s → FOLLOW | **10.2°** | no |
+| `terrain_free_10` | off | **0.40 s** | 1.00 s → FOLLOW | **3.2°** | no |
+
+On the rope-off world it then keeps following for the rest of the run (detector
+sees her on 64% of vision frames, 5.0° error at the end). On the roped world it
+walks past a human who is standing still and goes back to sweeping — the walker
+overruns, which is the plant, not the search.
+
+**Two honest limits, both measured:**
+
+* **The sweep is clamped to 60°, not 90°.** Sweeping `flat_0` roped for 25 s:
+  90° → fell at 9.5 s, 80° → 8.3 s, 75° → 5.6 s, 70° → survived, 65° → 21.6 s,
+  **60° → survived, upright 0.96**. A torso twisted further than that on a robot
+  hanging off a rope by one palm falls over. The 20/60/90 ladder is left in the
+  code because it is the design; the clamp is the measured safety bound.
+* **The searchable cone is ±96.5°** (60° of waist plus 36.5° of half-FOV), so a
+  human who ends up BEHIND the robot cannot be found. Hold **S** until she walks
+  past the robot and the follower correctly goes FOLLOW → WAIT → SEARCH/sweep
+  and never re-acquires. Turning the body is the only fix, and that is the ASK.
+
+State gains `guide.search_phase`, `guide.waist_yaw_degrees` and
+`guide.realign_mode`; episodes record `guide_search_phase`,
+`guide_waist_yaw_degrees` and `guide_realign_body_yaw`. The eye overlay reads
+e.g. `-- m · SEARCH:sweep +52°`.
+
+**ASK to Mrinal:** randomise `ang_vel_yaw` in the training commands if a
+steerable turn is wanted. Everything above is a workaround for a policy that
+cannot turn, and a policy that could would let the body take the angle and the
+waist unwind — which is what `realign_mode: "body+waist"` is already written for.
+
 ## The storm (`app/harness/storm.py`)
 
 Turn the **`storm`** knob on and the weather closes in. **A storm here is FOG**,
