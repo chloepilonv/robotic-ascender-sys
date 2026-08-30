@@ -95,7 +95,7 @@ def rope_rail_module():
 # against; SMOKE and v1 are earlier checkpoints in the same directory and are
 # NOT interchangeable (v1 falls over inside two seconds).
 DEFAULT_POLICY_RELATIVE_PATH = os.path.join(
-    "rl", "chloe", "policies", "g1_ascender_slope20_v3_2026-08-30_04-35-59.onnx")
+    "rl", "policies", "g1_ascender_slope20_v3_2026-08-30_04-35-59.onnx")
 
 OBSERVATION_SIZE = 96
 ACTION_SIZE = 29

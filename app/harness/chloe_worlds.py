@@ -154,14 +154,14 @@ def _definition(name, slope_degrees, label, description):
 CHLOE_POLICY_VERSIONS = {
     "v1": {
         "relative_path": os.path.join(
-            "rl", "chloe", "policies",
+            "rl", "policies",
             "g1_ascender_slope20_v3_2026-08-30_04-35-59.onnx"),
         "trained_slope_degrees": 20.0,
         "note": "her run v3 of 2026-08-30 04:35; mjlab PPO, 96-d obs, no command",
     },
     "m1": {
         "relative_path": os.path.join(
-            "rl", "chloe", "policies",
+            "rl", "policies",
             "g1_ascender_slope20_mrinal_working.onnx"),
         "trained_slope_degrees": 20.0,
         "display": "Mrinal",
@@ -175,7 +175,7 @@ CHLOE_POLICY_VERSIONS = {
     },
     "m2": {
         "relative_path": os.path.join(
-            "rl", "chloe", "policies",
+            "rl", "policies",
             "g1_ascender_slope20_final_2026-08-30_13-55-14.onnx"),
         "trained_slope_degrees": 20.0,
         "display": "Mrinal 2",
@@ -191,7 +191,7 @@ CHLOE_POLICY_VERSIONS = {
     },
     "v2": {
         "relative_path": os.path.join(
-            "rl", "chloe", "policies",
+            "rl", "policies",
             "g1_ascender_slope20_v7_2026-08-30_17-16-35.onnx"),
         "trained_slope_degrees": 20.0,
         "note": "her run v7 of 2026-08-30 17:16; 97-d obs = v3's + the WALK/SLIDE"
