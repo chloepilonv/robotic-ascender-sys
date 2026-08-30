@@ -147,6 +147,544 @@ What the four rows say together, which no single run could:
   the catch). The ascender does exactly its job; what is missing is a policy
   that can stand on a 30° slope.
 
+## ClimbScene worlds — the merged scene (PR #8)
+
+Twelve of the sixteen worlds now run `rl/environment/climb_scene.py`: the
+Lhotse Face heightfield, a rope polyline draped over it, a bead-on-a-wire
+carrier, the jacketed G1. `app/harness/climb_worlds.py` calls `build_scene`
+and drives what comes back. **It builds nothing.**
+
+### What is his, and what is ours
+
+| piece | source of truth | how we consume it |
+|---|---|---|
+| the whole model | `climb_scene.build_scene(...)` | **called**. Terrain, rope, carrier, grip equality, slope-fitted spawn all come back compiled |
+| the physics step | `ClimbScene.step(wind)` | **called**, 10× per 50 Hz control tick. It is one `mj_step` + the carrier projection + the arc-length ratchet, with wind drag written into `xfrc_applied` first |
+| the 103-d observation | `walk_policy.WalkController.observe()` | **called**. His is the contract now; ours is measured against it (below) and used only for the legacy worlds |
+| the policy + gait clock + `last_act` | `walk_policy.WalkController.substep()` | **called**. It writes `data.ctrl` and evaluates the net once per decimation |
+| wind | `climb_scene.WindParams` | **constructed** from the dial (m/s + heading) and handed to `step()` |
+| friction | `FrictionParams.from_scalar` at build; live knob writes `geom_friction` | see the note on contact pairs below |
+| the robot | `robot.resolve` / `robot.adapt` | selected by name (`himalaya` / `playground`), never by a path we typed |
+| command clamp | `walk_policy.CMD_LIMITS` | **imported**, not restated |
+| climb metric | `RopeCarrier.progress` (his ratchet state) | arc length along the rope since spawn |
+
+### `policy_compat` — what it actually does
+
+`robot.adapt(spec, policy_compat=True)` is on by default and is **not
+cosmetic**. The jacketed robot ships stock menagerie dynamics; Playground
+retuned them for RL and the mels policy learned against *that* plant. Measured
+on the built model, `adapt_report` reports:
+
+```
+added   : site right_palm, sensor local_linvel_pelvis, sensor gyro_pelvis,
+          keyframe knees_bent
+retuned : foot contact: 4 spheres -> playground box
+          actuator kp/kv, dof damping/armature/frictionloss
+```
+
+Concretely it rewrites actuator kp (500 uniform → 75/20/2 per joint), kv, dof
+damping, armature and frictionloss, and swaps the four 5 mm foot spheres for
+Playground's single contact box. Our compiled scene reads back
+**`actuator kp min/max 2/75`**.
+
+**This is the fix for the kp=500 problem the previous report raised as ASK P1.**
+That ask is resolved upstream: the plant mismatch is handled by an explicit,
+documented, default-on shim, and `--stock-plant` keeps the robot exactly as the
+project specifies it (his measurement: the walking policy then falls at ~1.8 s).
+
+### Gates — both run, both printed
+
+    python -m app.harness.climb_worlds --world lhotse_B
+
+**Joint parity.** The scene's 29 actuated joints against Playground's own
+model, in order. Result: **29 vs 29, identical order.** Re-run here rather than
+inherited, because the merged scene is a different build path.
+
+**Observation parity.** Our `PlaygroundObservation` against his `observe()` at
+the same state, reset and perturbed:
+
+```
+obs parity (reset state):     max |ours - his| 0.000e+00   his norm 3.5787
+obs parity (perturbed state): max |ours - his| 0.000e+00   his norm 3.5618
+observation parity worst 0.000e+00  PASS
+```
+
+**Bit-identical.** One input has to be handed over rather than derived, and it
+is load-bearing: `default_pose`. His is pinned to `robot.KNEES_BENT_QPOS`; ours
+reads the compiled keyframe. On a slope `build_scene` *leans the base and
+re-pitches the ankles* so the soles lie flat, so the scene's keyframe is no
+longer the pose the policy's action deltas are about. Reading it — which is
+correct for the flat legacy env — would silently move the policy's operating
+point with the terrain. His is right; ours takes his value.
+
+**His own acceptance suite:** `python -m rl.scripts.climb_scene --check` →
+**ALL CHECKS PASSED** (13 checks).
+
+### What the scene does not have, and what we do instead
+
+| absent | what we do |
+|---|---|
+| `upvector_torso` sensor (`adapt` adds only `local_linvel_pelvis`, `gyro_pelvis`) | read the same quantity off `site_xmat[imu_in_torso]` column z — that IS what a `framezaxis` sensor on that site reports |
+| the seven `..._found` contact sensors | **our fall test is narrower than the training env's**: upright < 0 or non-finite state, with no foot/shin self-collision term. Stated here because a "did not fall" on a ClimbScene world is a weaker claim than on a legacy one |
+| a rope-off switch in `build_scene` | the free world deactivates the `ascender_grip` equality through `data.eq_active`, re-applied after every reset (`mj_resetDataKeyframe` restores it from the model) |
+
+### mels on the merged scene, W held (`lin_vel_x` 0.5), 10 s
+
+| world | robot | rope | slope | fell | at | arc climbed | height | max rope | hand-off-rope | pelvis displ |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `flat_0` | himalaya | on | 0.4° | **no** | — | **+1.855 m** | −0.076 m | 137 N | 0.0003 m | 1.803 m |
+| `lhotse_B` | himalaya | on | 38.6° | **no** | — | +0.002 m | −0.741 m | 309 N | 0.0023 m | 0.768 m |
+| `lhotse_B_playground` | playground | on | 38.6° | **no** | — | +0.002 m | −0.796 m | 580 N | 0.0038 m | 0.828 m |
+| `lhotse_B_free` | himalaya | **off** | 38.6° | **yes** | 3.14 s | 0.000 m | **−276.4 m** | 0 N | 272 m | 276.6 m |
+
+What the four rows say together:
+
+* **On the flat the ascender tracks a walking robot.** `flat_0` walks and the
+  carrier climbs 1.855 m of arc, hand 0.3 mm off the rope throughout.
+* **On the real face the policy cannot climb, and the rope catches it.**
+  `lhotse_B` slips to −0.74 m and hangs at ~300 N; it never tips past upright,
+  and the hand stays 2 mm off the line. This reproduces his own documented
+  baseline ("slips, then hangs from the rope, dz −0.83 m").
+* **The jacketed robot and the Playground robot behave the same** on the same
+  scene — −0.741 m vs −0.796 m, arc 0.0020 vs 0.0023 m. That is
+  `policy_compat` working: his "103-dim observation bit-identical between the
+  two robots" claim holds dynamically, not just statically.
+* **Without the rope it is a 276 m slide.** `lhotse_B_free` tips at 3.14 s and
+  ends a quarter-kilometre down the face. The rope is the entire difference
+  between "hangs, −0.74 m" and "gone".
+
+**Caveat, his and worth repeating:** the command is *body-frame* forward
+velocity and yaw drifts freely, so world-frame pelvis displacement is not a
+tracking measure. Read the arc-length column, not the displacement column.
+
+### Fingerprints
+
+`fingerprint_lhotse_B.json`, `fingerprint_lhotse_B_playground.json`. Highlights
+for B:
+
+```
+model     nq 39  nv 38  nu 29   (7 base + 29 robot + 3 carrier slides)
+          nbody 32  neq 1  nsensor 7  nhfield 1   dt 0.002  mass 34.4411 kg
+terrain   patch B, 38.60 deg (REAL, Copernicus GLO-30)
+          hfield 12.5 x 7.5 x 0.698 m, 300 x 500 grid, friction 0.9
+rope      29.476 m, 9 waypoints, rise 18.409 m over run 23.002 m
+          => mean slope 38.67 deg (matches the terrain to 0.07 deg)
+ascender  carrier 1.0 kg, ratchet on, arc at spawn 6.368 m
+          grip CONNECT solref [0.004, 1.0] solimp [0.95, 0.99, 0.001, 0.5, 2.0]
+spawn     lean 12.4 deg, ankle -47.0 deg, hand-rope distance 5.6e-17 m
+control   action_scale 0.5, ctrl_dt 0.02 x 10 substeps, kp 2..75
+```
+
+The three carrier slide joints are appended AFTER the robot's, so the robot's
+joints are `qpos[7:36]` / `qvel[6:35]` — **bounded slices only**. An open-ended
+`qpos[7:]` picks the carrier up as three phantom joints. Ours are bounded and
+the obs parity result proves it.
+
+### Contact pairs — the trap that does NOT apply here
+
+His doc records that `climb_env.py`'s `foot_friction` knob is inert, because
+the G1 XML declares `<pair name="left_foot_floor" friction="0.6 0.6"/>` and an
+explicit pair overrides both geoms' friction. **The merged scene compiles with
+`npair 0`** — verified on the built model, not assumed — so the live friction
+knob writing `geom_friction` on the foot and terrain geoms does take effect
+here. The legacy worlds still have the bug, upstream.
+
+### Gaps this raised
+
+**C1 — neither fetch path for the scene's assets works on a clean machine.**
+`rl/tools/fetch_reference_model.py` dies with
+`URLError: [SSL: CERTIFICATE_VERIFY_FAILED]`, and it writes to `rl/.reference`
+(`__file__.parent.parent`) while `robot.py` reads `<repo>/.reference` — so even
+a successful fetch lands in the wrong directory. Separately,
+`assets/robots/mujoco/build.py --fetch` still dies with
+`ModuleNotFoundError: No module named 'pxr'`. `app/harness/provision_assets.py`
+sidesteps all three by copying from the `mujoco_playground` already installed in
+the venv (same pinned menagerie commit, no network). **ASK:** fix the
+`parent.parent` path, and either vendor the reference or make the fetch
+tolerate a proxy.
+
+**C2 — the trainer is still on the old env.** His doc's "Not yet done:
+training" — `rl/environment/{climb_env,wind_env}.py` still use the flat tilted
+plane and the slide joint. So **wind and this terrain are demo-only**, and the
+state message keeps `wind_in_training: false` and adds
+`terrain_in_training: false`. The four `legacy_*` worlds exist precisely
+because that is still the thing being trained.
+
+**C3 — no self-collision termination on the merged scene.** See the table
+above; our fall test is narrower than the training env's. If `adapt` gained
+Playground's seven `..._found` contact sensors the two would match.
+
+**C4 — `B_slope*` slopes are synthetic overrides.** `--list` says so and the
+world list carries `slope_provenance`, but it is worth repeating where the
+numbers get quoted: `slope_45` is *not* the Lhotse Face at 45°. Only
+`lhotse_A/B/C/D` have measured slopes, and even there everything finer than
+~30 m is synthetic (one patch covers 0.447 of a DEM cell).
+
+### Asks from earlier reports that PR #8 RESOLVED
+
+* **P1 — actuator gains (was the blocker).** Resolved by `policy_compat`.
+* **P2 — point `climb_env` at the jacketed MJCF.** Superseded: `climb_scene`
+  takes `robot_scene=` directly and defaults to the jacketed robot, so no
+  monkeypatch is needed for the new path. (Our `robot_variants.py` monkeypatch
+  survives for the legacy env only.)
+* **P3 — the robot needs Playground's names.** Resolved by `robot.adapt`,
+  which adds `right_palm`, the two sensors and the `knees_bent` keyframe.
+* **P4 — `knees_bent` was Playground's, not the robot's.** Resolved: `adapt`
+  installs it, and `build_scene` re-poses it per slope while `walk_policy`
+  keeps the policy's `default_pose` pinned to the training value.
+* **P6 — `build.py --fetch` broken.** Still broken; now tracked as C1.
+
+Still open from earlier: **G6** (brax → npz export for trained checkpoints),
+**G10** (obs layout will change if rope terms are added — his doc says the same:
+"keep the observation at 103 dims"), **G14** (`njmax` sizing, MJX only),
+**P5** (MJX CCD warning on mesh/cylinder pairs — now more relevant, since the
+merged scene has a rope cylinder *and* mesh collision geoms).
+
+## Graphics, natural wind, the sandbox, and A/D — all visual or input-side
+
+### Physics is untouched, and that is MEASURED
+
+The alpine look sets `model.vis`, `geom_rgba`, `light_*` and render-time flags,
+and installs a skybox by recompiling the spec. None of it is read by the
+solver, but a spec recompile is exactly the kind of change that could move
+something quietly, so it is checked rather than asserted. Same world, same
+seed, 6 s, W held, with and without `--plain-graphics`:
+
+| metric | alpine | plain | delta |
+|---|---|---|---|
+| pelvis displacement | 0.768703118 m | 0.768703118 m | **0** |
+| height gained | −0.750794943 m | −0.750794943 m | **0** |
+| rope travel | 0.002006123 m | 0.002006123 m | **0** |
+| max rope force | 304.229107608 N | 304.229107608 N | **0** |
+| hand off line | 0.002243983 m | 0.002243983 m | **0** |
+| `frames.npz` root_position_world | | | **0** |
+| `frames.npz` rope_force_newtons | | | **0** |
+
+**Bit-identical.** The graphics pass cannot change a result.
+
+### The skybox, and why a recompile is safe
+
+A skybox is a TEXTURE and textures are fixed at compile time; the merged scene
+compiles with `ntex 2`, both `mjTEXTURE_2D`. Without a skybox texture
+`mjRND_SKYBOX` does nothing and the background renders BLACK — which is what
+the first attempt looked like.
+
+`build_scene` returns `scene.spec`, so `graphics.add_skybox` adds a gradient
+skybox there and recompiles. A texture is an ASSET, not structure: measured,
+all 14 structural fields come back bit-identical (`nq nv nu nbody njnt neq
+ngeom nsite nsensor nkey`, `jnt_qposadr`, `jnt_dofadr`, `body_mass`, actuator
+targets), with only `ntex` going 2 → 3. `add_skybox` re-checks that list on
+every call and REFUSES the swap if anything moved, so the day this stops being
+true it fails loudly. One real gotcha it also handles: `vis.global_.offwidth`
+lives on the compiled model, not the spec, so a recompile resets the offscreen
+framebuffer to 640 and the next 1920-wide renderer raises
+`Image width 1920 > framebuffer width 640`. It is carried across explicitly.
+
+### Exposure — the first pass was worse than stock
+
+Snow 0.90 + ambient 0.42 + sun 1.00 summed past 1.0 everywhere and clipped: the
+rendered face came back a **featureless white sheet with less visible relief
+than the stock grey**. Looking at the frame is what caught it; the fps numbers
+were fine. Snow is bright but a camera is not, and what sells snow is the
+CONTRAST between the lit and shaded sides of the roughness. Now: snow 0.82,
+ambient 0.20, sun 0.78, total near 1.0 and mostly directional, sun at 16° so it
+rakes. Measured saturation (pixels > 250) is **0.0%**.
+
+### Render cost, 1920×1080, lhotse_B
+
+| | ms/frame | fps |
+|---|---|---|
+| stock visuals | 16.2 | 61.9 |
+| alpine, shadows ON | 14.9 | 67.1 |
+| alpine, shadows OFF | 9.2 | 109.0 |
+
+Shadows cost **5.7 ms/frame** against a 20 ms control tick, and the alpine look
+is *faster* than stock because fog culls distant geometry. So shadows stay ON
+at every size we render — the "off above 1280 wide" contingency was not needed,
+and `graphics.shadows_affordable` keeps that rule available for a slower
+machine. `--no-shadows` and `--plain-graphics` are the escape hatches.
+**Live at 1920×1080 with shadows: realtime factor 1.00.**
+
+No noise texture on the snow, deliberately: a texture needs a compile-time
+asset for the same reason a skybox does, and the heightfield's own 12 cm
+roughness under a raking sun already gives the surface its texture — real
+geometry rather than a painted-on pattern.
+
+### Natural wind
+
+`wind_natural` (0/1, default 0) makes the dial a TARGET rather than a constant.
+
+    speed   = target * clamp(1 + OU(sigma 0.25, tau 4 s), 0.4, 1.6) * (1 + gust)
+    heading = target + OU(sigma 15 deg, tau 6 s)
+    gust    = raised cosine, arrivals every 3-8 s, +20-60%, lasting 0.5-1.5 s
+
+The OU processes are integrated EXACTLY (`x <- x e^(-dt/tau) + sigma sqrt(1 -
+e^(-2dt/tau)) N(0,1)`), not Euler-stepped, so sigma and tau do not drift with
+the tick rate. Everything draws from one generator seeded from `--seed` and
+advances once per control tick, so a replay at the same seed sees the same
+weather. Measured over 300 s at a 12 m/s target:
+
+| seed | speed mean | sd | min | max | heading sd | gusts |
+|---|---|---|---|---|---|---|
+| 0 | 12.54 | 2.90 | 4.80 | 27.48 | 16.09° | 45 in 300 s |
+| 1 | 11.78 | 2.94 | 4.80 | 24.18 | 15.83° | 47 in 300 s |
+
+Determinism at equal seed: PASS. Disabled: **bit-exact pass-through** of the
+dial value — verified, not assumed.
+
+Live, the state message carries `wind_speed_mps`, `wind_heading_degrees`,
+`wind_gain`, `wind_gust` and `wind_natural` alongside the existing
+`wind_velocity_world_meters_per_second` and `wind_force_world_newtons`; all of
+them are recorded, because a replay that stored only the dial could not
+reproduce the gust that knocked the robot over. Measured live at a 12 m/s dial:
+off → exactly 12.00 every tick; on → mean 13.53, sd 1.47, range 10.81–18.03,
+heading sd 8°.
+
+### The sandbox map
+
+**The shipped DEM patches are fixed at 25 × 15 m.** `terrain.load_patch` reads
+a whole `.npz`; there is no crop or window argument anywhere in that module, so
+a bigger map cannot come from the DEM without new code. `terrain.make_terrain`
+DOES take an arbitrary `length_m`/`width_m` and builds from the same octave
+recipe, so the sandbox uses that — **synthetic, not measured**, and it must
+never be quoted as terrain evidence.
+
+Measured at 1920×1080 with an idle robot:
+
+| size | res | grid | fps | hfield MB |
+|---|---|---|---|---|
+| 25 × 15 m | 0.05 | 300 × 500 | 60.9 | 0.6 |
+| 60 × 60 m | 0.10 | 600 × 600 | 54.4 | 1.4 |
+| 120 × 120 m | 0.15 | 800 × 800 | 39.0 | 2.6 |
+| **120 × 120 m** | **0.20** | **600 × 600** | **48.8** | **1.4** |
+| 200 × 200 m | 0.25 | 800 × 800 | 37.9 | 2.6 |
+| 200 × 200 m | 0.30 | 667 × 667 | 43.7 | 1.8 |
+
+**Physics was 20–29× realtime at every size** — the heightfield never bound the
+solver. Render cost is what buys area, and it tracks the GRID, not the metres.
+200 × 200 m is affordable only by making cells so coarse (0.30 m) that the
+finest roughness octave (0.6 m correlation) spans two cells and stops being
+resolved. 120 × 120 m at 0.20 m keeps three cells per finest octave, leaves
+headroom for the graphics pass, and is still **38× the area of a patch**
+(14 400 m² against 375). `sandbox_free` and `sandbox_rope` (the scene's own
+route builder lays a 120.7 m rope across it); live realtime factor 1.00.
+
+### Uneven-terrain ladder, rope off
+
+`load_patch` runs a least-squares DE-PLANE, returning patch B's real
+micro-roughness as a mean-zero grid (RMS 0.1138 m) with the macro tilt on the
+geom's quaternion. So `dataclasses.replace(patch, slope_deg=X)` is the
+roughness-preserving path — verified: `rough` stays bit-identical to patch B's.
+This is used instead of the `B_slope*` files because those exist only at 0, 25,
+30, 35, 45, 50 **and each carries its own noise seed** (roughness correlation
+between B and B_slope25 is −0.06, i.e. unrelated draws). Reusing B's actual
+roughness makes slope the only variable that changes across the ladder.
+
+mels, W held, 10 s, rope off, jacketed robot, spawned at the bottom facing
+uphill:
+
+| world | slope | fell | at | displacement | height |
+|---|---|---|---|---|---|
+| `terrain_free_5` | 5° | **no** | — | 2.04 m | −0.36 m |
+| `terrain_free_10` | 10° | **no** | — | 1.97 m | −0.52 m |
+| `terrain_free_15` | 15° | yes | 3.00 s | 2.60 m | −1.46 m |
+| `terrain_free_20` | 20° | yes | 2.04 s | 149.95 m | −149.65 m |
+| `terrain_free_25` | 25° | yes | 2.88 s | 2.43 m | −1.69 m |
+| `terrain_free_30` | 30° | *no* | — | 2.31 m | −1.74 m |
+
+**The flat-ground walker gives up between 10° and 15°** on real micro-roughness
+with nothing to hold. 20° is the one that finds a clean fall line and slides
+150 m. Read the 30° "no" with the C3 caveat above: our fall test is upright < 0
+with no self-collision term, and at −1.74 m of height that row is a robot
+sitting on the slope, not one walking.
+
+### A/D turn-in-place — works, but the policy tracks yaw poorly
+
+A = +1.0 rad/s, D = −1.0 rad/s, both held cancel, all inside the policy's
+trained `ang_vel_yaw` range. While A or D is held the camera-follow
+`HeadingController` is SUSPENDED and its target re-seated to the robot's
+current yaw every tick, so releasing does not snap the robot back toward the
+camera.
+
+The wiring is right — the issued command is exactly `[0, 0, ±1.0]` — but the
+achieved turn is far below it. flat_0, 3 s, measured:
+
+| rope | command | achieved | note |
+|---|---|---|---|
+| off | +1.0 (A) | **+9.4 °/s** | correct direction |
+| off | −1.0 (D) | −1.9 °/s | correct direction, weak |
+| on | +1.0 (A) | +1.7 °/s | tether dominates |
+| on | +1.0 (A) + W | **−7.9 °/s** | **wrong direction** |
+
+Commanded +1.0 rad/s is 57.3 °/s, so the policy delivers roughly a sixth of it
+at best, asymmetrically. Two causes, both his and both documented upstream:
+the mels policy only initiates a gait above ~0.4 command and a yaw-only command
+leaves it shuffling in place; and his `HeadingController` docstring already
+warns that the rope point-attaches the palm to a fixed line, so a heading
+change drags the robot around its own hand. **Flagged, not fixed** — it is a
+policy/tether limitation, not a wiring bug, and per the standing rule the fix
+is not mine to choose. Yaw also oscillates ±2° per gait step, so "monotonic"
+is ~0.5 at tick level even when the trend is clean.
+
+## Pemba robot variant — the real demo robot on the rope
+
+The four `*_pemba` worlds fly the robot the team actually built
+(`assets/robots/mujoco/g1_unitree_ascender.xml`: jacket, snow boots, ascender
+end-effector in place of the right hand) through the same
+`G1ClimbAscender` env, the same surgery, the same everything else.
+
+### How it is built
+
+`app/harness/robot_variants.py` generates a Playground-compatible scene wrapping
+the real robot, then redirects the one line their builder uses to pick a
+starting scene — `consts.task_to_xml`, called at climb_env.py:136 and :231 and
+joystick.py:121 — at that file for the duration of one constructor. Their
+`_build_model` then tilts the floor, adds the rope and carrier, connects the
+palm and sets foot friction, exactly as it does for the stock robot. **Nothing
+under `assets/robots/mujoco/` is edited.** Generated files carry absolute mesh
+paths, so they are machine-specific and gitignored under
+`app/harness/generated/`.
+
+The generated scene adds only what their code looks up **by name** and would
+crash without. Every addition is a NAME on something that already exists, or a
+sensor — never new collision geometry, because that would change the physics:
+
+| what | how |
+|---|---|
+| `floor` plane geom, `groundplane` material, visual block | copied from Playground's `scene_mjx_feetonly_flat_terrain.xml` |
+| keyframe `knees_bent` | Playground's qpos/ctrl **verbatim** — legal only because joint parity passes (below) |
+| site `right_palm` | the hand is gone; placed at the ascender's own bounding-box centre, where the rope runs through the device |
+| site `left_palm` | left arm untouched, so Playground's exact position (0.08, 0, 0) |
+| geoms `left_foot`/`right_foot` | **named** one of the four existing collision spheres per foot |
+| geoms `left/right_shin`, `left/right_thigh`, `left/right_hand_collision` | **named** the existing collision mesh on each link. On the right arm that is the **ascender**, which is what is out there now |
+| 22 state sensors | Playground's, verbatim — they only reference sites the robot already has |
+| 7 `..._found` contact sensors | re-aimed at **bodies** instead of Playground's geom names. More faithful, not less: `body1="left_ankle_roll_link"` covers all four foot spheres, where a geom name would cover one |
+| mesh paths | the robot points at `../g1/_menagerie/...` (a 34 MB gitignored fetch that needs `usd-core`); the identical menagerie STLs already ship inside `mujoco_playground`, so we point there and skip the fetch — the same rewrite their own `_rewrite_mesh_paths` does (climb_env.py:83-95) |
+
+### Joint parity — the gate the whole variant rests on
+
+`verify_joint_parity()` runs before anything else and **raises** if it fails,
+because copying Playground's `knees_bent` and feeding the policy's 29 actions to
+these actuators is only meaningful if the joint lists match name-for-name in
+order. Result: **29 vs 29, identical names, identical order.** The ascender does
+**not** replace any wrist joint — all three right wrist joints are present; the
+ascender is a geom mounted on `right_wrist_yaw_link`.
+
+### The measured diff (bare Playground G1 -> Pemba G1)
+
+```
+total mass        33.4411 kg -> 33.5411 kg   (+0.1000 kg)
+bodies   33 -> 33     geoms 74 -> 92     sites 7 -> 8
+joints   31 -> 31     actuators 29 -> 29     sensors 29 -> 34
+
+per-body mass changes: 1 of 33 bodies
+  right_wrist_yaw_link        0.2546 kg -> 0.3546 kg     (the ascender)
+
+feet   bare : 1 named box  0.09 x 0.03 x 0.008, condim 3, mu 0.8
+       pemba: 4 spheres per foot, r 0.005, condim 3, mu 0.8 (one named per foot)
+
+joints    identical order: True
+actuators identical order: True
+actuator kp   bare 2-75 per joint      pemba 500 for all 29      IDENTICAL: False
+
+grip   bare  palm/line at [0.14357, -0.2268, 0.66346]
+       pemba palm/line at [0.13970, -0.22663, 0.66425]
+       the line moves 4.0 mm
+```
+
+Jacket, boots and logos are visual-only exactly as their README says: they add
+18 geoms and **zero** mass. The only mass change in the whole robot is the
+ascender's +0.1 kg on the wrist. The grip point moves 4.0 mm, so the rope sits
+essentially where it did.
+
+Full tables: `fingerprint_pemba.json` (30°) and `fingerprint_pemba_slope_0.json`
+against `fingerprint_slope_30.json` / `fingerprint_slope_0.json`.
+
+### Does the observation still work, and does mels still fly it?
+
+Observation is **still 103-d** and finite; `default_pose`, `action_scale`,
+ctrl_dt and the substep count are identical; the mels npz loads and produces a
+finite 29-vector. So the policy runs. It just runs badly:
+
+| run (mels, W held = lin_vel_x 0.5, 10 s) | fell? | fell at | pelvis displ | rope travel | max grip |
+|---|---|---|---|---|---|
+| `free_0` (bare) | **no** | — | **4.320 m** | — | — |
+| `free_0_pemba` (as built) | **yes** | 2.16 s | 0.729 m | — | — |
+| `free_0_pemba` + Playground gains *(diagnostic)* | **no** | — | **2.732 m** | — | — |
+| `climb_30` (bare) | yes | 0.66 s | 0.765 m | +0.187 m | 1162 N |
+| `climb_30_pemba` (as built) | yes | 1.54 s | 0.636 m | +0.167 m | 333 N |
+| `climb_30_pemba` + Playground gains *(diagnostic)* | yes | 0.50 s | 0.656 m | +0.124 m | 378 N |
+
+**The gear is not what stops it walking — the actuator gains are.** With the
+robot exactly as built it falls on flat ground at 2.16 s. Copy Playground's
+per-joint gains onto the same robot, change nothing else, and it walks the full
+10 s for 2.73 m. (0.273 m/s against the bare robot's 0.432 m/s at the same
+command: still degraded by the jacket-era inertia and the four-sphere feet, but
+walking.) That diagnostic is `build_pemba_scene(playground_gains=True)`; it
+writes its own scene file and is **not** the team's robot.
+
+On the rope the ascender does its job on the real robot too: `climb_30_pemba`
+holds the palm **0.09 mm** off the line, travel is monotone, and the grip peaks
+at 333 N instead of the bare robot's 1162 N — it is caught earlier and more
+gently.
+
+### What was looked at, not just measured
+
+A frame of `climb_30_pemba` was rendered and inspected: purple jacket with the
+Everest Robotics chest logo, yellow snow boots, the brown rope cylinder running
+up the 30° slope, and the **orange ascender sitting on the rope** with the
+carrier sphere at its centre — right arm ending at the ascender, left hand
+still a hand. The rope renders on every climb world, as before.
+
+### ASKS — what the team must do to make this official
+
+**P1 — decide the actuator gains (the blocker).**
+`assets/robots/mujoco/g1_unitree_ascender.xml:8` sets
+`<position kp="500" dampratio="1" inheritrange="1"/>` for all 29 joints.
+Playground's G1 uses per-joint gains from 2 (ankle roll, wrist roll) to 75
+(hips, knees, waist, shoulders), and every policy trained in `rl/` is trained
+against those. At kp 500 the ankle roll is **250x** stiffer than the policy
+expects. The measurement above isolates this as the cause of the walking
+failure. Either bring the MJCF's gains to Playground's, or train on 500 and
+accept that the mels baseline will never look good on this robot — but it has
+to be a decision, not an accident.
+
+**P2 — point `climb_env` at this MJCF for real.** The clean version of what
+this module does by monkeypatch: give `climb_env.default_config()` a
+`robot_xml` key (default `None` = Playground's scene) and have `_build_model`
+use `MjSpec.from_file(cfg.robot_xml or consts.task_to_xml(self._task))`. Then
+`registry.load("G1ClimbAscender", config_overrides={"robot_xml": ...})` is all
+anyone needs and this file's generation step is the team's, not ours. Whoever
+does it inherits the checklist in the table above — those names are load-bearing.
+
+**P3 — the robot needs Playground's names, or Playground needs the robot's.**
+Every row in that table exists because the two disagree on naming. The
+cheapest fix is on the robot side: name the collision geoms
+(`left_shin`, `right_thigh`, ...), add `left_palm`/`right_palm` sites, and
+name one foot geom per foot. That is ~10 attributes in `build.py` and it makes
+the robot drop into Playground with no wrapper at all.
+
+**P4 — `knees_bent` is Playground's, not the robot's.** The robot ships one
+keyframe, `stand` (`g1_unitree_ascender.xml:338`), at pelvis z 0.79. We inject
+Playground's `knees_bent` (z 0.755). It is the right pose for the task — the
+palm lands on the rope at waist height — but if the team ever re-tunes the
+demo pose, it must be added to the MJCF as `knees_bent` or this variant keeps
+using Playground's.
+
+**P5 — MJX warns on the mesh collision pairs.** Loading the pemba scene under
+MJX prints: *"MULTICCD is enabled, but the scene contains CCD pairs without
+multicontact support: [('CYLINDER','CYLINDER'), ('CYLINDER','MESH')]. At most 1
+contact will be generated for these pairs."* The harness runs the plain MuJoCo
+C engine and is unaffected, but **training** on this robot runs MJX — worth
+checking before a long run, since the ascender and the rope are exactly those
+mesh/cylinder pairs.
+
+**P6 — `build.py --fetch` is broken without `usd-core`.** It imports
+`../g1/build_g1_usd.py`, which imports `pxr`, so the documented step 1 dies with
+`ModuleNotFoundError: No module named 'pxr'` on a plain install. The harness
+sidesteps it (the same STLs ship inside `mujoco_playground`), but the README's
+two-step instructions do not work as written.
+
 ## Test (a) — observation parity, verbatim numbers
 
 Both sides run with `noise_config.level = 0.0` (comparing determinism, not

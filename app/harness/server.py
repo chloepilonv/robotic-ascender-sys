@@ -71,7 +71,14 @@ class Server:
         self.clients = set()
         self.latest_input = {"keys": [], "camera": {}}
         # wind_x / wind_y are metres per second, not newtons; see the docstring.
-        self.knobs = {"wind_x": 0.0, "wind_y": 0.0, "friction": 0.8}
+        # t_amb (ambient C) and soc0 (start charge %) drive Chloe's BMS; the
+        # defaults are hers (app/bms_ui/bridge.py KNOB_DEFAULTS) so the page and
+        # the plugin agree before the first message.
+        self.knobs = {"wind_x": 0.0, "wind_y": 0.0, "friction": 0.8,
+                      "t_amb": 15.0, "soc0": 100.0,
+                      # 0/1: the wind dial is a TARGET a gusting process
+                      # wanders around, instead of a constant.
+                      "wind_natural": 0.0}
         self.reset_requested = False
         self.paused = False
         self.world_requested = None

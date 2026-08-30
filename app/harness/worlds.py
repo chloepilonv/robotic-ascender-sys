@@ -50,68 +50,87 @@ _HARNESS_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 # name -> the world. `config_overrides` goes straight to their env; `rope` is
 # the MjData-level grip flag.
 WORLD_DEFINITIONS = {
-    "climb_30": {
-        "label": "Climb 30° · rope",
+    "legacy_climb_30": {
+        "label": "LEGACY climb_env · 30° · rope",
         "slope_degrees": 30.0,
         "rope": True,
         "config_overrides": {"climb_config.slope_deg": 30.0},
-        "description": "The training task: 30 degree slope, right palm on the"
-                       " fixed line through the ascender.",
+        "description": "The OLD mechanism: rl/environment/climb_env.py's flat"
+                       " tilted plane and straight-cylinder slide joint. Kept"
+                       " because the trainer still uses it.",
     },
-    "climb_5": {
-        "label": "Climb 5° · rope",
-        "slope_degrees": 5.0,
-        "rope": True,
-        "config_overrides": {"climb_config.slope_deg": 5.0},
-        "description": "5 degree slope with the fixed line: the gentle end of the ladder.",
-    },
-    "climb_8": {
-        "label": "Climb 8° · rope",
-        "slope_degrees": 8.0,
-        "rope": True,
-        "config_overrides": {"climb_config.slope_deg": 8.0},
-        "description": "8 degree slope with the fixed line: the gentle end of the ladder.",
-    },
-    "climb_10": {
-        "label": "Climb 10° · rope",
-        "slope_degrees": 10.0,
-        "rope": True,
-        "config_overrides": {"climb_config.slope_deg": 10.0},
-        "description": "10 degree slope with the fixed line: the gentle end of the ladder.",
-    },
-    "climb_12": {
-        "label": "Climb 12° · rope",
-        "slope_degrees": 12.0,
-        "rope": True,
-        "config_overrides": {"climb_config.slope_deg": 12.0},
-        "description": "12 degree slope with the fixed line: the gentle end of the ladder.",
-    },
-    "free_30": {
-        "label": "Free walk 30° · no rope",
+    "legacy_free_30": {
+        "label": "LEGACY climb_env · 30° · no rope",
         "slope_degrees": 30.0,
         "rope": False,
         "config_overrides": {"climb_config.slope_deg": 30.0},
-        "description": "Same model and same slope, grip equality DEACTIVATED."
-                       " Isolates how much of the behaviour is the slope.",
+        "description": "Old mechanism, grip equality deactivated.",
     },
-    "free_0": {
-        "label": "Free walk 0° · no rope",
+    "legacy_free_0": {
+        "label": "LEGACY climb_env · 0° · no rope",
         "slope_degrees": 0.0,
         "rope": False,
         "config_overrides": {"climb_config.slope_deg": 0.0},
-        "description": "Flat ground, no rope: the stock mels walking baseline.",
+        "description": "Old mechanism, flat, no rope: the original walking"
+                       " baseline.",
     },
-    "climb_0": {
-        "label": "Climb 0° · rope",
+    "legacy_climb_0": {
+        "label": "LEGACY climb_env · 0° · rope",
         "slope_degrees": 0.0,
         "rope": True,
         "config_overrides": {"climb_config.slope_deg": 0.0},
-        "description": "Flat ground with the grip on: what the fixed line alone"
-                       " costs a walker, with the slope taken out.",
+        "description": "Old mechanism, flat, grip on.",
     },
 }
 
-DEFAULT_WORLD_NAME = "climb_30"
+# Every world above runs the stock Playground G1. The demo robot -- jacket,
+# snow boots, ascender end-effector in place of the right hand -- is a second
+# ROBOT VARIANT of the same worlds, built by pointing their `_build_model` at a
+# different starting scene (app/harness/robot_variants.py). Same env class, same
+# surgery, same everything else.
+for _name, _definition in list(WORLD_DEFINITIONS.items()):
+    _definition["robot"] = "bare"
+    _definition["kind"] = "legacy_climb_env"
+
+# The `*_pemba` robot-variant worlds are GONE, and deliberately: PR #8's
+# `climb_scene` builds the jacketed demo robot by DEFAULT, through the team's
+# own `robot.resolve`/`adapt`, so a separate variant of the old env would now
+# be a second way of saying the same thing -- and the worse one, since it
+# cannot drape a rope over terrain. `app/harness/robot_variants.py` stays for
+# the legacy env only.
+
+# The merged ClimbScene worlds go FIRST in the selector; the legacy four sit
+# at the bottom. Import here rather than the other way round so `climb_worlds`
+# stays free of this module.
+from app.harness.climb_worlds import (  # noqa: E402
+    CLIMB_WORLD_DEFINITIONS, DEFAULT_CLIMB_WORLD,
+)
+
+WORLD_DEFINITIONS = {**CLIMB_WORLD_DEFINITIONS, **WORLD_DEFINITIONS}
+
+DEFAULT_WORLD_NAME = DEFAULT_CLIMB_WORLD
+
+# Names that meant something before the ClimbScene worlds landed. Renaming the
+# old four to `legacy_*` broke callers outside this package (app/bms_ui's
+# selftest asks for `free_0`), and the rename was ours, so the compatibility
+# cost is ours too -- absorbed here rather than pushed into someone else's file.
+WORLD_ALIASES = {
+    "free_0": "legacy_free_0",
+    "climb_0": "legacy_climb_0",
+    "free_30": "legacy_free_30",
+    "climb_30": "legacy_climb_30",
+}
+
+
+def resolve_world_name(name: str) -> str:
+    """Accept an old name, return the current one. Unknown names pass through."""
+    if name in WORLD_DEFINITIONS:
+        return name
+    resolved = WORLD_ALIASES.get(name)
+    if resolved is not None:
+        print(f"[worlds] {name!r} is an old name; using {resolved!r}", flush=True)
+        return resolved
+    return name
 
 
 def world_names():
@@ -125,14 +144,25 @@ def describe_worlds():
         "label": definition["label"],
         "slope_degrees": definition["slope_degrees"],
         "rope": definition["rope"],
+        "robot": definition["robot"],
+        "kind": definition["kind"],
+        "slope_provenance": definition.get("slope_provenance"),
         "description": definition["description"],
     } for name, definition in WORLD_DEFINITIONS.items()]
 
 
-def _cache_key(config_overrides):
-    """The FULL override set, frozen. Never a subset -- see the module docstring."""
-    return tuple(sorted((str(k), float(v) if isinstance(v, (int, float)) else v)
-                        for k, v in config_overrides.items()))
+def _cache_key(definition):
+    """The ROBOT plus the FULL override set, frozen.
+
+    The robot belongs in the key as much as the overrides do: `climb_30` and
+    `climb_30_pemba` pass identical `config_overrides` and are different
+    models. A key that omitted it would hand the jacketed world the bare
+    robot's model and nothing would complain.
+    """
+    overrides = definition["config_overrides"]
+    return (definition["robot"],) + tuple(sorted(
+        (str(k), float(v) if isinstance(v, (int, float)) else v)
+        for k, v in overrides.items()))
 
 
 class WorldLibrary:
@@ -144,8 +174,7 @@ class WorldLibrary:
         self.write_fingerprint = write_fingerprint
 
     def is_cached(self, name) -> bool:
-        definition = WORLD_DEFINITIONS[name]
-        return _cache_key(definition["config_overrides"]) in self._models_by_key
+        return _cache_key(WORLD_DEFINITIONS[name]) in self._models_by_key
 
     def load(self, name, on_build_start=None):
         """(model, meta, definition). Builds on first use (~1.6 s), then cached.
@@ -156,23 +185,25 @@ class WorldLibrary:
         if name not in WORLD_DEFINITIONS:
             raise KeyError(f"unknown world {name!r}; have {world_names()}")
         definition = WORLD_DEFINITIONS[name]
-        key = _cache_key(definition["config_overrides"])
+        key = _cache_key(definition)
         if key not in self._models_by_key:
             if on_build_start is not None:
                 on_build_start()
             build_started = time.time()
-            print(f"[worlds] building {name} (overrides"
-                  f" {definition['config_overrides']}) -- cached after", flush=True)
-            # Each model gets its OWN fingerprint file: with one shared path
-            # the last build would overwrite the evidence for the others.
-            fingerprint_path = os.path.join(
-                _HARNESS_DIRECTORY,
-                f"fingerprint_slope_{definition['slope_degrees']:.0f}.json")
+            print(f"[worlds] building {name} (robot {definition['robot']},"
+                  f" overrides {definition['config_overrides']}) -- cached after",
+                  flush=True)
             model, meta = team_env.load_team_model(
                 config_overrides=dict(definition["config_overrides"]),
+                robot=definition["robot"],
                 print_fingerprint=self.print_fingerprint,
                 write_fingerprint=self.write_fingerprint,
-                fingerprint_path=fingerprint_path,
+                # Each model gets its OWN fingerprint file: with one shared
+                # path the last build would overwrite the evidence for the
+                # others. The 30-degree jacketed model is the headline one, so
+                # it takes the plain `fingerprint_pemba.json` name.
+                fingerprint_path=os.path.join(
+                    _HARNESS_DIRECTORY, fingerprint_filename(definition)),
             )
             self._models_by_key[key] = (model, meta)
             print(f"[worlds] built {name} in {time.time() - build_started:.2f} s",
@@ -184,10 +215,18 @@ class WorldLibrary:
         return model, meta, definition
 
     def _siblings(self, name):
-        key = _cache_key(WORLD_DEFINITIONS[name]["config_overrides"])
+        key = _cache_key(WORLD_DEFINITIONS[name])
         return [other for other in WORLD_DEFINITIONS
-                if other != name
-                and _cache_key(WORLD_DEFINITIONS[other]["config_overrides"]) == key]
+                if other != name and _cache_key(WORLD_DEFINITIONS[other]) == key]
+
+
+def fingerprint_filename(definition) -> str:
+    """Which fingerprint file this world's model writes."""
+    slope = definition["slope_degrees"]
+    if definition["robot"] != "pemba":
+        return f"fingerprint_slope_{slope:.0f}.json"
+    return ("fingerprint_pemba.json" if slope == 30.0
+            else f"fingerprint_pemba_slope_{slope:.0f}.json")
 
 
 def ascender_geom_ids(model, meta):

@@ -29,6 +29,11 @@ HUD_FIELD_NAMES = [
     "wind_force_world_newtons", "root_position_world", "fell",
     "rope_travel_meters", "climb_meters", "height_gained_meters",
     "rope_force_newtons", "hand_height_on_line_meters",
+    # The INSTANTANEOUS wind, which differs from the dial once natural wind is
+    # on -- a replay that only stored the dial could not reproduce the gust
+    # that knocked the robot over.
+    "wind_speed_mps", "wind_heading_degrees", "wind_gain", "wind_gust",
+    "wind_natural",
 ]
 
 
@@ -38,12 +43,20 @@ class Recorder:
         self.header = header
         self.control_hz = float(control_hz)
         self.rows = {}
+        # One entry per control tick, each a dict or None: the battery/thermal
+        # readout is a NAMED MAP, not a number, so it cannot ride in
+        # frames.npz's stacked float arrays and gets its own list.
+        self.bms_rows = []
         self.jpeg_frames = []
         os.makedirs(output_directory, exist_ok=True)
 
     def append(self, **fields) -> None:
         for name, value in fields.items():
             self.rows.setdefault(name, []).append(np.asarray(value, dtype=np.float32))
+
+    def append_bms(self, value) -> None:
+        """One battery reading per control tick (the last of that tick), or None."""
+        self.bms_rows.append(value)
 
     def append_frame(self, jpeg_bytes: bytes) -> None:
         self.jpeg_frames.append(jpeg_bytes)
@@ -61,6 +74,8 @@ class Recorder:
         hud = {name: arrays[name].tolist() for name in HUD_FIELD_NAMES if name in arrays}
         if "fell" in hud:
             hud["fell"] = [bool(value) for value in hud["fell"]]
+        if any(value is not None for value in self.bms_rows):
+            hud["bms"] = self.bms_rows
         hud["outcome"] = outcome
         hud["slope_degrees"] = self.header.get("slope_degrees")
         hud["control_hz"] = self.control_hz

@@ -4,171 +4,311 @@
 <meta charset="utf-8">
 <title>G1 Fixed-Line Ascent</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- inline so the page stays self-contained and the tab stops asking for /favicon.ico -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%2318181b'/%3E%3Cpath d='M3 12.5 8 3.5l5 9' fill='none' stroke='%23fafafa' stroke-width='1.6' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
+  /* shadcn-style neutral zinc surface. Colour is reserved for status:
+     green = good / climbing / live, red = fell / cutoff, amber = paused. */
   :root {
-    /* cold palette: night ice, glacier blue, snow */
-    --bg: #070c13; --bg-2: #0a121c; --panel: #0e1725; --panel-2: #162335; --line: #22344c;
-    --ink: #eaf3fc; --ink-dim: #8ba6c4; --ink-faint: #5f7794;
-    --accent: #6fd0ff; --accent-2: #a6e3ff; --warn: #ffc773; --bad: #ff6b7d; --good: #7ce0b0;
-    font-family: -apple-system, "Inter", "Segoe UI", system-ui, sans-serif;
+    --bg: #09090b;          /* zinc-950 */
+    --card: #18181b;        /* zinc-900 */
+    --elevated: #27272a;    /* zinc-800 */
+    --border: #27272a;      /* zinc-800 */
+    --ink: #fafafa;         /* zinc-50  */
+    --ink-2: #a1a1aa;       /* zinc-400 */
+    --ink-3: #71717a;       /* zinc-500 */
+    --good: #22c55e;
+    --bad: #ef4444;
+    --warn: #f59e0b;
+    --radius: 8px;
+    font-family: "Inter", -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-feature-settings: "cv02","cv03","cv04","cv11";
   }
   * { box-sizing: border-box; }
-  body { margin: 0; color: var(--ink); height: 100vh; display: grid; grid-template-rows: 54px 1fr;
-         background: radial-gradient(120% 90% at 20% -10%, #12233a 0%, var(--bg-2) 45%, var(--bg) 100%); }
-  header { display: flex; align-items: center; gap: 18px; padding: 0 20px; border-bottom: 1px solid var(--line);
-           background: linear-gradient(180deg, rgba(30,52,80,.55), rgba(14,23,37,.9)); }
-  header h1 { font-size: 15px; font-weight: 600; letter-spacing: .10em; margin: 0; text-transform: uppercase; }
-  header h1 em { font-style: normal; color: var(--accent); }
-  header h1 span { color: var(--ink-dim); font-weight: 400; margin-left: 10px; letter-spacing: .04em;
-                   text-transform: none; font-size: 12.5px; }
-  .tabs { display: flex; gap: 4px; margin-left: 12px; }
-  .tab { padding: 6px 14px; border-radius: 8px; color: var(--ink-dim); cursor: pointer; font-size: 13px; }
-  .tab:hover { color: var(--ink); }
-  .tab.active { background: var(--panel-2); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
-  #status { margin-left: auto; font-size: 12px; color: var(--ink-dim); display: flex; align-items: center; gap: 8px; }
-  #status i { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); display: inline-block;
-              box-shadow: 0 0 8px currentColor; }
-  #status.on i { background: var(--good); }
-  #realtime { color: var(--ink-faint); font-variant-numeric: tabular-nums; }
-  main { display: grid; grid-template-columns: 1fr 300px; min-height: 0; }
-  #stage { position: relative; background: #04080e; display: flex; align-items: center; justify-content: center;
-           overflow: hidden; }
-  #stage canvas, #stage video { max-width: 100%; max-height: 100%; }
+  body { margin: 0; height: 100vh; background: var(--bg); color: var(--ink);
+         display: grid; grid-template-columns: 1fr 320px; font-size: 13px;
+         -webkit-font-smoothing: antialiased; }
+
+  /* ---------- stage: the picture, edge to edge, and nothing else ---------- */
+  #stage { position: relative; background: #000; overflow: hidden; }
+  #canvas, #stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
   #stage canvas { cursor: pointer; }
   body.pointer-locked #stage canvas { cursor: none; }
   #stage video { display: none; }
+  /* the weather layer: a transparent canvas sized and placed onto whichever media
+     element is showing (live canvas or replay video), never in the way of a click */
+  #snow { position: absolute; left: 0; top: 0; display: none; pointer-events: none;
+          max-width: none; max-height: none; }
 
-  .hud { position: absolute; left: 16px; right: 16px; bottom: 16px; display: flex; gap: 10px; align-items: flex-end;
-         pointer-events: none; flex-wrap: wrap; }
-  .card { background: rgba(7,12,19,.72); backdrop-filter: blur(7px); border: 1px solid var(--line); border-radius: 11px;
-          padding: 9px 12px; font-size: 11px; color: var(--ink-dim); min-width: 104px;
-          text-transform: uppercase; letter-spacing: .09em; }
-  .card b { display: block; color: var(--ink); font-size: 19px; font-weight: 600; letter-spacing: 0;
-            text-transform: none; font-variant-numeric: tabular-nums; margin: 1px 0 1px; }
-  .card.hero { min-width: 152px; border-color: #2f527a; background: rgba(14,30,49,.78); }
-  .card.hero b { font-size: 34px; line-height: 1.05; color: var(--accent-2); }
-  .bar { height: 5px; border-radius: 3px; background: #162335; overflow: hidden; margin-top: 5px; }
-  .bar i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), var(--warn));
-           transition: width .08s linear; }
-  #compass { width: 56px; height: 56px; display: block; margin: -2px auto -4px; }
-
-  .badges { position: absolute; top: 14px; left: 16px; display: flex; gap: 8px; align-items: center; pointer-events: none; }
-  .badge { background: rgba(7,12,19,.72); backdrop-filter: blur(7px); border: 1px solid var(--line); border-radius: 999px;
-           padding: 5px 12px; font-size: 11.5px; color: var(--ink-dim); letter-spacing: .06em; }
-  .badge b { color: var(--ink); font-variant-numeric: tabular-nums; }
-  #motionBadge { color: var(--ink-faint); }
-  #motionBadge.climbing { color: #06131f; background: var(--accent); border-color: var(--accent); font-weight: 600; }
-  #lookHint { position: absolute; top: 14px; right: 16px; font-size: 11px; color: var(--ink-faint);
-              background: rgba(7,12,19,.6); border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px;
-              pointer-events: none; display: none; }
-  /* shown until the judge clicks the view and the pointer is captured */
+  /* the only two things allowed to sit on the picture — and they survive fullscreen,
+     because a judge still has to know what to click and why it stopped */
   #lockOverlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
-                 pointer-events: none; background: radial-gradient(70% 70% at 50% 50%, rgba(4,8,14,.10), rgba(4,8,14,.62)); }
-  #lockOverlay div { text-align: center; background: rgba(9,16,26,.86); backdrop-filter: blur(8px);
-                     border: 1px solid #2f527a; border-radius: 14px; padding: 16px 26px;
-                     box-shadow: 0 10px 40px rgba(0,0,0,.55); }
-  #pausedPill { display: none; margin-bottom: 9px; padding: 3px 13px; border-radius: 999px;
-                background: var(--warn); color: #2a1a05; font-style: normal; font-weight: 700;
-                font-size: 10.5px; letter-spacing: .18em; }
-  #lockOverlay b { display: block; font-size: 15px; font-weight: 600; color: var(--accent-2); letter-spacing: .02em; }
-  #lockOverlay span { display: block; margin-top: 5px; font-size: 11.5px; color: var(--ink-faint); letter-spacing: .06em; }
-  /* shown from the moment a map is picked until the first state frame from that map */
-  #worldToast { position: absolute; top: 52px; left: 50%; transform: translateX(-50%); padding: 7px 18px;
-                border-radius: 999px; background: rgba(14,30,49,.92); backdrop-filter: blur(7px);
-                border: 1px solid #2f527a; color: var(--accent-2); font-size: 12px; letter-spacing: .06em;
-                display: none; pointer-events: none; box-shadow: 0 6px 24px rgba(0,0,0,.45); }
-  #banner { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); padding: 12px 26px;
-            border-radius: 999px; background: rgba(255,107,125,.92); color: #fff; font-weight: 700; font-size: 14px;
-            letter-spacing: .08em; display: none; box-shadow: 0 8px 30px rgba(0,0,0,.5); }
+                 pointer-events: none; background: rgba(9,9,11,.55); }
+  #lockOverlay > div { text-align: center; background: var(--card); border: 1px solid var(--border);
+                       border-radius: var(--radius); padding: 14px 22px; }
+  #pausedPill { display: none; margin-bottom: 9px; padding: 2px 10px; border-radius: 999px;
+                background: rgba(245,158,11,.14); border: 1px solid rgba(245,158,11,.35);
+                color: var(--warn); font-style: normal; font-weight: 600;
+                font-size: 10.5px; letter-spacing: .08em; }
+  #lockTitle { display: block; font-size: 13px; font-weight: 500; color: var(--ink); }
+  #lockSubtitle { display: block; margin-top: 4px; font-size: 11.5px; color: var(--ink-3); }
+  #banner { position: absolute; left: 0; right: 0; top: 0; display: none; padding: 9px 16px;
+            text-align: center; background: var(--bad); color: #fff;
+            font-size: 11.5px; font-weight: 600; letter-spacing: .07em; }
 
-  aside { border-left: 1px solid var(--line); background: linear-gradient(180deg, var(--panel), #0a121c);
-          padding: 18px; overflow: auto; display: flex; flex-direction: column; gap: 16px; }
-  aside h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .14em; color: var(--ink-faint); margin: 0 0 8px; }
-  .row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; margin: 8px 0; }
-  .row output { color: var(--accent); font-variant-numeric: tabular-nums; min-width: 62px; text-align: right; }
-  input[type=range] { width: 100%; accent-color: var(--accent); }
-  .climbkey { display: flex; justify-content: center; margin: 6px 0 10px; }
-  .key { width: 108px; height: 62px; border: 1px solid var(--line); border-radius: 12px; display: flex; flex-direction: column;
-         align-items: center; justify-content: center; gap: 2px; font-size: 24px; font-weight: 700; color: var(--ink-dim);
-         background: linear-gradient(180deg, var(--panel-2), #0e1725); box-shadow: 0 3px 0 #0a1120;
-         user-select: none; cursor: pointer; transition: transform .05s, background .05s; }
-  .key small { font-size: 9.5px; font-weight: 500; letter-spacing: .12em; text-transform: uppercase; }
-  .key.down { background: linear-gradient(180deg, var(--accent-2), var(--accent)); color: #06131f;
-              border-color: var(--accent); box-shadow: 0 0 22px rgba(111,208,255,.35); transform: translateY(3px); }
-  button { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 8px;
-           padding: 8px 12px; font-size: 13px; cursor: pointer; width: 100%; }
-  button:hover { border-color: var(--accent); color: var(--accent-2); }
-  select { width: 100%; background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
-  .hint { font-size: 11px; color: var(--ink-faint); line-height: 1.55; }
-  #replayPanel, #livePanel { display: none; }
-  body.live #livePanel, body.replay #replayPanel { display: block; }
+  /* ---------- sidebar: every control and every number ---------- */
+  aside { border-left: 1px solid var(--border); background: var(--bg); padding: 12px;
+          overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+  /* a column flex child shrinks below its content by default, which silently SQUASHED
+     the cards instead of scrolling the sidebar; every section keeps its natural height */
+  aside > *, #livePanel > *, #replayPanel > *, .bmsknobs > * { flex: none; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; order: 0; }
+  .segmented { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid var(--border);
+               border-radius: var(--radius); background: var(--card); }
+  .tab { padding: 4px 13px; border-radius: 6px; font-size: 12px; color: var(--ink-2);
+         cursor: pointer; user-select: none; line-height: 1.5; }
+  .tab:hover { color: var(--ink); }
+  .tab.active { background: var(--elevated); color: var(--ink); }
+  #status { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--ink-3); }
+  #status i { width: 6px; height: 6px; border-radius: 50%; background: var(--bad); flex: none; }
+  #status.on i { background: var(--good); }
+  #realtime { color: var(--ink-3); font-variant-numeric: tabular-nums; font-size: 10.5px; }
+
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+          padding: 10px; }
+  h2 { font-size: 10.5px; font-weight: 500; text-transform: uppercase; letter-spacing: .1em;
+       color: var(--ink-3); margin: 0 0 7px; }
+  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
+  .head h2 { margin: 0; }
+  .head output { font-size: 12px; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .note { font-size: 11px; color: var(--ink-3); margin-top: 7px; }
+
+  select { width: 100%; appearance: none; -webkit-appearance: none; background: var(--bg);
+           color: var(--ink); border: 1px solid var(--border); border-radius: 6px;
+           padding: 7px 30px 7px 10px; font: inherit; font-size: 12.5px; cursor: pointer;
+           background-image: url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+           background-repeat: no-repeat; background-position: right 10px center; }
+  select:hover:not(:disabled) { border-color: #3f3f46; }
+  select:disabled { color: var(--ink-3); cursor: default; opacity: .7; }
+  button { width: 100%; background: var(--elevated); color: var(--ink); border: 1px solid var(--border);
+           border-radius: 6px; padding: 8px 12px; font: inherit; font-size: 12.5px; font-weight: 500;
+           cursor: pointer; }
+  button:hover { background: #323238; }
+  button:active { background: var(--elevated); }
+
+  input[type=range] { width: 100%; appearance: none; -webkit-appearance: none; background: transparent;
+                      height: 16px; cursor: pointer; margin: 2px 0 0; }
+  input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 999px;
+    background: linear-gradient(90deg, var(--ink) 0 var(--fill,0%), var(--elevated) var(--fill,0%) 100%); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 13px; height: 13px;
+    margin-top: -4.5px; border-radius: 50%; background: var(--ink); border: none; }
+  input[type=range]::-moz-range-track { height: 4px; border-radius: 999px; background: var(--elevated); }
+  input[type=range]::-moz-range-progress { height: 4px; border-radius: 999px; background: var(--ink); }
+  input[type=range]::-moz-range-thumb { width: 13px; height: 13px; border-radius: 50%;
+    background: var(--ink); border: none; }
+
+  .windtools { display: flex; align-items: center; gap: 7px; }
+  .iconbtn { width: 22px; height: 20px; padding: 0; display: inline-flex; align-items: center;
+             justify-content: center; border: 1px solid var(--border); border-radius: 5px;
+             background: var(--bg); color: var(--ink-2); cursor: pointer; flex: none; }
+  .iconbtn:hover { background: var(--bg); color: var(--ink); border-color: #3f3f46; }
+  .iconbtn .cross { display: none; }
+  .iconbtn.muted { color: var(--ink-3); }
+  .iconbtn.muted .wave { display: none; }
+  .iconbtn.muted .cross { display: inline; }
+  .switchrow { width: auto; display: inline-flex; align-items: center; gap: 5px; padding: 0;
+               border: none; background: none; color: var(--ink-3); font-size: 10px;
+               font-weight: 500; text-transform: uppercase; letter-spacing: .08em; cursor: pointer; }
+  .switchrow:hover { background: none; color: var(--ink-2); }
+  .switch { width: 24px; height: 14px; border-radius: 999px; border: 1px solid var(--border);
+            background: var(--elevated); position: relative; flex: none; transition: background .12s; }
+  .switch::after { content: ""; position: absolute; top: 1px; left: 1px; width: 10px; height: 10px;
+                   border-radius: 50%; background: var(--ink-3); transition: transform .12s, background .12s; }
+  .switchrow[aria-checked="true"] { color: var(--ink); }
+  .switchrow[aria-checked="true"] .switch { background: var(--good); border-color: var(--good); }
+  .switchrow[aria-checked="true"] .switch::after { transform: translateX(10px); background: #fff; }
+
+  #windDial { width: 78px; height: 78px; display: block; margin: 0 auto 2px;
+              cursor: grab; touch-action: none; }
+
+  /* ---------- telemetry (the former bottom HUD) ---------- */
+  #telemetry { order: 2; }
+  .hero { display: flex; align-items: baseline; gap: 6px; margin: -1px 0 8px; }
+  .hero b { font-size: 30px; font-weight: 600; letter-spacing: -.02em; line-height: 1;
+            font-variant-numeric: tabular-nums; }
+  .hero span { font-size: 12px; color: var(--ink-3); }
+  .kv { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; align-items: baseline;
+        font-size: 12px; color: var(--ink-2); }
+  .kv b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; }
+  .kv b em { font-style: normal; color: var(--ink-3); font-weight: 400; margin-left: 3px; }
+  .bar { grid-column: 1 / -1; height: 3px; border-radius: 999px; background: var(--elevated);
+         overflow: hidden; margin: -2px 0 1px; }
+  .bar i { display: block; height: 100%; width: 0%; background: var(--ink); transition: width .08s linear; }
+  #motionBadge { margin-top: 11px; padding-top: 10px; border-top: 1px solid var(--border);
+                 font-size: 12px; color: var(--ink-3); display: flex; align-items: center; gap: 7px; }
+  #motionBadge::before { content: ""; width: 6px; height: 6px; border-radius: 50%;
+                         background: currentColor; flex: none; }
+  #motionBadge.climbing { color: var(--good); }
+  #motionBadge.fell { color: var(--bad); }
+
+  /* ---------- battery / thermal: only when a frame carries a `bms` object ---------- */
+  #bmsCard { display: none; order: 3; }
+  #bmsCard.cutoff { border-color: rgba(239,68,68,.5); }
+  #bmsSoc { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .bmsbar { grid-column: auto; margin: 1px 0 0; }
+  .socline { display: flex; align-items: baseline; gap: 7px; }
+  #bmsRuntime { font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .bmsrows { display: grid; gap: 5px; margin-top: 8px; font-size: 11.5px; color: var(--ink-2); }
+  .bmsrows span { display: flex; justify-content: space-between; gap: 10px; white-space: nowrap; }
+  .bmsrows b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; }
+  .bmsrows b em { font-style: normal; color: var(--ink-3); font-weight: 400; margin-left: 5px; }
+  .bmsrows b.hot { color: var(--warn); }
+  .bmsrows b.critical { color: var(--bad); }
+  /* two across: the sidebar has to hold map + wind + friction + telemetry + battery
+     + reset + keys inside 900 px, and these two knobs are the cheapest pair to pack */
+  .bmsknobs { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);
+              display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .bmsknobs .head { margin-bottom: 4px; }
+  #bmsCutoffPill { display: none; margin-top: 10px; padding: 2px 10px; border-radius: 999px;
+                   background: rgba(239,68,68,.14); border: 1px solid rgba(239,68,68,.4);
+                   color: var(--bad); font-style: normal; font-weight: 600;
+                   font-size: 10.5px; letter-spacing: .08em; }
+
+  /* ---------- footer: reset + the whole key legend, one row ---------- */
+  /* Reset and the key legend must stay reachable however tall the sidebar gets (the
+     battery card alone can push it past a laptop viewport), so the footer sticks to the
+     bottom of the scrollport and the sections above it scroll under it. */
+  #liveFooter { order: 4; margin-top: auto; position: sticky; bottom: -12px; z-index: 1;
+                background: var(--bg); padding: 8px 0 12px; display: flex;
+                flex-direction: column; gap: 9px; }
+  #liveFooter::before { content: ""; position: absolute; left: 0; right: 0; top: -10px;
+                        height: 10px; background: linear-gradient(transparent, var(--bg)); }
+  .keys { display: flex; align-items: center; gap: 3px; flex-wrap: wrap;
+          font-size: 10.5px; color: var(--ink-3); }
+  .keycap { display: inline-flex; align-items: center; justify-content: center; min-width: 18px;
+            height: 18px; padding: 0 4px; border: 1px solid var(--border); border-radius: 5px;
+            background: var(--card); color: var(--ink-2); font-size: 10px; font-weight: 600;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #climbKey { cursor: pointer; user-select: none; transition: background .05s, color .05s; }
+  #climbKey.down { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .keys s { text-decoration: none; color: #3f3f46; }
+
+  #replayPanel, #livePanel { display: none; order: 1; flex-direction: column; gap: 10px; }
+  body.live #livePanel, body.replay #replayPanel { display: flex; }
+  body.replay #liveFooter { display: none; }
+  #episodeInfo { font-size: 11px; color: var(--ink-3); margin-top: 9px; line-height: 1.6;
+                 word-break: break-word; }
 </style>
 </head>
 <body class="live">
-<header>
-  <h1><em>EVEREST</em> · Fixed-Line Ascent <span>Unitree G1 · rl/environment/climb_env.py, live</span></h1>
-  <div class="tabs"><div class="tab active" data-mode="live">Live</div><div class="tab" data-mode="replay">Replay</div></div>
-  <div id="status"><i></i><span id="statusText">disconnected</span><span id="realtime"></span></div>
-</header>
-<main>
-  <div id="stage">
-    <canvas id="canvas" width="1280" height="720"></canvas>
-    <video id="video" controls></video>
-    <div class="badges">
-      <div class="badge">slope <b id="hudSlope">—</b>°</div>
-      <div class="badge" id="ropeBadge">rope —</div>
-      <div class="badge" id="motionBadge">holding</div>
-    </div>
-    <div id="lookHint">move mouse to look · hold W to climb · R to respawn</div>
-    <div id="lockOverlay"><div><i id="pausedPill">PAUSED</i><b id="lockTitle">click to take control</b><span id="lockSubtitle">Esc to release</span></div></div>
-    <div id="worldToast"></div>
-    <div id="banner">FELL</div>
-    <div class="hud">
-      <div class="card hero">ascender<b id="hudClimb">0.00</b>m up the line</div>
-      <div class="card">height gained<b id="hudHeight">0.0</b>m vertical</div>
-      <div class="card">rope load<b id="hudRope">0</b>newtons<div class="bar"><i id="ropeBar"></i></div></div>
-      <div class="card">wind<b id="hudWind">0.0 m/s</b><svg id="compass" viewBox="-32 -32 64 64">
-        <circle r="30" fill="none" stroke="#22344c"/><line id="windArrow" x1="0" y1="0" x2="0" y2="0" stroke="#6fd0ff" stroke-width="3" stroke-linecap="round"/></svg></div>
-      <div class="card">time<b id="hudTime">0.00</b>seconds</div>
-    </div>
+<div id="stage">
+  <canvas id="canvas" width="1280" height="720"></canvas>
+  <video id="video" controls></video>
+  <canvas id="snow"></canvas>
+  <div id="lockOverlay"><div><i id="pausedPill">Paused</i><b id="lockTitle">click to take control</b><span id="lockSubtitle">Esc to release</span></div></div>
+  <div id="banner">FELL</div>
+</div>
+<aside>
+  <div class="topbar">
+    <div class="segmented"><div class="tab active" data-mode="live">Live</div><div class="tab" data-mode="replay">Replay</div></div>
+    <div id="status"><i></i><span id="statusText">offline</span><span id="realtime"></span></div>
   </div>
-  <aside>
-    <div id="livePanel">
-      <h2>Ascend</h2>
-      <div class="climbkey"><div class="key" id="climbKey" data-key="w">W<small>hold to climb</small></div></div>
-      <p class="hint"><b>Click the view</b> to take control, then move the mouse to look around — the G1 turns to
-        face wherever you are looking. Hold <b>W</b> and it hauls itself that way up the fixed line; let go and it
-        just hangs on the ascender, standing in the wind. <b>Esc</b> releases the pointer. <b>R</b> respawns the
-        climber and puts the camera back behind it, without giving up the pointer.</p>
-      <h2>Mountain</h2>
-      <div class="row"><label>map</label></div>
+
+  <div id="livePanel">
+    <section class="card">
+      <h2>Map</h2>
       <select id="worldSelect"></select>
-      <p class="hint" id="worldHint">Switching maps respawns the climber at that world’s start.</p>
-      <div class="row"><label>wind speed</label><output id="windOut">0.0 m/s · 0°</output></div>
-      <svg id="windDial" viewBox="-70 -70 140 140" style="width:140px;height:140px;display:block;margin:4px auto;cursor:grab;touch-action:none">
-        <circle r="55" fill="none" stroke="var(--line)" stroke-width="2"/>
-        <text x="0" y="-60" text-anchor="middle" font-size="9" fill="var(--ink-dim)">+Y</text>
-        <text x="63" y="3" text-anchor="middle" font-size="9" fill="var(--ink-dim)">+X</text>
-        <line id="windDialArrow" x1="0" y1="0" x2="0" y2="0" stroke="var(--accent)" stroke-width="3" stroke-linecap="round"/>
-        <circle id="windDot" cx="55" cy="0" r="8" fill="var(--accent)"/>
+      <div class="note" id="worldStatus" style="display:none"></div>
+    </section>
+
+    <section class="card">
+      <div class="head"><h2>Wind</h2>
+        <span class="windtools">
+          <button class="iconbtn" id="soundToggle" aria-pressed="true" title="wind sound">
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor"
+                 stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4.2 6.2H2.2v3.6h2l2.9 2.4V3.8L4.2 6.2z"/>
+              <path class="wave" d="M9.8 5.8a3 3 0 0 1 0 4.4"/>
+              <path class="wave" d="M11.8 4a6 6 0 0 1 0 8"/>
+              <path class="cross" d="M10 6.2l3.6 3.6M13.6 6.2L10 9.8"/>
+            </svg>
+          </button>
+          <button class="switchrow" id="naturalSwitch" role="switch" aria-checked="false">natural<i class="switch"></i></button>
+        </span>
+        <output id="windOut">0.0 m/s</output></div>
+      <svg id="windDial" viewBox="-70 -70 140 140">
+        <circle r="55" fill="none" stroke="var(--border)" stroke-width="3"/>
+        <text x="0" y="-60" text-anchor="middle" font-size="15" fill="var(--ink-3)">N</text>
+        <text x="64" y="5" text-anchor="middle" font-size="15" fill="var(--ink-3)">E</text>
+        <line id="windDialArrow" x1="0" y1="0" x2="0" y2="0" stroke="var(--ink-2)" stroke-width="5" stroke-linecap="round"/>
+        <circle id="windDot" cx="55" cy="0" r="11" fill="var(--ink)"/>
       </svg>
       <input type="range" id="windStrength" min="0" max="25" step="0.5" value="0">
-      <p class="hint">Wind speed in <b>m/s</b>, blown along the dial direction. The force is the quadratic drag law from <code>rl/environment/wind_env.py</code> applied to the torso. <b>The climb env has no wind at training time</b> — this is a demo knob, not something the policy has ever seen.</p>
-      <div class="row"><label>foot friction (μ)</label><output id="frictionOut">0.80</output></div>
+    </section>
+
+    <section class="card">
+      <div class="head"><h2>Friction</h2><output id="frictionOut">0.80</output></div>
       <input type="range" id="friction" min="0.05" max="1.5" step="0.05" value="0.8">
-      <p class="hint">Training pins this at <code>climb_config.foot_friction</code> = 0.8.</p>
-      <p style="margin-top:14px"><button id="resetBtn">Reset climber</button></p>
-      <p class="hint">Same as pressing <b>R</b>, which also recentres the camera and keeps the pointer.</p>
-      <p class="hint">Every live session is recorded to <code>app/harness/episodes/</code> and appears in Replay.</p>
+    </section>
+  </div>
+
+  <div id="replayPanel">
+    <section class="card">
+      <h2>Episode</h2>
+      <select id="episodeSelect"></select>
+      <div id="episodeInfo"></div>
+      <p style="margin:10px 0 0"><button id="refreshBtn">Refresh list</button></p>
+    </section>
+  </div>
+
+  <section class="card" id="telemetry">
+    <h2>Telemetry</h2>
+    <div class="hero"><b id="hudClimb">0.00</b><span>m up the line</span></div>
+    <div class="kv">
+      <span>Height gained</span><b id="hudHeight">0.0<em>m</em></b>
+      <span>Rope load</span><b id="hudRope">0<em>N</em></b>
+      <div class="bar"><i id="ropeBar"></i></div>
+      <span>Time</span><b id="hudTime">0.00<em>s</em></b>
+      <span>Wind</span><b id="hudWind">0.0 m/s · calm</b>
     </div>
-    <div id="replayPanel">
-      <h2>Episodes</h2>
-      <select id="episodeSelect" size="12"></select>
-      <p><button id="refreshBtn">Refresh list</button></p>
-      <div id="episodeInfo" class="hint"></div>
+    <div id="motionBadge">holding</div>
+  </section>
+
+  <section class="card" id="bmsCard">
+    <div class="head"><h2>Battery</h2>
+      <span class="socline"><span id="bmsRuntime">—</span><output id="bmsSoc">—</output></span></div>
+    <div class="bar bmsbar"><i id="bmsSocBar"></i></div>
+    <div class="bmsrows">
+      <span id="bmsPackRow">Pack<b id="bmsPack">—</b></span>
+      <span id="bmsPowerRow">Power<b id="bmsPower">—</b></span>
+      <span id="bmsTempRow">Pack temp<b id="bmsTemp">—</b></span>
+      <span id="bmsWindingRow">Winding<b id="bmsWinding">—</b></span>
     </div>
-  </aside>
-</main>
+    <i id="bmsCutoffPill">Cutoff</i>
+    <!-- battery knobs live inside the card so they hide with it when no pack is reporting -->
+    <div class="bmsknobs">
+      <div>
+        <div class="head"><h2>Ambient</h2><output id="ambientOut">15 °C</output></div>
+        <input type="range" id="ambient" min="-40" max="30" step="1" value="15">
+      </div>
+      <div>
+        <div class="head"><h2>Start SOC</h2><output id="startSocOut">100%</output></div>
+        <input type="range" id="startSoc" min="5" max="100" step="5" value="100">
+      </div>
+    </div>
+  </section>
+
+  <div id="liveFooter">
+    <button id="resetBtn">Reset climber</button>
+    <div class="keys">
+      <span class="keycap" id="climbKey" data-key="w">W</span> climb <s>·</s>
+      <span class="keycap" id="turnLeftKey" data-key="a">A</span><span class="keycap" id="turnRightKey" data-key="d">D</span> turn <s>·</s>
+      <span class="keycap">R</span> reset <s>·</s>
+      <span class="keycap">F</span> fullscreen <s>·</s>
+      <span class="keycap">Esc</span> pause
+    </div>
+  </div>
+</aside>
 <script>
 const $ = id => document.getElementById(id);
 const canvas = $('canvas'), context = canvas.getContext('2d'), video = $('video');
@@ -185,6 +325,8 @@ const state = {
   mode: 'live', socket: null, keys: new Set(), hud: null, slopeDegrees: null,
   camera: { azimuth_degrees: DEFAULT_AZIMUTH_DEGREES, elevation_degrees: DEFAULT_ELEVATION_DEGREES },
   worlds: {}, world: null, pendingWorld: null, paused: true, pauseIntent: true, loading: false,
+  windNow: null,
+  actuatorNames: null,
 };
 
 // ---------- HUD ----------
@@ -193,42 +335,508 @@ function paintHud(frame) {
   const height = Number(frame.height_gained_meters || 0);
   const rope = Number(frame.rope_force_newtons || 0);
   // wind is now a VELOCITY in m/s, not a force in newtons
-  const wind = frame.wind_velocity_world_meters_per_second || [0, 0];
+  const windVelocity = windVelocityFromFrame(frame);
   const command = frame.command || [0, 0, 0];
   $('hudClimb').textContent = climb.toFixed(2);
-  $('hudHeight').textContent = height.toFixed(1);
-  $('hudRope').textContent = rope.toFixed(0);
+  $('hudHeight').innerHTML = height.toFixed(1) + '<em>m</em>';
+  $('hudRope').innerHTML = rope.toFixed(0) + '<em>N</em>';
   $('ropeBar').style.width = Math.max(0, Math.min(100, rope / ROPE_LOAD_FULL_SCALE_NEWTONS * 100)).toFixed(1) + '%';
-  $('hudTime').textContent = Number(frame.time_seconds || 0).toFixed(2);
-  const magnitude = Math.hypot(wind[0], wind[1]);
-  $('hudWind').textContent = magnitude.toFixed(1) + ' m/s';
-  const reach = Math.min(28, magnitude / 25 * 28);
-  $('windArrow').setAttribute('x2', magnitude ? wind[0] / magnitude * reach : 0);
-  $('windArrow').setAttribute('y2', magnitude ? -wind[1] / magnitude * reach : 0);
+  $('hudTime').innerHTML = Number(frame.time_seconds || 0).toFixed(2) + '<em>s</em>';
+  const magnitude = Math.hypot(windVelocity[0], windVelocity[1]);
+  $('hudWind').textContent = magnitude < 0.05
+    ? '0.0 m/s · calm'
+    : magnitude.toFixed(1) + ' m/s · ' + compassPointName(windVelocity[0], windVelocity[1]);
+  noteWindVelocity(windVelocity);
+  // what the air is ACTUALLY doing this tick, which natural wind makes differ from the dial
+  state.windNow = { speed: instantaneousWindSpeed(frame, magnitude),
+                    east: windVelocity[0], north: windVelocity[1] };
+  paintWindReadout();
+  noteWindSpeed(state.windNow.speed);
+  paintBatteryCard(frame);
+  // one status line replaces the old motion badge: climbing (green) / holding / hanging (red)
   const climbing = Number(command[0]) > 0;
+  const fell = Boolean(frame.fell);
   const motion = $('motionBadge');
-  motion.textContent = state.paused ? 'paused' : climbing ? 'climbing' : 'holding';
-  motion.classList.toggle('climbing', climbing && !state.paused);
-  if (frame.rope_enabled !== undefined) {
-    $('ropeBadge').textContent = frame.rope_enabled ? 'rope on' : 'no rope';
-  }
-  const slope = frame.slope_degrees !== undefined && frame.slope_degrees !== null ? frame.slope_degrees : state.slopeDegrees;
-  $('hudSlope').textContent = (slope === null || slope === undefined) ? '—' : Number(slope).toFixed(0);
+  motion.textContent = fell ? 'hanging' : state.paused ? 'paused' : climbing ? 'climbing' : 'holding';
+  motion.classList.toggle('climbing', climbing && !state.paused && !fell);
+  motion.classList.toggle('fell', fell);
+  if (frame.slope_degrees !== undefined && frame.slope_degrees !== null) state.slopeDegrees = frame.slope_degrees;
   const banner = $('banner');
-  banner.textContent = state.mode === 'live' ? 'HANGING ON THE ROPE — press Reset' : 'FELL';
-  banner.style.display = frame.fell ? 'block' : 'none';
+  banner.textContent = state.mode === 'live' ? 'HANGING ON THE ROPE — PRESS R' : 'FELL';
+  banner.style.display = fell ? 'block' : 'none';
 }
+
+// The wind the HUD and the weather layer both read, in METRES PER SECOND, world XY.
+// `wind_velocity_world_meters_per_second` is the honest source; a frame that only
+// carries `wind_force_world_newtons` (same direction, quadratic drag law) still gives
+// us the DIRECTION, and the dial's own reading is where the speed came from anyway.
+function windVelocityFromFrame(frame) {
+  const velocity = frame.wind_velocity_world_meters_per_second;
+  if (Array.isArray(velocity) && Number.isFinite(Number(velocity[0])))
+    return [Number(velocity[0]) || 0, Number(velocity[1]) || 0];
+  // speed + heading is the other honest pair. app/harness/natural_wind.py builds the
+  // heading as atan2(north, east) and the vector back as speed * (cos, sin), i.e. it is
+  // measured COUNTERCLOCKWISE FROM EAST, not clockwise from north -- so east is the
+  // cosine. (compassPointName takes east/north and does its own bearing maths.)
+  const speed = Number(frame.wind_speed_mps), heading = Number(frame.wind_heading_degrees);
+  if (Number.isFinite(speed) && Number.isFinite(heading)) {
+    const radians = heading * Math.PI / 180;
+    return [speed * Math.cos(radians), speed * Math.sin(radians)];
+  }
+  const force = frame.wind_force_world_newtons;
+  if (Array.isArray(force)) {
+    const size = Math.hypot(Number(force[0]) || 0, Number(force[1]) || 0);
+    if (size > 1e-6) return [Number(force[0]) / size * wind.strength, Number(force[1]) / size * wind.strength];
+  }
+  return [0, 0];
+}
+// The instantaneous speed the SOUND follows. `wind_speed_mps` is the honest source;
+// failing that the quadratic drag law inverts the force, F = k v^2 -> v = sqrt(F/k);
+// failing that, the magnitude of whatever velocity we did manage to read.
+const WIND_DRAG_COEFFICIENT = 0.3675;
+function instantaneousWindSpeed(frame, velocityMagnitude) {
+  const speed = Number(frame.wind_speed_mps);
+  if (Number.isFinite(speed)) return Math.max(0, speed);
+  const force = frame.wind_force_world_newtons;
+  if (Array.isArray(force)) {
+    const size = Math.hypot(Number(force[0]) || 0, Number(force[1]) || 0);
+    if (size > 1e-6) return Math.sqrt(size / WIND_DRAG_COEFFICIENT);
+  }
+  return velocityMagnitude;
+}
+// The dial is drawn +Y up / +X right, so read +Y as north and +X as east; the name is
+// the point the wind is blowing TOWARD, which is what the arrow already shows.
+const COMPASS_POINT_NAMES = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE',
+                             'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+function compassPointName(eastMetersPerSecond, northMetersPerSecond) {
+  const bearing = Math.atan2(eastMetersPerSecond, northMetersPerSecond) * 180 / Math.PI;
+  return COMPASS_POINT_NAMES[(Math.round(((bearing % 360) + 360) % 360 / 22.5) % 16)];
+}
+
+// ---------- BMS (optional data) ----------
+// Purely opt-in: a state frame without a `bms` object hides the card outright (knobs
+// and all), so a runtime that knows nothing about batteries is unchanged. The live
+// shape comes from app/bms_ui/bridge.py BmsPlugin.state(); replay rebuilds a subset of
+// it from hud.json's flat per-tick bms_* arrays.
+function paintBatteryCard(frame) {
+  const bms = frame.bms;
+  const card = $('bmsCard');
+  // the joint names ride alongside the bms block, once per live message; keep the last set
+  if (Array.isArray(frame.actuator_names)) state.actuatorNames = frame.actuator_names;
+  if (!bms || typeof bms !== 'object' || Array.isArray(bms)) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  const stateOfCharge = Number(bms.soc_pct);
+  const stateOfChargeKnown = Number.isFinite(stateOfCharge);
+  $('bmsSoc').textContent = stateOfChargeKnown ? stateOfCharge.toFixed(0) + '%' : '—';
+  const fill = $('bmsSocBar');
+  fill.style.width = (stateOfChargeKnown ? Math.max(0, Math.min(100, stateOfCharge)) : 0).toFixed(1) + '%';
+  fill.style.background = !stateOfChargeKnown ? 'var(--ink-3)'
+    : stateOfCharge <= 15 ? 'var(--bad)'
+    : stateOfCharge <= 35 ? 'var(--warn)'
+    : 'var(--good)';
+  // time_to_empty_min is null when the draw is so low the pack never empties
+  $('bmsRuntime').textContent = formatTimeToEmpty(bms.time_to_empty_min);
+
+  const packVolts = Number(bms.pack_V), packAmps = Number(bms.current_A);
+  setBatteryRow('bmsPackRow', 'bmsPack',
+    joinKnown([Number.isFinite(packVolts) ? packVolts.toFixed(1) + ' V' : null,
+               Number.isFinite(packAmps) ? packAmps.toFixed(1) + ' A' : null]));
+
+  const power = Number(bms.power_W), mechanicalPower = Number(bms.mech_power_W);
+  setBatteryRow('bmsPowerRow', 'bmsPower',
+    Number.isFinite(power) ? power.toFixed(0) + ' W' : null,
+    Number.isFinite(mechanicalPower) ? 'mech ' + mechanicalPower.toFixed(0) + ' W' : null);
+
+  const packTemperature = Number(bms.t_bat_C);
+  // t_amb_C is the live bridge's name; hud.json does not record ambient at all
+  const ambientTemperature = Number(bms.t_amb_C !== undefined ? bms.t_amb_C : bms.T_amb_C);
+  setBatteryRow('bmsTempRow', 'bmsTemp',
+    joinKnown([Number.isFinite(packTemperature) ? packTemperature.toFixed(0) + ' °C' : null,
+               Number.isFinite(ambientTemperature) ? 'amb ' + ambientTemperature.toFixed(0) + ' °C' : null]));
+
+  const winding = Number(bms.max_temp_winding_C);
+  setBatteryRow('bmsWindingRow', 'bmsWinding',
+    Number.isFinite(winding) ? winding.toFixed(0) + ' °C' : null,
+    hotJointName(bms.hot_joint));
+  const windingValue = $('bmsWinding');
+  windingValue.classList.toggle('hot', Number.isFinite(winding) && winding >= 70 && winding < 90);
+  windingValue.classList.toggle('critical', Number.isFinite(winding) && winding >= 90);
+
+  // the flag may ride on the bms object or beside it; accept either
+  const cutoff = Boolean(bms.bms_cutoff !== undefined ? bms.bms_cutoff
+                       : bms.cutoff !== undefined ? bms.cutoff : frame.bms_cutoff);
+  $('bmsCutoffPill').style.display = cutoff ? 'inline-block' : 'none';
+  card.classList.toggle('cutoff', cutoff);
+}
+function joinKnown(parts) { const kept = parts.filter(Boolean); return kept.length ? kept.join(' · ') : null; }
+function formatTimeToEmpty(minutes) {
+  const value = Number(minutes);
+  if (minutes === null || minutes === undefined || !Number.isFinite(value)) return '—';
+  return value < 120 ? Math.round(value) + ' min' : (value / 60).toFixed(1) + ' h';
+}
+// `hot_joint` is an INDEX into the top-level actuator_names[]; a runtime that sends the
+// name outright is accepted too.
+function hotJointName(hotJoint) {
+  if (typeof hotJoint === 'string') return hotJoint || null;
+  if (!Number.isInteger(hotJoint)) return null;
+  const names = state.actuatorNames;
+  return (names && names[hotJoint]) || 'actuator_' + hotJoint;
+}
+// `text` is the number; `mutedNote` is the greyed tail after it (mech watts, joint name).
+// A null `text` hides the whole row, which is how a sparse frame drops rows it has no data for.
+function setBatteryRow(rowElementId, valueElementId, text, mutedNote = null) {
+  $(rowElementId).style.display = text === null ? 'none' : 'flex';
+  if (text === null) return;
+  const value = $(valueElementId);
+  value.textContent = text;
+  if (!mutedNote) return;
+  const note = document.createElement('em');
+  note.textContent = mutedNote;
+  value.appendChild(note);
+}
+
+// ---------- SNOW + WIND OVERLAY ----------
+// A transparent canvas stacked exactly over whichever media element is showing (the
+// live JPEG canvas, or the replay <video>). It is painted by requestAnimationFrame at
+// DISPLAY rate, deliberately independent of the 50 Hz stream: the stream only moves the
+// wind vector, the flakes integrate themselves. Frozen -- not cleared -- while the sim
+// is paused, the replay is paused, or the tab is hidden.
+const snowCanvas = $('snow'), snowContext = snowCanvas.getContext('2d');
+const SNOW_FLAKE_MAXIMUM = 560;                 // allocated once, up front
+const SNOW_FLAKE_CALM_COUNT = 200;              // how many fall at 0 m/s
+const BLIZZARD_METERS_PER_SECOND = 20;          // where "sideways blizzard" saturates
+const WIND_RIBBON_COUNT = 26;
+const REFERENCE_HEIGHT_PIXELS = 720;            // every speed below is quoted at this height
+const WIND_SMOOTHING_SECONDS = 0.30;            // the dial snaps; the weather shouldn't
+
+// The world wind, and its screen-space projection in m/s: `lateral` is +right across the
+// view, `towardViewer` is +out of the screen. Both are rebuilt every frame from the
+// camera azimuth, so orbiting the robot swings the snow around with it.
+const windVelocityWorld = [0, 0];
+const windScreen = { lateral: 0, towardViewer: 0, speed: 0 };
+function noteWindVelocity(velocity) {
+  windVelocityWorld[0] = velocity[0]; windVelocityWorld[1] = velocity[1];
+}
+// MuJoCo's orbit camera SITS at `azimuth` around the pelvis and looks back at it, so the
+// viewing direction is the opposite bearing -- which is why the page's default azimuth of
+// 180 looks along +x, the uphill direction. Screen right is forward x world-up.
+function updateWindScreen(elapsedSeconds) {
+  const azimuthRadians = state.camera.azimuth_degrees * Math.PI / 180;
+  const forwardX = -Math.cos(azimuthRadians), forwardY = -Math.sin(azimuthRadians);
+  const rightX = forwardY, rightY = -forwardX;
+  const lateral = windVelocityWorld[0] * rightX + windVelocityWorld[1] * rightY;
+  const towardViewer = -(windVelocityWorld[0] * forwardX + windVelocityWorld[1] * forwardY);
+  const blend = elapsedSeconds > 0 ? 1 - Math.exp(-elapsedSeconds / WIND_SMOOTHING_SECONDS) : 0;
+  windScreen.lateral += (lateral - windScreen.lateral) * blend;
+  windScreen.towardViewer += (towardViewer - windScreen.towardViewer) * blend;
+  windScreen.speed = Math.hypot(windScreen.lateral, windScreen.towardViewer);
+}
+
+function makeSnowFlake() {
+  return { x: Math.random(), y: Math.random(), depth: Math.random(), velocityX: 0, velocityY: 0,
+           wobblePhase: Math.random() * Math.PI * 2, wobbleRate: 0.6 + Math.random() * 1.4 };
+}
+function makeWindRibbon() {
+  return { x: Math.random(), y: Math.random(), depth: Math.random(), velocityX: 0, velocityY: 0,
+           gustPhase: Math.random() * Math.PI * 2, gustRate: 0.25 + Math.random() * 0.55 };
+}
+const snowFlakes = Array.from({ length: SNOW_FLAKE_MAXIMUM }, makeSnowFlake);
+const windRibbons = Array.from({ length: WIND_RIBBON_COUNT }, makeWindRibbon);
+
+const SNOW_ENABLED = false;                     // user's call 2026-08-29: no snow particles (wind ribbons + HUD stay)
+function activeFlakeCount() {
+  if (!SNOW_ENABLED) return 0;
+  const share = Math.max(0, Math.min(1, windScreen.speed / BLIZZARD_METERS_PER_SECOND));
+  return Math.round(SNOW_FLAKE_CALM_COUNT + (SNOW_FLAKE_MAXIMUM - SNOW_FLAKE_CALM_COUNT) * share);
+}
+// a crosswind strong enough to sweep the view sends new flakes in from the UPWIND edge,
+// otherwise they keep falling in from the top
+function respawnFlake(flake) {
+  flake.depth = Math.random();
+  flake.wobblePhase = Math.random() * Math.PI * 2;
+  if (Math.random() < Math.min(1, Math.abs(windScreen.lateral) / 8)) {
+    flake.x = windScreen.lateral > 0 ? -0.02 : 1.02;
+    flake.y = Math.random() * 1.1 - 0.05;
+  } else {
+    flake.x = Math.random();
+    flake.y = -0.02;
+  }
+}
+// One weather field, in overlay CSS pixels per second, shared by flakes and ribbons so
+// they read as the same gust. Depth (0 far, 1 near) buys size, speed and opacity; the
+// toward-viewer component of the wind pushes everything out from the middle of the view
+// (or sucks it in), which is how "into the screen" reads without a real projection.
+const weatherVelocityScratch = [0, 0];
+function weatherVelocity(normalizedX, normalizedY, depth, pixelScale, out) {
+  const towardShare = Math.max(-1, Math.min(1, windScreen.towardViewer / BLIZZARD_METERS_PER_SECOND));
+  const speedShare = Math.min(1, windScreen.speed / BLIZZARD_METERS_PER_SECOND);
+  const radial = towardShare * (70 + depth * 150) * pixelScale;
+  out[0] = windScreen.lateral * (13 + depth * 30) * pixelScale + (normalizedX - 0.5) * 2 * radial;
+  out[1] = (26 + depth * 95) * pixelScale * (1 + 0.45 * speedShare) + (normalizedY - 0.5) * 2 * radial;
+  return out;
+}
+
+function updateSnow(elapsedSeconds, widthPixels, heightPixels) {
+  const pixelScale = heightPixels / REFERENCE_HEIGHT_PIXELS;
+  const calmShare = 1 - Math.min(1, windScreen.speed / BLIZZARD_METERS_PER_SECOND);
+  const count = activeFlakeCount();
+  for (let index = 0; index < count; index++) {
+    const flake = snowFlakes[index];
+    weatherVelocity(flake.x, flake.y, flake.depth, pixelScale, weatherVelocityScratch);
+    flake.wobblePhase += flake.wobbleRate * elapsedSeconds;
+    // the lazy sway of still air; a blizzard has no time for it
+    const wobble = Math.cos(flake.wobblePhase) * (10 + flake.depth * 16) * pixelScale * calmShare;
+    flake.velocityX = weatherVelocityScratch[0] + wobble;
+    flake.velocityY = weatherVelocityScratch[1];
+    flake.x += flake.velocityX * elapsedSeconds / widthPixels;
+    flake.y += flake.velocityY * elapsedSeconds / heightPixels;
+    if (flake.y > 1.05) respawnFlake(flake);
+    else if (flake.y < -0.7) { flake.y = 1.02; flake.x = Math.random(); }
+    else if (flake.x < -0.05) flake.x = 1.02;
+    else if (flake.x > 1.05) flake.x = -0.02;
+  }
+}
+function drawSnow(widthPixels, heightPixels) {
+  const pixelScale = heightPixels / REFERENCE_HEIGHT_PIXELS;
+  // below ~3 m/s a flake is a dot; above it, it is the smear of where it just was
+  const streakSeconds = 0.055 * Math.max(0, Math.min(1,
+    (windScreen.speed - 3) / (BLIZZARD_METERS_PER_SECOND - 3)));
+  const count = activeFlakeCount();
+  snowContext.lineCap = 'round';
+  for (let index = 0; index < count; index++) {
+    const flake = snowFlakes[index];
+    const radius = (0.7 + flake.depth * 2.1) * pixelScale;
+    const alpha = (0.16 + flake.depth * 0.5).toFixed(3);
+    const pointX = flake.x * widthPixels, pointY = flake.y * heightPixels;
+    const tailX = flake.velocityX * streakSeconds, tailY = flake.velocityY * streakSeconds;
+    if (Math.hypot(tailX, tailY) > radius * 2.2) {
+      snowContext.strokeStyle = 'rgba(244,244,245,' + alpha + ')';
+      snowContext.lineWidth = radius * 1.5;
+      snowContext.beginPath();
+      snowContext.moveTo(pointX, pointY);
+      snowContext.lineTo(pointX - tailX, pointY - tailY);
+      snowContext.stroke();
+    } else {
+      snowContext.fillStyle = 'rgba(244,244,245,' + alpha + ')';
+      snowContext.beginPath();
+      snowContext.arc(pointX, pointY, radius, 0, Math.PI * 2);
+      snowContext.fill();
+    }
+  }
+}
+
+// gust ribbons: long faint streaks along the same field, length growing with speed, each
+// breathing on its own gust phase so the air looks alive without hiding the robot
+function updateWindRibbons(elapsedSeconds, widthPixels, heightPixels) {
+  const pixelScale = heightPixels / REFERENCE_HEIGHT_PIXELS;
+  for (const ribbon of windRibbons) {
+    weatherVelocity(ribbon.x, ribbon.y, 0.4 + ribbon.depth * 0.6, pixelScale, weatherVelocityScratch);
+    ribbon.velocityX = weatherVelocityScratch[0] * 1.35;
+    ribbon.velocityY = weatherVelocityScratch[1] * 0.5;
+    ribbon.gustPhase += ribbon.gustRate * elapsedSeconds;
+    ribbon.x += ribbon.velocityX * elapsedSeconds / widthPixels;
+    ribbon.y += ribbon.velocityY * elapsedSeconds / heightPixels;
+    if (ribbon.x < -0.4 || ribbon.x > 1.4 || ribbon.y < -0.4 || ribbon.y > 1.4) {
+      ribbon.x = windScreen.lateral >= 0 ? -0.2 : 1.2;
+      ribbon.y = Math.random();
+      ribbon.depth = Math.random();
+    }
+  }
+}
+function drawWindRibbons(widthPixels, heightPixels) {
+  const strength = Math.max(0, Math.min(1,
+    (windScreen.speed - 1.5) / (BLIZZARD_METERS_PER_SECOND - 1.5)));
+  if (strength <= 0.001) return;
+  const pixelScale = heightPixels / REFERENCE_HEIGHT_PIXELS;
+  const diagonalPixels = Math.hypot(widthPixels, heightPixels);
+  snowContext.lineCap = 'round';
+  for (const ribbon of windRibbons) {
+    const speed = Math.hypot(ribbon.velocityX, ribbon.velocityY);
+    if (speed < 1) continue;
+    const gust = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(ribbon.gustPhase));
+    const length = diagonalPixels * (0.05 + 0.34 * strength) * (0.45 + ribbon.depth);
+    const directionX = ribbon.velocityX / speed, directionY = ribbon.velocityY / speed;
+    const pointX = ribbon.x * widthPixels, pointY = ribbon.y * heightPixels;
+    const tailX = pointX - directionX * length, tailY = pointY - directionY * length;
+    const alpha = ((0.10 + 0.17 * ribbon.depth) * strength * gust).toFixed(3);
+    const gradient = snowContext.createLinearGradient(pointX, pointY, tailX, tailY);
+    gradient.addColorStop(0, 'rgba(228,228,231,' + alpha + ')');
+    gradient.addColorStop(1, 'rgba(228,228,231,0)');
+    snowContext.strokeStyle = gradient;
+    snowContext.lineWidth = (1.1 + ribbon.depth * 2.4) * pixelScale;
+    snowContext.beginPath();
+    snowContext.moveTo(pointX, pointY);
+    snowContext.lineTo(tailX, tailY);
+    snowContext.stroke();
+  }
+}
+
+// the overlay chases the media element's own box, which moves whenever the window is
+// resized or the stream changes resolution -- only touching the DOM when it really moved,
+// because assigning canvas.width clears the canvas
+const snowLayout = { left: null, top: null, width: 0, height: 0, ratio: 0, shown: false };
+function syncSnowCanvas() {
+  const media = state.mode === 'replay' ? video : canvas;
+  const mediaRectangle = media.getBoundingClientRect();
+  if (mediaRectangle.width < 4 || mediaRectangle.height < 4) {
+    if (snowLayout.shown) { snowCanvas.style.display = 'none'; snowLayout.shown = false; }
+    return false;
+  }
+  const stageRectangle = $('stage').getBoundingClientRect();
+  const width = Math.round(mediaRectangle.width), height = Math.round(mediaRectangle.height);
+  const left = Math.round(mediaRectangle.left - stageRectangle.left);
+  const top = Math.round(mediaRectangle.top - stageRectangle.top);
+  if (left !== snowLayout.left || top !== snowLayout.top) {
+    snowLayout.left = left; snowLayout.top = top;
+    snowCanvas.style.left = left + 'px'; snowCanvas.style.top = top + 'px';
+  }
+  const ratio = Math.min(2, window.devicePixelRatio || 1);
+  if (width !== snowLayout.width || height !== snowLayout.height || ratio !== snowLayout.ratio) {
+    snowLayout.width = width; snowLayout.height = height; snowLayout.ratio = ratio;
+    snowCanvas.style.width = width + 'px'; snowCanvas.style.height = height + 'px';
+    snowCanvas.width = Math.round(width * ratio); snowCanvas.height = Math.round(height * ratio);
+    snowContext.setTransform(ratio, 0, 0, ratio, 0, 0);   // everything below draws in CSS pixels
+  }
+  if (!snowLayout.shown) { snowCanvas.style.display = 'block'; snowLayout.shown = true; }
+  return true;
+}
+function weatherIsFrozen() {
+  if (document.hidden) return true;
+  if (state.mode === 'replay') return video.paused || video.ended;
+  return state.paused;
+}
+let lastAnimationMilliseconds = performance.now();
+function animateWeather(nowMilliseconds) {
+  requestAnimationFrame(animateWeather);
+  const wallSeconds = Math.min(0.05, Math.max(0, (nowMilliseconds - lastAnimationMilliseconds) / 1000));
+  lastAnimationMilliseconds = nowMilliseconds;
+  if (!syncSnowCanvas()) return;
+  // frozen means dt = 0: everything still repaints (a resize would otherwise blank it),
+  // nothing moves
+  const elapsedSeconds = weatherIsFrozen() ? 0 : wallSeconds;
+  updateWindScreen(elapsedSeconds);
+  const width = snowLayout.width, height = snowLayout.height;
+  updateWindRibbons(elapsedSeconds, width, height);
+  updateSnow(elapsedSeconds, width, height);
+  snowContext.clearRect(0, 0, width, height);
+  drawWindRibbons(width, height);
+  drawSnow(width, height);
+}
+
+// ---------- WIND SOUND ----------
+// A synth, not a sample: pink noise through a band-pass and a low-pass that both open up
+// with the wind, plus a slow LFO on the band-pass so the howl breathes instead of sitting
+// there. Browsers refuse to start audio without a user gesture, so the context is built on
+// the first click of the view -- the same click that takes the pointer.
+const WIND_SOUND_SILENT_METERS_PER_SECOND = 1.0;    // below this, nothing
+const WIND_SOUND_FULL_METERS_PER_SECOND = 20.0;     // at this, howling
+const WIND_GAIN_TIME_CONSTANT_SECONDS = 0.15;       // gusts swell; they never click
+const WIND_SOUND_UPDATE_INTERVAL_MILLISECONDS = 60; // the stream is 50 Hz; the ear is not
+const windSound = { context: null, master: null, bandPass: null, lowPass: null,
+                    muted: false, speed: 0 };
+
+function readWindSoundMuted() {
+  try { return localStorage.getItem('windSoundMuted') === '1'; } catch { return false; }
+}
+function writeWindSoundMuted(muted) {
+  try { localStorage.setItem('windSoundMuted', muted ? '1' : '0'); } catch { /* private mode */ }
+}
+// Voss-McCartney-ish pink filter over white noise: three one-pole rows summed. Pink, not
+// white, because white noise reads as hiss and pink reads as air.
+function makePinkNoiseBuffer(context) {
+  const buffer = context.createBuffer(1, Math.floor(context.sampleRate * 3), context.sampleRate);
+  const samples = buffer.getChannelData(0);
+  let row0 = 0, row1 = 0, row2 = 0;
+  for (let index = 0; index < samples.length; index++) {
+    const white = Math.random() * 2 - 1;
+    row0 = 0.99765 * row0 + white * 0.0990460;
+    row1 = 0.96300 * row1 + white * 0.2965164;
+    row2 = 0.57000 * row2 + white * 1.0526913;
+    samples[index] = (row0 + row1 + row2 + white * 0.1848) * 0.22;
+  }
+  return buffer;
+}
+function startWindSound() {
+  if (windSound.context) {
+    if (windSound.context.state === 'suspended') windSound.context.resume();
+    return;
+  }
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return;
+  const context = new AudioContextClass();
+  const source = context.createBufferSource();
+  source.buffer = makePinkNoiseBuffer(context);
+  source.loop = true;
+  const bandPass = context.createBiquadFilter();
+  bandPass.type = 'bandpass'; bandPass.frequency.value = 300; bandPass.Q.value = 0.7;
+  const lowPass = context.createBiquadFilter();
+  lowPass.type = 'lowpass'; lowPass.frequency.value = 700;
+  const master = context.createGain();
+  master.gain.value = 0;
+  const lfo = context.createOscillator();
+  lfo.frequency.value = 0.13;                 // one slow breath every ~8 s
+  const lfoDepth = context.createGain();
+  lfoDepth.gain.value = 90;                   // Hz of band-pass swing
+  lfo.connect(lfoDepth);
+  lfoDepth.connect(bandPass.frequency);
+  source.connect(bandPass); bandPass.connect(lowPass);
+  lowPass.connect(master); master.connect(context.destination);
+  source.start(); lfo.start();
+  Object.assign(windSound, { context, master, bandPass, lowPass });
+  updateWindSound();
+}
+// Everything is a setTargetAtTime, whose time constant IS the smoothing: the gain uses
+// 150 ms so a gust swells, the filters a little slower so the timbre never zips.
+function updateWindSound() {
+  const context = windSound.context;
+  if (!context) return;
+  const share = Math.max(0, Math.min(1.25,
+    (windSound.speed - WIND_SOUND_SILENT_METERS_PER_SECOND) /
+    (WIND_SOUND_FULL_METERS_PER_SECOND - WIND_SOUND_SILENT_METERS_PER_SECOND)));
+  // the sound follows the sim: a frozen mountain is a silent one
+  const silent = windSound.muted || weatherIsFrozen() || share <= 0;
+  const now = context.currentTime;
+  const gain = silent ? 0 : Math.min(0.85, 0.9 * Math.pow(share, 1.5));
+  windSound.master.gain.setTargetAtTime(gain, now, WIND_GAIN_TIME_CONSTANT_SECONDS);
+  windSound.bandPass.frequency.setTargetAtTime(300 + 1100 * share, now, 0.25);
+  windSound.bandPass.Q.setTargetAtTime(0.7 + 2.3 * share, now, 0.25);
+  windSound.lowPass.frequency.setTargetAtTime(700 + 5200 * share, now, 0.25);
+}
+let lastWindSoundMilliseconds = 0;
+function noteWindSpeed(speedMetersPerSecond) {
+  windSound.speed = Number(speedMetersPerSecond) || 0;
+  const now = performance.now();
+  if (now - lastWindSoundMilliseconds < WIND_SOUND_UPDATE_INTERVAL_MILLISECONDS) return;
+  lastWindSoundMilliseconds = now;
+  updateWindSound();
+}
+function setWindSoundMuted(muted) {
+  windSound.muted = muted;
+  $('soundToggle').classList.toggle('muted', muted);
+  $('soundToggle').setAttribute('aria-pressed', String(!muted));
+  writeWindSoundMuted(muted);
+  updateWindSound();
+}
+$('soundToggle').addEventListener('click', () => {
+  const muted = !windSound.muted;
+  setWindSoundMuted(muted);
+  if (!muted) startWindSound();     // unmuting IS a gesture, so it may also be the first one
+});
+// pausing the replay must hush it as surely as pausing the sim does
+for (const eventName of ['play', 'pause', 'ended']) video.addEventListener(eventName, updateWindSound);
+document.addEventListener('visibilitychange', updateWindSound);
 
 // ---------- LIVE ----------
 function connect() {
   const url = 'ws://' + location.hostname + ':' + (Number(location.port) - 1);
   const socket = new WebSocket(url); socket.binaryType = 'arraybuffer'; state.socket = socket;
   socket.onopen = () => {
-    $('status').classList.add('on'); $('statusText').textContent = 'live · ' + url;
+    $('status').classList.add('on'); $('statusText').textContent = 'live';
+    $('status').title = url;
     sendInput(); setPaused(!pointerIsLocked(), { force: true });
   };
   socket.onclose = () => {
-    $('status').classList.remove('on'); $('statusText').textContent = 'disconnected · retrying';
+    $('status').classList.remove('on'); $('statusText').textContent = 'offline';
     $('realtime').textContent = ''; setTimeout(connect, 1500);
   };
   socket.onmessage = event => {
@@ -236,16 +844,16 @@ function connect() {
       const message = JSON.parse(event.data);
       if (state.mode !== 'live') return;
       if (message.loading !== undefined && Boolean(message.loading) !== state.loading) {
-        state.loading = Boolean(message.loading); paintWorldToast();
+        state.loading = Boolean(message.loading); paintWorldStatus();
       }
       // A `loading` frame still carries the OLD world's name — it is the last
-      // frame before the build — so it must not clear the toast.
+      // frame before the build — so it must not clear the status line.
       if (message.world !== undefined && !state.loading) noteWorldArrived(message.world);
       if (message.paused !== undefined) noteServerPaused(Boolean(message.paused));
       if (message.slope_degrees !== undefined) state.slopeDegrees = message.slope_degrees;
       paintHud(message);
       if (message.realtime_factor !== undefined)
-        $('realtime').textContent = '· ' + Number(message.realtime_factor).toFixed(2) + 'x realtime';
+        $('realtime').textContent = '· ' + Number(message.realtime_factor).toFixed(2) + 'x';
     } else {
       createImageBitmap(new Blob([event.data], { type: 'image/jpeg' })).then(bitmap => {
         if (state.mode !== 'live') return;
@@ -258,20 +866,57 @@ function send(payload) { if (state.socket && state.socket.readyState === 1) stat
 let lastCameraSendMilliseconds = 0, cameraSendPending = false;
 function sendInput() {
   lastCameraSendMilliseconds = performance.now(); cameraSendPending = false;
-  send({ type: 'input', keys: [...state.keys], camera: { ...state.camera } });
+  send({ type: 'input', keys: [...state.keys], camera: { ...state.camera }, viewport: viewportPixels() });
 }
+// the runtime renders at whatever the stage is showing, in device pixels (capped server-side at 1920x1080)
+function viewportPixels() {
+  const ratio = window.devicePixelRatio || 1;
+  return { width: Math.round(stage.clientWidth * ratio), height: Math.round(stage.clientHeight * ratio) };
+}
+const stage = $('stage');
+let viewportSendTimer = null;
+function viewportChanged() { clearTimeout(viewportSendTimer); viewportSendTimer = setTimeout(sendInput, 150); }
+window.addEventListener('resize', viewportChanged);
+document.addEventListener('fullscreenchange', viewportChanged);
+// F toggles fullscreen on the stage; the browser drops pointer lock on the way out, so click again to resume
+document.addEventListener('keydown', event => {
+  if (event.key.toLowerCase() !== 'f' || event.repeat || state.mode !== 'live') return;
+  if (document.fullscreenElement) document.exitFullscreen(); else stage.requestFullscreen?.();
+});
 
-// the single climb key: W held = climb, released = hang
+// The held keys: W climbs the line, A/D turn the robot. All three ride the SAME
+// `input` message's `keys` list, present while held, and all three are dropped the
+// moment the pointer is released -- never leave the robot climbing or turning.
+const HELD_KEY_KEYCAP_IDS = { w: 'climbKey', a: 'turnLeftKey', d: 'turnRightKey' };
 let climbHeldByPointer = false;
-function setClimbing(down) {
-  if (down === state.keys.has('w')) return;
-  if (down) state.keys.add('w'); else state.keys.delete('w');
-  $('climbKey').classList.toggle('down', down);
+function setHeldKey(name, down) {
+  if (down === state.keys.has(name)) return;
+  if (down) state.keys.add(name); else state.keys.delete(name);
+  $(HELD_KEY_KEYCAP_IDS[name]).classList.toggle('down', down);
   sendInput();
 }
-document.addEventListener('keydown', event => { if (event.key.toLowerCase() === 'w' && !event.repeat) setClimbing(true); });
-document.addEventListener('keyup', event => { if (event.key.toLowerCase() === 'w') { climbHeldByPointer = false; setClimbing(false); } });
-window.addEventListener('blur', () => { climbHeldByPointer = false; setClimbing(false); });
+function setClimbing(down) { setHeldKey('w', down); }
+// one message for the lot, however many were down
+function clearHeldKeys() {
+  let changed = false;
+  for (const name of Object.keys(HELD_KEY_KEYCAP_IDS)) {
+    if (state.keys.delete(name)) changed = true;
+    $(HELD_KEY_KEYCAP_IDS[name]).classList.remove('down');
+  }
+  climbHeldByPointer = false;
+  if (changed) sendInput();
+}
+document.addEventListener('keydown', event => {
+  const name = event.key.toLowerCase();
+  if (HELD_KEY_KEYCAP_IDS[name] && !event.repeat) setHeldKey(name, true);
+});
+document.addEventListener('keyup', event => {
+  const name = event.key.toLowerCase();
+  if (!HELD_KEY_KEYCAP_IDS[name]) return;
+  if (name === 'w') climbHeldByPointer = false;
+  setHeldKey(name, false);
+});
+window.addEventListener('blur', clearHeldKeys);
 $('climbKey').addEventListener('pointerdown', event => { event.preventDefault(); climbHeldByPointer = true; setClimbing(true); });
 document.addEventListener('pointerup', () => { if (climbHeldByPointer) { climbHeldByPointer = false; setClimbing(false); } });
 
@@ -279,6 +924,11 @@ document.addEventListener('pointerup', () => { if (climbHeldByPointer) { climbHe
 // movement looks around until Esc (or a click outside) releases it. The robot turns to
 // face the camera heading, so azimuth is also the walking direction.
 const AZIMUTH_DEGREES_PER_PIXEL = 0.15, ELEVATION_DEGREES_PER_PIXEL = 0.12;
+// MuJoCo elevation is negative when the camera sits ABOVE the robot looking down, so
+// -70 is the high/steep view and +8 is just above ground level. The floor is deliberately
+// only a few degrees below level: the steepest terrain is ~40 deg, and letting the camera
+// drop under the slope would put the climber behind the mountain.
+const ELEVATION_MINIMUM_DEGREES = -70, ELEVATION_MAXIMUM_DEGREES = 8;
 function queueCameraMessage() {
   const now = performance.now();
   if (now - lastCameraSendMilliseconds >= CAMERA_MESSAGE_INTERVAL_MILLISECONDS) { sendInput(); return; }
@@ -291,11 +941,11 @@ function pointerIsLocked() { return document.pointerLockElement === canvas; }
 function paintLockState() {
   const locked = pointerIsLocked();
   document.body.classList.toggle('pointer-locked', locked);
-  $('lookHint').style.display = (locked && state.mode === 'live') ? 'block' : 'none';
   $('lockOverlay').style.display = (!locked && state.mode === 'live') ? 'flex' : 'none';
   $('pausedPill').style.display = state.paused ? 'inline-block' : 'none';
   $('lockTitle').textContent = state.paused ? 'click to resume' : 'click to take control';
   $('lockSubtitle').textContent = state.paused ? 'Esc pauses the climb' : 'Esc to release';
+  updateWindSound();
 }
 // Letting the pointer go freezes the mountain; taking it back starts it again.
 // pauseIntent is what we have TOLD the sim and is driven purely by the pointer lock;
@@ -317,20 +967,23 @@ function noteServerPaused(paused) {
 }
 // the overlay is pointer-events:none, so the click lands on the stage under it
 $('stage').addEventListener('click', () => {
+  startWindSound();          // browsers only allow audio to begin inside a user gesture
   if (state.mode === 'live' && !pointerIsLocked() && canvas.requestPointerLock) canvas.requestPointerLock();
 });
 document.addEventListener('pointerlockchange', () => {
   paintLockState();
   // letting go of the pointer also lets go of the rope: never leave the robot climbing
-  if (!pointerIsLocked()) { setClimbing(false); sendInput(); }
+  if (!pointerIsLocked()) { clearHeldKeys(); sendInput(); }
   setPaused(!pointerIsLocked());
 });
 document.addEventListener('mousemove', event => {
   if (!pointerIsLocked()) return;
   const azimuth = state.camera.azimuth_degrees + event.movementX * AZIMUTH_DEGREES_PER_PIXEL;
   state.camera.azimuth_degrees = ((azimuth % 360) + 360) % 360;
-  state.camera.elevation_degrees = Math.max(-80, Math.min(80,
-    state.camera.elevation_degrees - event.movementY * ELEVATION_DEGREES_PER_PIXEL));
+  // mouse up raises the camera, i.e. drives elevation more negative, then clamps
+  const elevation = state.camera.elevation_degrees + event.movementY * ELEVATION_DEGREES_PER_PIXEL;
+  state.camera.elevation_degrees = Math.max(ELEVATION_MINIMUM_DEGREES,
+                                            Math.min(ELEVATION_MAXIMUM_DEGREES, elevation));
   queueCameraMessage();
 });
 // R is the panic key: respawn the climber AND put the camera back behind it,
@@ -345,7 +998,17 @@ document.addEventListener('keydown', event => {
   send({ type: 'reset' });
 });
 
-$('friction').addEventListener('input', e => { $('frictionOut').textContent = Number(e.target.value).toFixed(2); send({ type: 'knob', name: 'friction', value: Number(e.target.value) }); });
+// the shadcn slider track is filled to the left of the thumb; nothing but paint
+function paintSliderFill(slider) {
+  const minimum = Number(slider.min), maximum = Number(slider.max);
+  const share = maximum > minimum ? (Number(slider.value) - minimum) / (maximum - minimum) : 0;
+  slider.style.setProperty('--fill', (share * 100).toFixed(1) + '%');
+}
+$('friction').addEventListener('input', e => {
+  paintSliderFill(e.target);
+  $('frictionOut').textContent = Number(e.target.value).toFixed(2);
+  send({ type: 'knob', name: 'friction', value: Number(e.target.value) });
+});
 // wind = direction dial (drag the dot) + speed slider; sent as wind_x / wind_y in METRES PER SECOND
 // (the runtime turns them into a force with wind_env.py's quadratic drag law)
 const wind = { angle: 0, strength: 0 };
@@ -354,16 +1017,58 @@ function sendWind() {
   $('windDot').setAttribute('cx', 55 * Math.cos(wind.angle)); $('windDot').setAttribute('cy', -55 * Math.sin(wind.angle));
   const reach = 50 * wind.strength / 25;
   $('windDialArrow').setAttribute('x2', reach * Math.cos(wind.angle)); $('windDialArrow').setAttribute('y2', -reach * Math.sin(wind.angle));
-  $('windOut').textContent = `${wind.strength.toFixed(1)} m/s · ${Math.round(wind.angle * 180 / Math.PI)}°`;
+  paintWindReadout();
   send({ type: 'knob', name: 'wind_x', value: x }); send({ type: 'knob', name: 'wind_y', value: y });
+  noteWindVelocity([x, y]);   // the weather answers the dial immediately, not a tick later
 }
+// The dial and the slider always show the TARGET the user asked for. With natural wind
+// on, the readout instead shows what the air is doing right now, and says "gusting" when
+// that runs more than 15% over the target.
+const naturalWind = { on: false };
+const GUSTING_SHARE_OF_TARGET = 1.15;
+function paintWindReadout() {
+  const output = $('windOut');
+  const now = state.windNow;
+  if (naturalWind.on && now) {
+    if (now.speed < 0.05) { output.textContent = '0.0 m/s'; return; }
+    const gusting = now.speed > wind.strength * GUSTING_SHARE_OF_TARGET && now.speed > 1;
+    output.textContent = now.speed.toFixed(1) + ' m/s · '
+      + (gusting ? 'gusting' : compassPointName(now.east, now.north));
+    return;
+  }
+  output.textContent = wind.strength < 0.05 ? '0.0 m/s'
+    : wind.strength.toFixed(1) + ' m/s · '
+      + compassPointName(wind.strength * Math.cos(wind.angle), wind.strength * Math.sin(wind.angle));
+}
+$('naturalSwitch').addEventListener('click', () => {
+  naturalWind.on = !naturalWind.on;
+  $('naturalSwitch').setAttribute('aria-checked', String(naturalWind.on));
+  send({ type: 'knob', name: 'wind_natural', value: naturalWind.on ? 1 : 0 });
+  paintWindReadout();
+});
+
 const dial = $('windDial'); let dragging = false;
 function dialAngle(e) { const r = dial.getBoundingClientRect(); return Math.atan2(-(e.clientY - r.top - r.height / 2), e.clientX - r.left - r.width / 2); }
 dial.addEventListener('pointerdown', e => { dragging = true; dial.setPointerCapture(e.pointerId); wind.angle = dialAngle(e); sendWind(); });
 dial.addEventListener('pointermove', e => { if (dragging) { wind.angle = dialAngle(e); sendWind(); } });
 dial.addEventListener('pointerup', () => dragging = false);
-$('windStrength').addEventListener('input', e => { wind.strength = Number(e.target.value); sendWind(); });
+$('windStrength').addEventListener('input', e => { paintSliderFill(e.target); wind.strength = Number(e.target.value); sendWind(); });
 $('resetBtn').onclick = () => send({ type: 'reset' });
+
+// Battery knobs. Both are sent on `change` (pointer released), not on every `input`
+// tick: soc0 rebuilds the pack from scratch and t_amb cold-soaks it, so streaming
+// intermediate values would restart the battery dozens of times per drag.
+function wireBatteryKnob(sliderId, outputId, knobName, format) {
+  const slider = $(sliderId), output = $(outputId);
+  paintSliderFill(slider);
+  slider.addEventListener('input', () => {
+    paintSliderFill(slider);
+    output.textContent = format(Number(slider.value));
+  });
+  slider.addEventListener('change', () => send({ type: 'knob', name: knobName, value: Number(slider.value) }));
+}
+wireBatteryKnob('ambient', 'ambientOut', 't_amb', value => value.toFixed(0) + ' °C');
+wireBatteryKnob('startSoc', 'startSocOut', 'soc0', value => value.toFixed(0) + '%');
 
 // ---------- MAPS ----------
 // The map list is discovered from the file server: every folder under /worlds/ that
@@ -374,22 +1079,24 @@ function worldLabel(name, slopeDegrees) {
   return (slopeDegrees === undefined || slopeDegrees === null)
     ? name : `${name} · ${Number(slopeDegrees).toFixed(0)}°`;
 }
-function paintWorldToast() {
-  const toast = $('worldToast');
-  const waiting = state.pendingWorld && state.mode === 'live';
+// no stage toast any more: a map that is still arriving shows inline, on the selector itself
+function paintWorldStatus() {
+  const status = $('worldStatus');
+  const waiting = Boolean(state.pendingWorld) && state.mode === 'live';
   const label = (state.worlds[state.pendingWorld] || {}).label || state.pendingWorld;
   // The runtime says `loading:true` on the last frame before it blocks to build
   // a world it has never opened. Say so, or 25 frozen seconds look like a crash.
-  toast.textContent = !waiting ? ''
+  status.textContent = !waiting ? ''
     : state.loading ? `building ${label} — first time only…`
-    : `dropping into ${label} at the start…`;
-  toast.style.display = waiting ? 'block' : 'none';
+    : 'loading…';
+  status.style.display = waiting ? 'block' : 'none';
+  $('worldSelect').disabled = waiting;
 }
 function noteWorldArrived(name) {
-  // clear the toast first: re-picking the map you are already on still respawns you at
+  // clear the status first: re-picking the map you are already on still respawns you at
   // the start, and the sim's "world" never changes, so this is the only frame that says so
   if (state.pendingWorld === name) {
-    state.pendingWorld = null; clearTimeout(worldArrivalTimer); paintWorldToast();
+    state.pendingWorld = null; clearTimeout(worldArrivalTimer); paintWorldStatus();
   }
   if (name === state.world) return;
   state.world = name;
@@ -409,18 +1116,20 @@ async function listWorlds() {
     select.appendChild(option);
   }
   if (state.world && state.worlds[state.world]) select.value = state.world;
-  $('worldHint').textContent = entries.length
-    ? 'Switching maps respawns the climber at that world\u2019s start. A world\u2019s first selection builds its model, then it is cached.'
-    : 'The runtime reported no worlds.';
+  if (!entries.length) {
+    const status = $('worldStatus');
+    status.textContent = 'no worlds reported';
+    status.style.display = 'block';
+  } else paintWorldStatus();
 }
 $('worldSelect').addEventListener('change', event => {
   const name = event.target.value;
   state.pendingWorld = name;
   state.loading = false;
-  paintWorldToast();
+  paintWorldStatus();
   clearTimeout(worldArrivalTimer);
-  // the backend may not answer at all; do not strand the toast on screen forever
-  worldArrivalTimer = setTimeout(() => { state.pendingWorld = null; paintWorldToast(); },
+  // the backend may not answer at all; do not strand the selector disabled forever
+  worldArrivalTimer = setTimeout(() => { state.pendingWorld = null; paintWorldStatus(); },
                                  WORLD_ARRIVAL_TIMEOUT_MILLISECONDS);
   send({ type: 'world', name });
 });
@@ -442,11 +1151,11 @@ $('episodeSelect').onchange = async e => {
   const outcomeText = outcome.fell
     ? 'fell at ' + Number(outcome.fell_at_seconds).toFixed(2) + ' s (' + (outcome.fall_reason || '?') + ')'
     : 'stayed up';
-  const climbed = outcome.rope_travel_meters !== undefined ? Number(outcome.rope_travel_meters).toFixed(2) + ' m up the line'
-                : outcome.distance_meters !== undefined ? Number(outcome.distance_meters).toFixed(2) + ' m' : '';
-  $('episodeInfo').innerHTML = `<b>${name}</b><br>world ${header.world} · policy ${header.policy}<br>` +
-    `slope ${header.slope_degrees !== undefined ? Number(header.slope_degrees).toFixed(0) + '°' : '—'} · seed ${header.seed}<br>` +
-    `${header.n_ticks} ticks · ${outcomeText}${climbed ? ' · ' + climbed : ''}`;
+  $('episodeInfo').textContent = [
+    header.world, header.policy,
+    header.slope_degrees !== undefined ? Number(header.slope_degrees).toFixed(0) + '°' : null,
+    outcomeText,
+  ].filter(Boolean).join(' · ');
 };
 video.addEventListener('timeupdate', () => {
   const hud = state.hud; if (!hud) return;
@@ -461,12 +1170,33 @@ video.addEventListener('timeupdate', () => {
     time_seconds: hud.time_seconds[tick],
     command: at('command', [0, 0, 0]),
     wind_velocity_world_meters_per_second: at('wind_velocity_world_meters_per_second', [0, 0]),
+    wind_force_world_newtons: at('wind_force_world_newtons', undefined),
+    wind_speed_mps: at('wind_speed_mps', undefined),
+    wind_heading_degrees: at('wind_heading_degrees', undefined),
     rope_travel_meters: at('rope_travel_meters', 0),
     height_gained_meters: at('height_gained_meters', 0),
     rope_force_newtons: at('rope_force_newtons', 0),
+    // optional, exactly as live. hud.json records FLAT per-tick bms_* scalars
+    // (app/bms_ui/bridge.py HUD_FIELDS), so rebuild the subset the card can show;
+    // an older recording that stored whole `bms` objects still works.
+    bms: batteryFromReplayArrays(at) || at('bms', undefined),
+    bms_cutoff: at('bms_cutoff', undefined),
     fell,
   });
 });
+// hud.json has no ambient, winding, joint or time-to-empty: those rows simply hide.
+function batteryFromReplayArrays(at) {
+  const stateOfCharge = at('bms_soc_pct', undefined);
+  if (stateOfCharge === undefined) return null;
+  return {
+    soc_pct: stateOfCharge,
+    pack_V: at('bms_pack_V', undefined),
+    current_A: at('bms_current_A', undefined),
+    power_W: at('bms_power_W', undefined),
+    mech_power_W: at('bms_mech_power_W', undefined),
+    t_bat_C: at('bms_t_bat_C', undefined),
+  };
+}
 $('refreshBtn').onclick = listEpisodes;
 
 // ---------- MODES ----------
@@ -477,16 +1207,21 @@ document.querySelectorAll('.tab').forEach(tab => tab.onclick = () => {
   canvas.style.display = state.mode === 'live' ? 'block' : 'none';
   video.style.display = state.mode === 'replay' ? 'block' : 'none';
   if (state.mode === 'replay') {
-    setClimbing(false); state.slopeDegrees = null;
+    clearHeldKeys(); state.slopeDegrees = null;
     if (pointerIsLocked() && document.exitPointerLock) document.exitPointerLock();
     listEpisodes();
   } else video.pause();
   paintLockState();
-  paintWorldToast();
+  paintWorldStatus();
 });
+setWindSoundMuted(readWindSoundMuted());
+paintWindReadout();
+paintSliderFill($('friction'));
+paintSliderFill($('windStrength'));
 paintLockState();
 listWorlds();
 connect();
+requestAnimationFrame(animateWeather);
 </script>
 </body>
 </html>
