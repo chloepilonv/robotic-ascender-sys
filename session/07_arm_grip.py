@@ -176,8 +176,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--iface", default="enP8p1s0")
     ap.add_argument("--arm", action="store_true")
-    ap.add_argument("--cycles", type=int, default=2,
-                    help="pull + re-grip repetitions (default 2)")
+    ap.add_argument("--cycles", type=int, default=3,
+                    help="pull + re-grip repetitions (default 3)")
     a = ap.parse_args()
     if not a.arm:
         print("DRY RUN -- nothing published.\n")
@@ -192,26 +192,30 @@ def main():
             t[j] = v
         return t
 
-    front   = arm_target(hand_on_rope(HAND_X_FRONT))
-    back    = arm_target(hand_on_rope(HAND_X_BACK))
-    back_up = arm_target(hand_on_rope(HAND_X_BACK, LIFT_Z))
-    front_up = arm_target(hand_on_rope(HAND_X_FRONT, LIFT_Z))
-
-    phases = [("reach to rope", front, RAMP_S)]
+    # Phases are defined in CARTESIAN hand space, not joint space. Interpolating
+    # joint angles between two IK solutions makes the hand trace an ARC; solving
+    # the IK at every tick for a linearly interpolated hand position makes it
+    # travel in a straight line. The pull must be parallel to the floor, so the
+    # lift is held constant across it and only x changes.
+    #   (name, x_start, lift_start, x_end, lift_end, duration)
+    F, B, L = HAND_X_FRONT, HAND_X_BACK, LIFT_Z
+    phases = [("reach to rope", None, None, F, 0.0, RAMP_S)]
     for i in range(a.cycles):
         phases += [
-            (f"PULL {i+1}/{a.cycles}",  back,     PULL_S),
-            (f"lift {i+1}",             back_up,  LIFT_S),
-            (f"swing fwd {i+1}",        front_up, SWING_S),
-            (f"lower {i+1}",            front,    LOWER_S),
-            (f"settle {i+1}",           front,    SETTLE_S),
+            (f"PULL {i+1}/{a.cycles}", F, 0.0, B, 0.0, PULL_S),   # flat, backward
+            (f"lift {i+1}",            B, 0.0, B, L,   LIFT_S),   # straight up
+            (f"swing fwd {i+1}",       B, L,   F, L,   SWING_S),  # flat, forward
+            (f"lower {i+1}",           F, L,   F, 0.0, LOWER_S),  # straight down
+            (f"settle {i+1}",          F, 0.0, F, 0.0, SETTLE_S),
         ]
-    phases += [("hold", front, HOLD_S)]
-    total = sum(d for _, _, d in phases)
+    phases += [("hold", F, 0.0, F, 0.0, HOLD_S)]
+    total = sum(ph[-1] for ph in phases)
     print(f"holding all joints at their current pose; moving ONLY the right arm")
     print(f"{a.cycles} pull/re-grip cycles, {total:.1f}s total")
-    print(f"  hand travels x = {HAND_X_FRONT:+.2f} -> {HAND_X_BACK:+.2f} m "
-          f"(pull), lifting {LIFT_Z:.2f} m to swing back\n")
+    print(f"  PULL is flat: x {HAND_X_FRONT:+.2f} -> {HAND_X_BACK:+.2f} m at constant "
+          f"height {ROPE_Z:.2f} m")
+    print(f"  interpolation is in hand space, IK solved per tick, so the path is "
+          f"a straight line\n")
 
     kp = C.TRAIN_KP.copy(); kd = C.TRAIN_KD.copy()
     for j in RIGHT_ARM:
@@ -226,14 +230,22 @@ def main():
 
     prev = q0.copy()
     try:
-        for name, tgt_end, dur in phases:
+        for name, x0, l0, x1, l1, dur in phases:
             tgt_start = prev.copy()
             n = max(1, int(dur / C.CTRL_DT))
             t_phase = time.time()
             for i in range(1, n + 1):
                 tick = time.perf_counter()
                 s_ = i / n
-                tgt = (1 - s_) * tgt_start + s_ * tgt_end
+                if x0 is None:
+                    # Initial reach: no defined start in hand space, so blend
+                    # joint angles from wherever the arm happens to be.
+                    tgt = (1 - s_) * tgt_start + s_ * arm_target(hand_on_rope(x1, l1))
+                else:
+                    # Straight line in hand space: interpolate the hand, solve IK.
+                    x = x0 + (x1 - x0) * s_
+                    lift = l0 + (l1 - l0) * s_
+                    tgt = arm_target(hand_on_rope(x, lift))
                 d = tgt - prev
                 step = float(np.abs(d).max())
                 if step > MAX_STEP:
