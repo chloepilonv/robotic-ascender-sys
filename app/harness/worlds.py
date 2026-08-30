@@ -110,6 +110,28 @@ WORLD_DEFINITIONS = {**CLIMB_WORLD_DEFINITIONS, **WORLD_DEFINITIONS}
 
 DEFAULT_WORLD_NAME = DEFAULT_CLIMB_WORLD
 
+# Names that meant something before the ClimbScene worlds landed. Renaming the
+# old four to `legacy_*` broke callers outside this package (app/bms_ui's
+# selftest asks for `free_0`), and the rename was ours, so the compatibility
+# cost is ours too -- absorbed here rather than pushed into someone else's file.
+WORLD_ALIASES = {
+    "free_0": "legacy_free_0",
+    "climb_0": "legacy_climb_0",
+    "free_30": "legacy_free_30",
+    "climb_30": "legacy_climb_30",
+}
+
+
+def resolve_world_name(name: str) -> str:
+    """Accept an old name, return the current one. Unknown names pass through."""
+    if name in WORLD_DEFINITIONS:
+        return name
+    resolved = WORLD_ALIASES.get(name)
+    if resolved is not None:
+        print(f"[worlds] {name!r} is an old name; using {resolved!r}", flush=True)
+        return resolved
+    return name
+
 
 def world_names():
     return list(WORLD_DEFINITIONS)

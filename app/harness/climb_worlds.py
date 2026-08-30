@@ -303,6 +303,11 @@ class ClimbSceneEpisode:
         # after every substep.
         self.physics_step_hooks = []
         self.latest_bms = None
+        # Chloe's BMS, always on. Once per CONTROL tick -- her plugin
+        # integrates with dt = timestep * substeps, so a per-substep call would
+        # run it ten times too often on a dt ten times too long.
+        from app.harness.runtime import make_battery_plugin
+        self.bms = make_battery_plugin(self.model, self.substeps)
 
         self.wind_velocity_world = np.zeros(2)
         self.wind_force_world_newtons = np.zeros(3)
@@ -327,6 +332,8 @@ class ClimbSceneEpisode:
         self.maximum_rope_force_newtons = 0.0
         self.latest_bms = None
         self.tick = 0
+        if getattr(self, "bms", None) is not None:
+            self.bms.reset()
 
     def set_foot_friction(self, friction: float) -> None:
         """Live friction knob -> foot and terrain geoms.
@@ -462,6 +469,7 @@ class ClimbSceneEpisode:
             "rope_force_newtons": rope_force,
             "torso_upvector_z": upright,
             "fell": 1.0 if self.fell_at_seconds is not None else 0.0,
+            **(self.bms.on_tick(self.data, time_seconds) if self.bms else {}),
         }
 
 
