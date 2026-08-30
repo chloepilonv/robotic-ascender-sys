@@ -36,6 +36,7 @@ G1_ASCENDER_XML = REPO_ROOT / "assets/robots/mujoco/g1_unitree_ascender.xml"
 ROPE_BODY = "rope"
 CARRIER_BODY = "rope_carriage"
 SLIDE_JOINT = "rope_slide"  # no "_joint" suffix: ".*_joint" regexes skip it.
+SPIN_JOINT = "rope_spin"  # hinge about the rope axis: the tool can rotate around the rope only.
 WRIST_BODY = "right_wrist_yaw_link"
 TORSO_BODY = "torso_link"
 FOOT_GEOM_REGEX = ".*_foot_[0-3]"
@@ -124,7 +125,7 @@ def _channel_pose_in_reset(spec: mujoco.MjSpec, slope_deg: float):
   rot = data.xmat[wb].reshape(3, 3)
   grip_w = data.xpos[wb] + rot @ grip_link
   axis_w = rot @ axis_link
-  return grip_link, grip_w, axis_w
+  return grip_link, grip_w, axis_w, data.xpos[wb].copy(), data.xquat[wb].copy()
 
 
 def get_spec(slope_deg: float = 0.0) -> mujoco.MjSpec:
@@ -145,10 +146,24 @@ def get_spec(slope_deg: float = 0.0) -> mujoco.MjSpec:
         geom.name = f"{side}_foot_{k}"
         k += 1
 
-  grip_link, wrist0, axis_w = _channel_pose_in_reset(spec, slope_deg)
+  grip_link, wrist0, axis_w, wrist_pos_w, wrist_quat_w = _channel_pose_in_reset(spec, slope_deg)
   assert axis_w[0] > 0.99, f"ascender channel not aligned with the rope: {axis_w}"
-  # Anchor = the ascender's rope channel (not the wrist origin).
-  spec.body(WRIST_BODY).add_site(name="ascender_anchor", pos=grip_link.tolist(), group=5)
+  _, axis_link = ascender_channel(spec.compile())
+  # Anchor = the ascender's rope channel (not the wrist origin) + a cylinder
+  # inside the channel so the alignment is visible in the viewer.
+  wrist = spec.body(WRIST_BODY)
+  wrist.add_site(name="ascender_anchor", pos=grip_link.tolist(), group=5)
+  chan = wrist.add_geom(
+    name="ascender_channel",
+    type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+    size=[0.006, 0.055, 0],
+    rgba=[0.1, 1.0, 0.2, 0.6],
+    contype=0,
+    conaffinity=0,
+    mass=0.0,
+    group=2,
+  )
+  chan.fromto = np.concatenate([grip_link - 0.055 * axis_link, grip_link + 0.055 * axis_link]).tolist()
   wb = spec.worldbody
 
   # Visual rope: a static cylinder along +x through the ascender channel at reset.
@@ -186,15 +201,22 @@ def get_spec(slope_deg: float = 0.0) -> mujoco.MjSpec:
     group=2,
   )
   carrier.add_site(name="carrier_anchor", pos=[0, 0, 0], group=5)
-  # Site-to-site connect: no compiler-computed anchor offsets, the two site
-  # origins are simply forced to coincide.
+  carrier.add_joint(name=SPIN_JOINT, type=mujoco.mjtJoint.mjJNT_HINGE, axis=[1, 0, 0], damping=0.05)
+  # Weld the tool to the carriage: the ascender can only slide along the rope
+  # and spin around it (a real ascender's channel), never tilt off it.
+  # relpose = wrist pose in the carriage frame at reset (carriage frame = world
+  # frame translated to the channel centre, since the rail is world +x).
   eq = spec.add_equality(
-    type=mujoco.mjtEq.mjEQ_CONNECT,
+    type=mujoco.mjtEq.mjEQ_WELD,
     name="ascender_grip",
-    objtype=mujoco.mjtObj.mjOBJ_SITE,
-    name1="carrier_anchor",
-    name2="ascender_anchor",
+    objtype=mujoco.mjtObj.mjOBJ_BODY,
+    name1=CARRIER_BODY,
+    name2=WRIST_BODY,
   )
+  rel = wrist_pos_w - wrist0
+  eq.data[:3] = [0.0, 0.0, 0.0]
+  eq.data[3:6] = rel.tolist()
+  eq.data[6:10] = wrist_quat_w.tolist()
   eq.solref = [0.004, 1.0]
   eq.solimp = [0.99, 0.999, 0.001, 0.5, 2.0]  # near-hard constraint (rope does not stretch)
   return spec
@@ -234,6 +256,7 @@ def get_robot_cfg(slope_deg: float) -> EntityCfg:
   # Facing uphill the ankles dorsiflex by the slope angle (soft limit -0.87 rad).
   joint_pos[".*_ankle_pitch_joint"] = max(-0.85, -0.363 - math.radians(slope_deg))
   joint_pos[SLIDE_JOINT] = 0.0
+  joint_pos[SPIN_JOINT] = 0.0
   # Wrist angles that put the ascender channel parallel to the rope.
   joint_pos.update(_wrist_pose(slope_deg, dict(joint_pos), slope_quat(slope_deg)))
   init = EntityCfg.InitialStateCfg(
