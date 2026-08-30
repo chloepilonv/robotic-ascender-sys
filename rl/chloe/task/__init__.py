@@ -25,4 +25,12 @@ for _s in SLOPES:
     rl_cfg=make_ppo_cfg(_s),
   )
 
+# v8-lite: v3 recipe + face-uphill + per-env slope DR + rope collider; no rhythm FSM.
+register_mjlab_task(
+  "Himalayas-Ascender-Lite-G1",
+  env_cfg=make_env_cfg(slope_deg=20, rhythm=False),
+  play_env_cfg=make_env_cfg(slope_deg=20, play=True, rhythm=False),
+  rl_cfg=make_ppo_cfg(20),
+)
+
 __all__ = ["RatchetEnv", "make_env_cfg", "make_ppo_cfg", "task_id", "SLOPES"]

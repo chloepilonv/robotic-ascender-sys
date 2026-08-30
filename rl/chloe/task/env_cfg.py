@@ -123,7 +123,7 @@ class RatchetEnv(ManagerBasedRlEnv):
     self.sim.model.jnt_range[env_ids, self._slide_jid, 0] = self.sim.data.qpos[env_ids, self._slide_qadr]
 
 
-def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlEnvCfg:
+def make_env_cfg(slope_deg: float = 20.0, play: bool = False, rhythm: bool = True) -> ManagerBasedRlEnvCfg:
   """Climb task on a `slope_deg` incline (gravity-tilted; world +x is uphill)."""
 
   actor_terms = {
@@ -272,6 +272,21 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
       func=base_mdp.root_height_below_minimum, params={"minimum_height": 0.35}
     ),
   }
+
+  if not rhythm:
+    # v8-lite: the v3 recipe (walked + climbed) + face_uphill + slope DR + collider.
+    # No mode machine, no posture/stillness/tension terms — least constrained.
+    observations["actor"].terms.pop("climb_mode")
+    observations["critic"].terms.pop("climb_mode")
+    rewards["uphill_velocity"] = RewardTermCfg(
+      func=mdp.uphill_velocity, weight=2.0, params={"target": 0.3, "std": 0.3}
+    )
+    rewards["ascender_progress"] = RewardTermCfg(
+      func=mdp.ascender_progress, weight=1.0, params={"asset_cfg": mdp.SLIDE}
+    )
+    for k in ("slide_time_pressure", "rope_tension", "rope_jerk", "hiking_posture", "stillness"):
+      rewards.pop(k)
+    rewards["action_rate_l2"] = RewardTermCfg(func=base_mdp.action_rate_l2, weight=-0.1)
 
   cfg = ManagerBasedRlEnvCfg(
     scene=SceneCfg(
