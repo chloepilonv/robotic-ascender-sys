@@ -17,6 +17,26 @@ Manuals: [G1 End Prosthetic Hand assembly guide](https://www.unitree.com/images/
 [Dex3-1 assembly guide](https://www.unitree.com/images/G1-Flagship%20Version%20A%26B%20Terminal%20Three-Fingered%20Dexterous%20Hand%20Dex3-1%20Disassembly%20and%20Assembly%20Guide%20Manual%20V1.1.pdf).
 CAD: no public G1 STEP ([unitree_cad](https://github.com/unitreerobotics/unitree_cad) has only A1/Aliengo/Laikago). EDU owners: support ticket at support.unitree.com → ask for `wrist_yaw_link` + hand-stem STEP.
 
+## What the wrist really is (read this first)
+`right_wrist_yaw_link.STL` is the **1.5 mm plastic shell** of the link, not the structure: closed at the end by a wall
+(x 39.5–41.5 mm from the joint) with a **round opening Ø 38.95 mm** (centre y = −3, z = 0). The hand's plug goes
+through that opening into a **metal socket inside**, which is in no public file. Consequences:
+- the load path (350 N rope load) must be the plug into the internal socket — its retention feature (groove / flat /
+  bayonet) must be measured on a real G1 or obtained from Unitree;
+- anything clamped on the outside shell is anti-rotation/support only.
+
+## Adapter CAD — `adapter.py` → `adapter.step` / `adapter.stl` (v0)
+    pip install cadquery trimesh networkx usd-core && python assets/ascender/adapter.py
+| Part | Dims | Status |
+|---|---|---|
+| plug | Ø 38.6 × 25 through the opening | geometry from the STL; **internal retention = TODO** |
+| face plate | 6 mm, D-outline + 5 mm rim | done |
+| collar | D-sleeve over the shell x 30–38, 0.3 clearance, split top/bottom, 4× M3 along Z (stock clamp axis) | done |
+| cradle | U-bracket under the Petzl frame's bottom edge, 2 cheeks, Ø 12 clevis pin through its attachment hole | `FRAME_T`, `HOLE_TOOL` to confirm on the real Petzl |
+| mass | 70 cm³ → 72 g PA12-CF / 190 g 6061 Al | |
+Running it prints the **new tool pose** (+8 mm along X so the ascender clears the plate) to copy into
+`assets/robots/g1/attach_tool.py` and rebuild USD + MJCF. Open `adapter.step` in Fusion 360 / Onshape / FreeCAD to edit.
+
 ## Where to see the socket
 `python3 -m mujoco.viewer --mjcf $PWD/assets/robots/mujoco/g1_unitree.xml` → double-click the right wrist. Or open
 `assets/robots/g1/_menagerie/unitree_g1/assets/right_wrist_yaw_link.STL` in Fusion 360 / MeshLab and use the measure tool.
