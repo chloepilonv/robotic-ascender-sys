@@ -102,32 +102,12 @@
   .hint { font-size: 11px; color: var(--ink-faint); line-height: 1.55; }
   #replayPanel, #livePanel { display: none; }
   body.live #livePanel, body.replay #replayPanel { display: block; }
-
-  /* ---------- BMS dashboard: a strip under the stage, live + replay ---------- */
-  main { grid-template-rows: 1fr auto; }
-  #stage { grid-row: 1; grid-column: 1; }
-  aside { grid-row: 1 / span 2; grid-column: 2; }
-  #bms { grid-row: 2; grid-column: 1; border-top: 1px solid var(--line); background: linear-gradient(180deg, #0a121c, var(--bg));
-         padding: 10px 14px; display: none; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; max-height: 42vh; overflow: auto; }
-  body.bms-open #bms { display: grid; }
-  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; min-width: 0; }
-  .tile h3 { margin: 0 0 4px; font-size: 10px; text-transform: uppercase; letter-spacing: .12em; color: var(--ink-faint); font-weight: 600; }
-  .tile .kv { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--ink-dim); margin: 2px 0; }
-  .tile .kv b { color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 500; }
-  .tile .big { font-size: 22px; font-weight: 600; color: var(--accent-2); font-variant-numeric: tabular-nums; line-height: 1.1; }
-  .tile .big small { font-size: 11px; color: var(--ink-dim); font-weight: 400; margin-left: 3px; }
-  .tile.warn { border-color: var(--warn); } .tile.bad { border-color: var(--bad); }
-  .tile.bad .big { color: var(--bad); }
-  .tile svg { width: 100%; height: 78px; display: block; margin-top: 4px; }
-  .tile.wide { grid-column: span 2; } .tile.wide3 { grid-column: span 3; }
-  #bmsToggle { margin-left: auto; margin-right: 12px; }
 </style>
 </head>
 <body class="live">
 <header>
   <h1><em>EVEREST</em> · Fixed-Line Ascent <span>Unitree G1 · rl/environment/climb_env.py, live</span></h1>
   <div class="tabs"><div class="tab active" data-mode="live">Live</div><div class="tab" data-mode="replay">Replay</div></div>
-  <div class="tabs" id="bmsToggle"><div class="tab" id="bmsTab">BMS</div></div>
   <div id="status"><i></i><span id="statusText">disconnected</span><span id="realtime"></span></div>
 </header>
 <main>
@@ -152,33 +132,6 @@
       <div class="card">time<b id="hudTime">0.00</b>seconds</div>
     </div>
   </div>
-  <section id="bms">
-    <div class="tile" id="tSoc"><h3>state of charge</h3><div class="big"><span id="bSoc">—</span><small>%</small></div>
-      <div class="bar"><i id="socBar"></i></div>
-      <div class="kv"><span>time to empty</span><b id="bTte">—</b></div>
-      <div class="kv"><span>energy used</span><b id="bWh">—</b></div></div>
-    <div class="tile" id="tPack"><h3>pack</h3><div class="big"><span id="bV">—</span><small>V</small></div>
-      <div class="kv"><span>open-circuit</span><b id="bVocv">—</b></div>
-      <div class="kv"><span>current</span><b id="bI">—</b></div>
-      <div class="kv"><span>sag I·R</span><b id="bSag">—</b></div></div>
-    <div class="tile" id="tPower"><h3>power</h3><div class="big"><span id="bP">—</span><small>W elec</small></div>
-      <div class="kv"><span>60 s avg</span><b id="bPavg">—</b></div>
-      <div class="kv"><span>mech Σ|τ·q̇|</span><b id="bPmech">—</b></div>
-      <div class="kv"><span>copper loss</span><b id="bPcu">—</b></div>
-      <div class="kv"><span>efficiency</span><b id="bEff">—</b></div></div>
-    <div class="tile" id="tTherm"><h3>thermal</h3><div class="big"><span id="bTbat">—</span><small>°C pack</small></div>
-      <div class="kv"><span>ambient</span><b id="bTamb">—</b></div>
-      <div class="kv"><span>capacity f(T)</span><b id="bFt">—</b></div>
-      <div class="kv"><span>hottest motor</span><b id="bTmot">—</b></div></div>
-    <div class="tile wide" id="tRint"><h3>internal resistance vs temperature</h3>
-      <div class="kv"><span>R_int now</span><b id="bR">—</b></div>
-      <svg id="rintChart" viewBox="0 0 240 78" preserveAspectRatio="none"></svg></div>
-    <div class="tile wide3" id="tJoints"><h3>joint torque |τ| (N·m) · red = max</h3>
-      <div class="kv"><span>max torque</span><b id="bTauMax">—</b></div>
-      <svg id="tauChart" viewBox="0 0 360 78" preserveAspectRatio="none"></svg></div>
-    <div class="tile wide3" id="tHist"><h3>lifecycle · SOC % (blue) · pack V (amber) · P elec W (green)</h3>
-      <svg id="histChart" viewBox="0 0 360 78" preserveAspectRatio="none"></svg></div>
-  </section>
   <aside>
     <div id="livePanel">
       <h2>Ascend</h2>
@@ -204,13 +157,6 @@
       <div class="row"><label>foot friction (μ)</label><output id="frictionOut">0.80</output></div>
       <input type="range" id="friction" min="0.05" max="1.5" step="0.05" value="0.8">
       <p class="hint">Training pins this at <code>climb_config.foot_friction</code> = 0.8.</p>
-      <h2>Battery (BMS sim)</h2>
-      <div class="row"><label>ambient temperature</label><output id="tambOut">15 °C</output></div>
-      <input type="range" id="tamb" min="-30" max="45" step="1" value="15">
-      <div class="row"><label>start SOC</label><output id="soc0Out">100 %</output></div>
-      <input type="range" id="soc0" min="5" max="100" step="5" value="100">
-      <p class="hint">Model: <code>app/bms/sim/battery_model.py</code>. τ and q̇ come from the actuators; P<sub>elec</sub> = P<sub>mech</sub>/η + I²R + 60 W idle.
-        R<sub>int</sub> doubles every −15 °C, so a cold pack sags and the BMS cuts off with charge left. Moving the temperature cold-soaks pack and motors to that value; changing start SOC restarts the pack.</p>
       <p style="margin-top:14px"><button id="resetBtn">Reset climber</button></p>
       <p class="hint">Same as pressing <b>R</b>, which also recentres the camera and keeps the pointer.</p>
       <p class="hint">Every live session is recorded to <code>app/harness/episodes/</code> and appears in Replay.</p>
@@ -273,93 +219,6 @@ function paintHud(frame) {
   banner.style.display = frame.fell ? 'block' : 'none';
 }
 
-// ---------- BMS ----------
-const bmsHistory = [];                    // {t, soc, v, p}, one per painted frame
-const HISTORY_SECONDS = 120;
-let rintCurve = null, actuatorNames = null;
-function fmt(x, d = 1) { return (x === null || x === undefined || !isFinite(x)) ? '—' : Number(x).toFixed(d); }
-function polyline(points, colour, w = 1.5) {
-  return `<polyline fill="none" stroke="${colour}" stroke-width="${w}" points="${points.map(p => p.join(',')).join(' ')}"/>`;
-}
-function paintBms(b) {
-  if (!b) return;
-  $('bSoc').textContent = fmt(b.soc_pct, 1);
-  $('socBar').style.width = Math.max(0, Math.min(100, b.soc_pct)) + '%';
-  $('bTte').textContent = b.time_to_empty_min === null || b.time_to_empty_min === undefined ? '∞' : fmt(b.time_to_empty_min, 0) + ' min';
-  $('bWh').textContent = fmt(b.energy_used_Wh, 2) + ' Wh';
-  $('bV').textContent = fmt(b.pack_V, 2);
-  $('bVocv').textContent = fmt(b.v_ocv_V, 2) + ' V';
-  $('bI').textContent = fmt(b.current_A, 2) + ' A';
-  $('bSag').textContent = fmt(b.v_ocv_V - b.pack_V, 2) + ' V';
-  $('bP').textContent = fmt(b.power_W, 0);
-  $('bPavg').textContent = fmt(b.power_avg_W, 0) + ' W';
-  $('bPmech').textContent = fmt(b.mech_power_W, 0) + ' W';
-  $('bPcu').textContent = fmt(b.copper_loss_W, 1) + ' W';
-  $('bEff').textContent = fmt(b.efficiency, 2);
-  $('bTbat').textContent = fmt(b.t_bat_C, 1);
-  $('bTamb').textContent = fmt(b.t_amb_C, 0) + ' °C';
-  $('bFt').textContent = fmt(b.capacity_factor, 2);
-  const hot = actuatorNames && b.hot_joint !== undefined ? actuatorNames[b.hot_joint] : '';
-  $('bTmot').textContent = fmt(b.max_temp_winding_C, 1) + ' °C ' + hot;
-  $('bR').textContent = fmt(b.r_int_ohm * 1000, 0) + ' mΩ';
-  $('tSoc').className = 'tile' + (b.bms_cutoff ? ' bad' : b.soc_pct < 20 ? ' warn' : '');
-  $('tTherm').className = 'tile' + (b.max_temp_winding_C > 80 || b.t_bat_C > 55 ? ' bad' : b.t_bat_C < 0 ? ' warn' : '');
-  $('tPack').className = 'tile' + (b.pack_V < 40 ? ' warn' : '');
-  if (b.bms_cutoff) $('bSoc').textContent = 'CUT-OFF';
-
-  // R_int(T) curve with a dot at the current pack temperature
-  if (rintCurve) {
-    const W = 240, H = 78, tMin = rintCurve[0][0], tMax = rintCurve[rintCurve.length - 1][0];
-    const rMax = rintCurve[0][1];
-    const X = t => 6 + (t - tMin) / (tMax - tMin) * (W - 12), Y = r => H - 6 - r / rMax * (H - 16);
-    const pts = rintCurve.map(([t, r]) => [X(t), Y(r)]);
-    const tb = Math.max(tMin, Math.min(tMax, b.t_bat_C));
-    $('rintChart').innerHTML = polyline(pts, 'var(--accent)') +
-      `<circle cx="${X(tb)}" cy="${Y(b.r_int_ohm)}" r="4" fill="var(--warn)"/>` +
-      `<text x="${X(tMin)}" y="${H - 1}" font-size="7" fill="var(--ink-faint)">${tMin}°C</text>` +
-      `<text x="${X(tMax) - 18}" y="${H - 1}" font-size="7" fill="var(--ink-faint)">${tMax}°C</text>` +
-      `<text x="2" y="8" font-size="7" fill="var(--ink-faint)">${(rMax * 1000).toFixed(0)} mΩ</text>`;
-  }
-  // per-joint |τ| bars
-  if (b.tau_Nm) {
-    const W = 360, H = 78, n = b.tau_Nm.length, bw = W / n;
-    const tauMax = Math.max(1, ...b.tau_Nm.map(Math.abs), 40);
-    let svg = '';
-    b.tau_Nm.forEach((tau, i) => {
-      const h = Math.abs(tau) / tauMax * (H - 12);
-      const colour = i === b.max_abs_tau_joint ? 'var(--bad)' : (b.joint_power_W[i] < 0 ? 'var(--ink-faint)' : 'var(--accent)');
-      svg += `<rect x="${i * bw + 1}" y="${H - 10 - h}" width="${bw - 2}" height="${h}" fill="${colour}"><title>${actuatorNames ? actuatorNames[i] : i}: ${tau.toFixed(1)} N·m, ${b.joint_power_W[i].toFixed(1)} W</title></rect>`;
-    });
-    svg += `<text x="2" y="${H - 1}" font-size="7" fill="var(--ink-faint)">left leg → right leg → waist → arms · grey = braking · hover a bar</text>`;
-    $('tauChart').innerHTML = svg;
-    const jn = actuatorNames ? actuatorNames[b.max_abs_tau_joint] : '#' + b.max_abs_tau_joint;
-    $('bTauMax').textContent = fmt(b.max_abs_tau_Nm, 1) + ' N·m · ' + jn;
-  } else $('bTauMax').textContent = fmt(b.max_abs_tau_Nm, 1) + ' N·m';
-  // lifecycle strip
-  const t = Number(b._t || 0);
-  if (!bmsHistory.length || t > bmsHistory[bmsHistory.length - 1].t + 0.2) bmsHistory.push({ t, soc: b.soc_pct, v: b.pack_V, p: b.power_W });
-  else if (t < bmsHistory[bmsHistory.length - 1].t) bmsHistory.length = 0;   // reset / replay seek backwards
-  while (bmsHistory.length && bmsHistory[0].t < t - HISTORY_SECONDS) bmsHistory.shift();
-  if (bmsHistory.length > 1) {
-    const W = 360, H = 78, t0 = bmsHistory[0].t, t1 = Math.max(t0 + 5, t);
-    const X = tt => 4 + (tt - t0) / (t1 - t0) * (W - 8);
-    const socY = s => H - 4 - s / 100 * (H - 8);
-    const vY = v => H - 4 - (v - 36) / (56 - 36) * (H - 8);
-    const pMax = Math.max(100, ...bmsHistory.map(h => h.p));
-    const pY = p => H - 4 - p / pMax * (H - 8);
-    $('histChart').innerHTML =
-      polyline(bmsHistory.map(h => [X(h.t), pY(h.p)]), 'var(--good)', 1) +
-      polyline(bmsHistory.map(h => [X(h.t), vY(h.v)]), 'var(--warn)') +
-      polyline(bmsHistory.map(h => [X(h.t), socY(h.soc)]), 'var(--accent)', 2) +
-      `<text x="2" y="8" font-size="7" fill="var(--ink-faint)">P max ${pMax.toFixed(0)} W · V axis 36–56 · last ${HISTORY_SECONDS} s</text>`;
-  }
-}
-$('bmsTab').onclick = () => { const open = document.body.classList.toggle('bms-open'); $('bmsTab').classList.toggle('active', open); };
-document.body.classList.add('bms-open'); $('bmsTab').classList.add('active');
-$('tamb').addEventListener('input', e => { $('tambOut').textContent = e.target.value + ' °C'; send({ type: 'knob', name: 't_amb', value: Number(e.target.value) }); });
-$('soc0').addEventListener('change', e => { $('soc0Out').textContent = e.target.value + ' %'; send({ type: 'knob', name: 'soc0', value: Number(e.target.value) }); });
-$('soc0').addEventListener('input', e => { $('soc0Out').textContent = e.target.value + ' %'; });
-
 // ---------- LIVE ----------
 function connect() {
   const url = 'ws://' + location.hostname + ':' + (Number(location.port) - 1);
@@ -385,9 +244,6 @@ function connect() {
       if (message.paused !== undefined) noteServerPaused(Boolean(message.paused));
       if (message.slope_degrees !== undefined) state.slopeDegrees = message.slope_degrees;
       paintHud(message);
-      if (message.r_int_curve) rintCurve = message.r_int_curve;
-      if (message.actuator_names) actuatorNames = message.actuator_names;
-      if (message.bms) paintBms(Object.assign({ _t: message.time_seconds }, message.bms));
       if (message.realtime_factor !== undefined)
         $('realtime').textContent = '· ' + Number(message.realtime_factor).toFixed(2) + 'x realtime';
     } else {
@@ -610,12 +466,6 @@ video.addEventListener('timeupdate', () => {
     rope_force_newtons: at('rope_force_newtons', 0),
     fell,
   });
-  if (hud.bms_soc_pct) paintBms({
-    _t: hud.time_seconds[tick], soc_pct: at('bms_soc_pct'), pack_V: at('bms_pack_V'), current_A: at('bms_current_A'),
-    power_W: at('bms_power_W'), mech_power_W: at('bms_mech_power_W'), t_bat_C: at('bms_t_bat_C'),
-    r_int_ohm: at('bms_r_int_ohm'), energy_used_Wh: at('bms_energy_used_Wh'), max_abs_tau_Nm: at('bms_max_abs_tau_Nm'),
-    v_ocv_V: 13 * (3.0 + 1.2 * at('bms_soc_pct', 100) / 100),
-  });
 });
 $('refreshBtn').onclick = listEpisodes;
 
@@ -623,8 +473,7 @@ $('refreshBtn').onclick = listEpisodes;
 document.querySelectorAll('.tab').forEach(tab => tab.onclick = () => {
   state.mode = tab.dataset.mode;
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === tab));
-  const bmsOpen = document.body.classList.contains('bms-open');
-  document.body.className = state.mode + (bmsOpen ? ' bms-open' : '');
+  document.body.className = state.mode;
   canvas.style.display = state.mode === 'live' ? 'block' : 'none';
   video.style.display = state.mode === 'replay' ? 'block' : 'none';
   if (state.mode === 'replay') {
@@ -639,5 +488,6 @@ paintLockState();
 listWorlds();
 connect();
 </script>
+<script src="/app/bms_ui/bms.js"></script>  <!-- battery panel, app/bms_ui/ -->
 </body>
 </html>

@@ -29,8 +29,6 @@ HUD_FIELD_NAMES = [
     "wind_force_world_newtons", "root_position_world", "fell",
     "rope_travel_meters", "climb_meters", "height_gained_meters",
     "rope_force_newtons", "hand_height_on_line_meters",
-    "bms_soc_pct", "bms_pack_V", "bms_current_A", "bms_power_W", "bms_mech_power_W",
-    "bms_t_bat_C", "bms_r_int_ohm", "bms_energy_used_Wh", "bms_max_abs_tau_Nm",
 ]
 
 

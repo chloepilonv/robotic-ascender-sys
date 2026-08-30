@@ -24,19 +24,6 @@ Every live session is recorded under `app/harness/episodes/<stamp>_<world>/`
 (frames.npz, hud.json, header.json, episode.mp4) and playable from the page's
 Replay tab.
 
-## BMS panel (battery simulation)
-
-The strip under the view (toggle with the **BMS** tab) runs
-`app/bms/sim/battery_model.py` on the actuators every control tick — nothing
-physical changes, it is a readout: SOC / pack V / current / time-to-empty,
-electrical vs mechanical power (P_mech = Σ|τ·q̇|, P_elec = P_mech/η + I²R + 60 W),
-pack and motor temperature, R_int(T) curve with the live point, per-joint |τ|
-bars, and a SOC / V / P lifecycle strip. Sidebar knobs: **ambient temperature**
-(cold-soaks the pack, so R_int and the capacity factor move at once) and
-**start SOC**. The same numbers land in `hud.json` (`bms_*`) and show in Replay.
-Sanity: standing ≈ 70 W, walking on `free_0` ≈ 200–250 W. Glue lives in
-`app/harness/bms_bridge.py`.
-
 Other entry points:
 
     python -m app.harness.runtime --world climb_30 --duration 10 --hold-w --no-render   # headless case

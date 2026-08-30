@@ -63,7 +63,7 @@ from app.harness.playground_policy import (  # noqa: E402
 )
 from app.harness.recorder import Recorder  # noqa: E402
 from app.harness import worlds as worlds_module  # noqa: E402
-from app.harness.bms_bridge import BmsSim, r_int_curve  # noqa: E402
+from app.bms_ui.bridge import BmsPlugin  # noqa: E402  battery panel, app/bms_ui/
 
 RENDER_WIDTH, RENDER_HEIGHT = 640, 480
 JPEG_QUALITY = 80
@@ -161,10 +161,7 @@ class Episode:
         )
         self.gait_phase = GaitPhase(meta["control_dt_seconds"], GAIT_FREQUENCY_HZ)
         self.substeps = meta["substeps_per_control_step"]
-        # Battery/thermal simulation fed by the actuators (app/bms/sim). Purely
-        # a readout: it never touches the physics or the policy.
-        self.bms = BmsSim(model.nu)
-        self.bms_dt = float(model.opt.timestep) * self.substeps
+        self.bms = BmsPlugin(model, self.substeps)  # readout only, app/bms_ui/
         self.control_hz = 1.0 / meta["control_dt_seconds"]
         self.default_pose = np.asarray(meta["default_pose_radians"])
         self.action_scale = meta["action_scale"]
@@ -323,7 +320,6 @@ class Episode:
 
         rope_force = self.rope_force_newtons
         self.maximum_rope_force_newtons = max(self.maximum_rope_force_newtons, rope_force)
-        bms = self.bms.step(self.data, self.bms_dt, time_seconds)
         reasons = self.termination.reasons(self.data)
         if self.fell_at_seconds is None and (
                 reasons["tipped_over"] or reasons["self_collision"]
@@ -360,16 +356,7 @@ class Episode:
             "rope_force_newtons": rope_force,
             "torso_upvector_z": reasons["torso_upvector_z"],
             "fell": 1.0 if self.fell_at_seconds is not None else 0.0,
-            "bms": bms,
-            "bms_soc_pct": bms["soc_pct"],
-            "bms_pack_V": bms["pack_V"],
-            "bms_current_A": bms["current_A"],
-            "bms_power_W": bms["power_W"],
-            "bms_mech_power_W": bms["mech_power_W"],
-            "bms_t_bat_C": bms["t_bat_C"],
-            "bms_r_int_ohm": bms["r_int_ohm"],
-            "bms_energy_used_Wh": bms["energy_used_Wh"],
-            "bms_max_abs_tau_Nm": bms["max_abs_tau_Nm"],
+            **self.bms.on_tick(self.data, time_seconds),
         }
 
 
@@ -638,12 +625,7 @@ def run(arguments) -> str:
             if abs(friction - applied_friction) > 1e-9:
                 episode.set_foot_friction(friction)
                 applied_friction = friction
-            t_amb = float(server.knobs.get("t_amb", episode.bms.t_amb_c))
-            if abs(t_amb - episode.bms.t_amb_c) > 1e-9:
-                episode.bms.set_ambient(t_amb)
-            soc0 = float(server.knobs.get("soc0", episode.bms.soc0))
-            if abs(soc0 - episode.bms.soc0) > 1e-9:
-                episode.bms.set_soc0(soc0)
+            episode.bms.apply_knobs(server.knobs)
             if server.world_requested is not None:
                 requested, server.world_requested = server.world_requested, None
                 if requested not in worlds_module.WORLD_DEFINITIONS:
@@ -699,8 +681,7 @@ def run(arguments) -> str:
             header["wind"].append({"time_seconds": row["time_seconds"],
                                    "wind_velocity_world_meters_per_second": wind_list})
             last_logged_wind = wind_list
-        recorder.append(**{k: v for k, v in row.items()
-                           if k not in ("observation", "bms")})
+        recorder.append(**{k: v for k, v in row.items() if k != "observation"})
 
         jpeg = None
         if renderer is not None:
@@ -749,9 +730,7 @@ def run(arguments) -> str:
                 "rope_enabled": episode.rope_enabled,
                 "paused": False,
                 "loading": False,
-                "bms": row["bms"],
-                "actuator_names": meta["actuator_names"],
-                "r_int_curve": r_int_curve(),
+                **episode.bms.state(),
             }
             server.broadcast(latest_state[0])
             sleep_for = wall_start + episode.tick / episode.control_hz - time.time()
