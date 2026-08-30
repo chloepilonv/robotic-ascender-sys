@@ -60,6 +60,20 @@ Other entry points:
 `--port` moves the websocket (HTTP is port+1); `--command-speed` sets the W
 forward command (default 0.5 m/s).
 
+`--pose-stream` (ON by default, `--no-pose-stream` to turn it off) adds a second
+binary message beside the JPEG: every body's world pose once per control tick,
+946 bytes, ~47 kB/s. It is what **http://localhost:8766/app/web/render3d.html**
+runs on -- a WebGL third-person view that draws the scene in the browser instead
+of showing a picture of it, so it gets a game camera, soft shadows, a snow/ice
+terrain shader, blown snow and footprints. It needs the world exported once:
+
+    python -m app.harness.export_scene --world lhotse_B      # or --all
+
+writes `app/harness/scene_assets/<world>.glb` plus a JSON sidecar (gitignored;
+lhotse_B is 18.5 MB). The map selector on that page only offers worlds that have
+been exported. The JPEG stream, `episode.mp4` and `app/web/index.html` are
+unaffected either way -- the pose hook costs a measured 20 us of a 20 ms tick.
+
 
 ## Follow the guide (`app/harness/guide.py`)
 
