@@ -599,15 +599,24 @@ function setBatteryRow(rowElementId, valueElementId, text, mutedNote = null) {
 const GUIDE_MODE_CLASSES = { FOLLOW: 'follow', WAIT: 'wait', LOST: 'lost' };
 const GUIDE_MODE_STATUS_WORDS = { FOLLOW: 'following', WAIT: 'waiting', LOST: 'lost' };
 const EYE_FRAME_STALE_MILLISECONDS = 2000;
-const guideState = { on: false, mode: null, lastEyeFrameMilliseconds: 0 };
+const guideState = { on: false, freeWalk: false, mode: null, lastEyeFrameMilliseconds: 0 };
 const eyeCanvas = $('eyeView'), eyeContext = eyeCanvas.getContext('2d');
 
 function paintGuideSwitch() {
   $('guideSwitch').setAttribute('aria-checked', String(guideState.on));
   // S only means anything with the guide on -- it walks the human BACKWARDS -- so the
-  // keycap appears with the guide and A/D keep turning the robot either way
+  // keycap appears with the guide.
   $('backKey').style.display = guideState.on ? '' : 'none';
-  $('climbLabel').textContent = guideState.on ? ' move the guide ' : ' climb ';
+  // ON A ROPE-OFF WORLD ALL FOUR KEYS ARE HERS (user's ruling, 2026-08-30):
+  // W/S walk her along her own heading and A/D turn it. The legend says so by
+  // moving the whole phrase after the last keycap, so it reads
+  // "W S A D move the guide" rather than two labels that disagree.
+  const hers = guideState.on && guideState.freeWalk;
+  $('climbLabel').textContent = hers ? ' ' : (guideState.on ? ' move the guide ' : ' climb ');
+  $('keySeparator').style.display = hers ? 'none' : '';
+  if (!autonomousKeysShown) {
+    $('turnLabel').textContent = hers ? ' move the guide ' : ' turn ';
+  }
   // THE CAMERA GOES WITH THE SUBJECT (user's ruling, 2026-08-30): guide on, the
   // boom and the first-person eye are HERS; guide off, they are the robot's again.
   // Set here rather than in the click handler so the runtime's own echo moves the
@@ -630,8 +639,11 @@ function paintGuideCard(frame) {
     paintEyeViewVisibility();
     return;
   }
-  if (guide.enabled !== undefined && Boolean(guide.enabled) !== guideState.on) {
+  const freeWalk = Boolean(guide.free_walk);
+  if ((guide.enabled !== undefined && Boolean(guide.enabled) !== guideState.on)
+      || freeWalk !== guideState.freeWalk) {
     guideState.on = Boolean(guide.enabled);
+    guideState.freeWalk = freeWalk;
     paintGuideSwitch();
   }
   readout.style.display = 'block';

@@ -243,7 +243,7 @@ VOSK_GRAMMAR = '["stop", "[unk]"]'
 # threshold the test prints and the runtime uses; re-run the test if the ear
 # model, the corpus or the wind law changes, and move this line to whatever the
 # table says.
-STOP_CONFIDENCE_THRESHOLD = 0.93
+STOP_CONFIDENCE_THRESHOLD = 0.90
 
 # ------------------------------------------------------------- the behaviour
 HEARING_MODES = ("IDLE", "LISTENING", "COMING_BY_EYES", "COMING_BY_EARS",
@@ -255,14 +255,15 @@ HEARD_CODES = {"none": 0.0, "voice": 1.0, "stop": 2.0}
 # hand-over from ears to eyes is not also a change of pace.
 EAR_WALK_SPEED_METERS_PER_SECOND = 0.5
 EAR_BEARING_GAIN_PER_RADIAN = 2.0
-# CAPPED AT HALF THE POLICY'S TRAINING RANGE, and the cap is measured. The
-# walking policy's `ang_vel_yaw` was trained over [-1, 1], but this jacketed
-# robot does not survive the top of it: MEASURED on `sandbox_free`, 10 s of
-# `lin_vel_x` 0.5 with `ang_vel_yaw` +1.0 rad/s ends upright, while +0.2, +0.35
-# and +0.5 all TIP THE ROBOT OVER inside four seconds, and none of the six
-# rates produces a turn that tracks what was asked (see `test_hearing` table
-# 4a). The cap is the largest rate that is not obviously worse than zero. What
-# actually aims the cameras is the WAIST, below.
+# HALF THE POLICY'S TRAINING RANGE. `ang_vel_yaw` was trained over [-1, 1], and
+# on `flat_free` -- the world section 4 flies -- 0.5 is enough to steer the robot
+# to a person six metres away in about forty seconds. It is capped there rather
+# than at 1.0 because the response is not monotone in the command and the top of
+# the range buys nothing: MEASURED on `sandbox_free`, `lin_vel_x` 0.5 with
+# `ang_vel_yaw` at +0.2, +0.35 and +0.5 all tip the robot over inside four
+# seconds while +1.0 survives, and none of the six rates in `test_hearing`
+# table 4a produces a turn that tracks what was asked. On rough ground nothing
+# in this range works, which is that table's point and the standing ASK.
 EAR_MAXIMUM_YAW_RATE_RADIANS_PER_SECOND = 0.5
 # THE WAIST IS THE EAR LAYER'S REAL AIMING ACTUATOR, for exactly the reason
 # `guide.WaistYaw` exists: the G1 has no neck and this policy has no usable
@@ -286,18 +287,6 @@ EAR_WAIST_AIM_SECONDS = 3.0
 # camera's half-FOV, which is the point of aiming at all.
 EAR_WAIST_AIM_LIMIT_RADIANS = math.radians(20.0)
 EAR_BEARING_DEADBAND_RADIANS = math.radians(4.0)
-# THE ROBOT NEVER TURNS ON THE SPOT, and this is a measured decision that reads
-# backwards until you see the number. The obvious design is "if she is more than
-# 60 degrees off, stop and pivot, then walk" -- walking while turning traces a
-# long arc. It does not work, because THIS POLICY HAS NO YAW AUTHORITY AT ZERO
-# FORWARD SPEED: yaw comes out of the stepping gait, and a robot commanded
-# `[0, 0, +0.5]` is standing still. MEASURED on `terrain_free_0`: with the
-# pivot-first rule the heading error sat at +80 degrees for EIGHTY-FIVE SECONDS,
-# the waist pinned at its +60 degree limit, the base not moving at all, and the
-# robot ended the run further from her than it started. With `lin_vel_x` held at
-# the walk speed the whole time, the same controller closes 3.2 m of a 45 degree
-# approach in 30 s (table 4a's companion measurement). So the robot walks while
-# it turns, and the arc is the price.
 # A bearing this uncertain is not a direction. Below it no cue is taken and the
 # robot listens rather than walking toward noise.
 EAR_BEARING_MINIMUM_CONFIDENCE = 0.25
@@ -1172,7 +1161,10 @@ class Ears:
         channels = np.concatenate(self._segment_channels, axis=1)
         self._segment = []
         self._segment_channels = []
-        self._preroll = []
+        # THE PRE-ROLL RING IS NOT CLEARED. It now holds the trailing silence
+        # this segment closed on, which is exactly the right context for the
+        # next utterance -- clearing it would leave a second shout, a second
+        # after the first, with no onset again.
         speech_seconds = self._segment_seconds - self._silence_seconds
         self._segment_seconds = 0.0
         self._silence_seconds = 0.0
@@ -1390,6 +1382,20 @@ class HearingBehaviour:
         return self._command
 
     def _walk_toward(self, bearing_radians) -> np.ndarray:
+        """Walk, turning toward a body-frame bearing. -> (3,).
+
+        THE ROBOT NEVER TURNS ON THE SPOT, and that reads backwards until you
+        see the number. The obvious design is "more than 60 degrees off? stop,
+        pivot, then walk", because walking while turning traces a long arc. It
+        does not work: THIS POLICY HAS NO YAW AUTHORITY AT ZERO FORWARD SPEED,
+        because yaw comes out of the stepping gait and a robot commanded
+        `[0, 0, +0.5]` is standing still. MEASURED on `terrain_free_0` with the
+        pivot-first rule, the heading error sat at +80 degrees for EIGHTY-FIVE
+        SECONDS, the waist pinned at its limit, the base not moving, and the run
+        ended further from her than it started. Walking throughout, the same
+        controller reaches a person 6 m away on `flat_free`. The arc is the
+        price and it is worth paying.
+        """
         bearing = float(bearing_radians)
         if abs(bearing) < EAR_BEARING_DEADBAND_RADIANS:
             yaw_rate = 0.0
@@ -1398,7 +1404,6 @@ class HearingBehaviour:
                 EAR_BEARING_GAIN_PER_RADIAN * bearing,
                 -EAR_MAXIMUM_YAW_RATE_RADIANS_PER_SECOND,
                 EAR_MAXIMUM_YAW_RATE_RADIANS_PER_SECOND))
-        # ALWAYS WALKING. See the comment at EAR_BEARING_DEADBAND_RADIANS.
         return np.array([self.walk_speed, 0.0, yaw_rate])
 
     def command(self) -> np.ndarray:
@@ -1552,10 +1557,9 @@ class HearingSystem:
                 self.ear_pcm = EAR_MESSAGE_PREFIX + np.clip(
                     mix * 32767.0, -32768, 32767).astype("<i2").tobytes()
         follower = guide_system.follower if guide_system is not None else None
-        # The robot's heading about world +z, from the free joint's quaternion.
-        # The ear cue is remembered in the WORLD frame, so the behaviour needs
-        # it -- see `HearingBehaviour.cue_heading_world_radians`.
-        # TWO YAWS, AND THEY ARE NOT THE SAME ANGLE.
+        # TWO YAWS, AND THEY ARE NOT THE SAME ANGLE. The ear cue is remembered
+        # in the WORLD frame (`HearingBehaviour.cue_heading_world_radians`), so
+        # the behaviour needs both of these:
         #   base yaw   -- the free joint's heading. This is what `ang_vel_yaw`
         #                 steers, so it is what a heading ERROR must be measured
         #                 against.
@@ -1567,6 +1571,8 @@ class HearingSystem:
         # `terrain_free_0`, a hiker placed 45 deg off the BASE sits 24 deg off
         # the TORSO. Converting a torso-frame bearing with the base's yaw put
         # every ear cue about 20 degrees wide, and the robot walked past her.
+        # The measurement yaw is looked up `Ears.bearing_age_seconds` in the
+        # past, because that is when the sound the bearing came from arrived.
         w, x, y, z = [float(v) for v in data.qpos[3:7]]
         robot_yaw = math.atan2(2.0 * (w * z + x * y),
                                1.0 - 2.0 * (y * y + z * z))

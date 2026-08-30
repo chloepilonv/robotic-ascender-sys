@@ -517,7 +517,10 @@ def run(arguments) -> str:
             # A policy trained with randomised ang_vel_yaw would earn a True
             # here and a steerable body with it. `--policy` supplies one.
             yaw_command_available=(arguments.policy is not None
-                                   and not autonomous))
+                                   and not autonomous),
+            # No rope means no line for her to be on: W/S walk her along her own
+            # heading and A/D turn it.
+            free_walk=not current_episode.rope_enabled)
         gate = HumanGate(guide_module.GuideVisionDetector(system),
                          clear_after_seconds=0.0)
         if system.available:
@@ -634,6 +637,10 @@ def run(arguments) -> str:
         guide_enabled = bool(arguments.guide)
         walking = bool(arguments.hold_w)
         backing = False
+        # A/D as the HIKER's steering, +1 = left. Only ever non-zero on a
+        # rope-off world with the guide on; on the rope she is ON the line and
+        # there is nowhere for her to turn to (user's ruling, 2026-08-30).
+        guide_turning = 0.0
         if server is not None:
             latest = server.latest_input
             keys = set(latest.get("keys", []))
@@ -651,6 +658,13 @@ def run(arguments) -> str:
             turn = ((MANUAL_YAW_RATE_RADIANS_PER_SECOND if "a" in keys else 0.0)
                     - (MANUAL_YAW_RATE_RADIANS_PER_SECOND if "d" in keys else 0.0))
             steering = ("a" in keys) != ("d" in keys)
+            # WITH THE GUIDE ON AND NO ROPE, A AND D ARE HERS. They were already
+            # doing nothing to the robot -- the follower owns its command while
+            # the guide is on -- so this hands two idle keys to the one body
+            # that can use them.
+            if guide_enabled and not episode.rope_enabled:
+                guide_turning = ((1.0 if "a" in keys else 0.0)
+                                 - (1.0 if "d" in keys else 0.0))
             command = heading.command(
                 episode.data.qpos[3:7], walking="w" in keys,
                 manual_yaw_rate=turn if steering else None)
@@ -752,7 +766,8 @@ def run(arguments) -> str:
         # held), so switching the guide off does not snap the robot back to a
         # heading it drifted away from ten seconds ago.
         guide_command = guide_system.update(
-            episode.data, episode.tick, guide_enabled, walking, backing)
+            episode.data, episode.tick, guide_enabled, walking, backing,
+            guide_turning)
         if guide_command is not None:
             command = guide_command
             heading.desired_heading_radians = root_yaw_radians(
