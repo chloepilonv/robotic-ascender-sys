@@ -59,6 +59,19 @@
   #snow { position: absolute; left: 0; top: 0; display: none; pointer-events: none;
           max-width: none; max-height: none; }
 
+  /* THE EYE WINDOW IN FULLSCREEN (user's ruling, 2026-08-30). Fullscreen puts
+     #stage alone on the screen, so the sidebar's eye PiP -- which is NOT a
+     descendant of the fullscreen element -- is not rendered at all, however it
+     is styled. Hence a second small canvas that lives INSIDE the stage and is
+     only ever shown in fullscreen: the same EYE0 bitmap, copied on arrival, so
+     the picture-in-picture costs one drawImage per eye frame and nothing per
+     animation frame. It never appears in normal mode, where the sidebar already
+     shows the same view. */
+  #eyePip { position: absolute; right: 18px; bottom: 18px; width: 256px; height: 192px;
+            display: none; border: 1px solid rgba(228,228,231,.28); border-radius: 8px;
+            background: #000; pointer-events: none;
+            box-shadow: 0 8px 28px rgba(0,0,0,.55); }
+
   #lockOverlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
                  pointer-events: none; background: rgba(9,9,11,.55); }
   #lockOverlay > div { text-align: center; background: var(--card); border: 1px solid var(--border);
@@ -259,6 +272,7 @@
 <div id="stage">
   <canvas id="canvas"></canvas>
   <canvas id="snow"></canvas>
+  <canvas id="eyePip" width="320" height="240"></canvas>
   <div id="loadingCard">loading the mountain…</div>
   <div id="lockOverlay"><div><i id="pausedPill">Paused</i><b id="lockTitle">click to take control</b><span id="lockSubtitle">Esc to release</span></div></div>
   <div id="banner">FELL</div>
@@ -617,6 +631,7 @@ const GUIDE_MODE_STATUS_WORDS = { FOLLOW: 'following', WAIT: 'waiting', LOST: 'l
 const EYE_FRAME_STALE_MILLISECONDS = 2000;
 const guideState = { on: false, freeWalk: false, mode: null, lastEyeFrameMilliseconds: 0 };
 const eyeCanvas = $('eyeView'), eyeContext = eyeCanvas.getContext('2d');
+const eyePipCanvas = $('eyePip'), eyePipContext = eyePipCanvas.getContext('2d');
 
 function paintGuideSwitch() {
   $('guideSwitch').setAttribute('aria-checked', String(guideState.on));
@@ -714,16 +729,30 @@ function paintEyeFrame(jpegBuffer) {
   createImageBitmap(new Blob([jpegBuffer], { type: 'image/jpeg' })).then(bitmap => {
     guideState.lastEyeFrameMilliseconds = performance.now();
     eyeContext.drawImage(bitmap, 0, 0, eyeCanvas.width, eyeCanvas.height);
+    // The fullscreen window is fed HERE, on the frame, not in the animation
+    // loop: one extra drawImage per EYE0 arrival instead of sixty a second.
+    if (eyePipShown) eyePipContext.drawImage(bitmap, 0, 0, eyePipCanvas.width, eyePipCanvas.height);
     paintEyeViewVisibility();
   }).catch(() => {});
 }
-let eyeViewShown = false;
+let eyeViewShown = false, eyePipShown = false;
 function paintEyeViewVisibility() {
   const fresh = performance.now() - guideState.lastEyeFrameMilliseconds < EYE_FRAME_STALE_MILLISECONDS;
   const shown = guideState.on && fresh;
-  if (shown === eyeViewShown) return;
-  eyeViewShown = shown;
-  eyeCanvas.style.display = shown ? 'block' : 'none';
+  if (shown !== eyeViewShown) {
+    eyeViewShown = shown;
+    eyeCanvas.style.display = shown ? 'block' : 'none';
+  }
+  // Same three conditions, plus fullscreen -- and never in normal mode, where
+  // the sidebar's own copy is right there. On the way IN the last eye frame is
+  // copied across so the window opens with a picture rather than a black square
+  // it would hold until the next EYE0 lands.
+  const pipShown = shown && Boolean(document.fullscreenElement);
+  if (pipShown !== eyePipShown) {
+    eyePipShown = pipShown;
+    if (pipShown) eyePipContext.drawImage(eyeCanvas, 0, 0, eyePipCanvas.width, eyePipCanvas.height);
+    eyePipCanvas.style.display = pipShown ? 'block' : 'none';
+  }
 }
 
 // ---------- HEARING ----------
@@ -1030,6 +1059,8 @@ function paintHearingCard(frame) {
   confidenceNote.textContent = Number.isFinite(bearing) && Number.isFinite(bearingConfidence)
     ? 'conf ' + bearingConfidence.toFixed(2) : '';
   $('hearingBearing').appendChild(confidenceNote);
+  // ...and the same reading, drawn where you are actually looking.
+  noteHeardSound(heard, bearing, bearingConfidence);
   // THE METER IS THE MICROPHONE'S OWN LEVEL, un-normalised end to end, so
   // shouting really does move it. It falls back to the ear level when the page
   // is not the one supplying the voice (a `--inject-voice` run).
@@ -1132,6 +1163,120 @@ function drawWindRibbons(widthPixels, heightPixels) {
     snowContext.stroke();
   }
 }
+// ---------- THE SOUND-DIRECTION INDICATOR (user's ruling, 2026-08-30) ----------
+// A game damage-indicator, but for a shout: an arc at the edge of the viewport in
+// the direction the robot THINKS the voice came from. It exists because the ear
+// model's bearing is the one thing the robot knows that the picture cannot show --
+// in first person you are looking through its eyes, and the sound is behind you.
+//
+// THE FRAME CHAIN, which is the whole of the work here:
+//   `bearing_degrees` is in the robot's BODY frame, + = the robot's LEFT.
+//   The robot's own yaw about world z is `stage.robotHeadingRadians` (the PELVIS,
+//   not the camera boom -- the boom rides the hiker when the guide is on).
+//   So the source's WORLD azimuth is heading + bearing, and that is what we store:
+//   frozen in the world, so turning the head sweeps the arrow across the screen
+//   exactly as turning your own head sweeps a real sound.
+//   Screen space is then the SAME conversion the wind ribbons use above -- the
+//   view's forward and right from `stage.viewAzimuthDegrees` -- so one habit of
+//   reading the screen works for wind and for voices, in either view.
+const SOUND_INDICATOR_FADE_SECONDS = 2.0;
+const soundIndicator = {
+  heard: null,             // what the last frame reported, for edge detection
+  kind: null,              // 'voice' | 'stop' -- what is being DRAWN, null = nothing
+  worldAngleRadians: 0,
+  confidence: 0,
+  holding: false,          // the utterance is still going: no fade yet
+  releasedAtMilliseconds: 0,
+};
+// Called from paintHearingCard on every state frame; acts only on the EDGE.
+function noteHeardSound(heard, bearingDegrees, bearingConfidence) {
+  const heardNow = (heard === 'voice' || heard === 'stop') ? heard : null;
+  if (!heardNow) {
+    if (soundIndicator.holding) {
+      soundIndicator.holding = false;
+      soundIndicator.releasedAtMilliseconds = performance.now();
+    }
+    soundIndicator.heard = null;
+    return;
+  }
+  const newUtterance = heardNow !== soundIndicator.heard;
+  soundIndicator.heard = heardNow;
+  if (!Number.isFinite(bearingDegrees)) {
+    // Heard but not PLACED. There is nothing honest to point at, and leaving the
+    // previous utterance's arrow up would be pointing at a direction this shout
+    // never came from -- so a new utterance with no bearing clears it.
+    if (newUtterance) { soundIndicator.kind = null; soundIndicator.holding = false; }
+    return;
+  }
+  const confidence = Number.isFinite(bearingConfidence)
+    ? Math.max(0, Math.min(1, bearingConfidence)) : 0;
+  // Within one utterance the bearing keeps being measured; take the most
+  // confident reading rather than the latest, which jitters.
+  if (newUtterance || !soundIndicator.holding || confidence >= soundIndicator.confidence) {
+    soundIndicator.worldAngleRadians =
+      stage.robotHeadingRadians + bearingDegrees * Math.PI / 180;
+    soundIndicator.confidence = confidence;
+  }
+  soundIndicator.kind = heardNow;
+  soundIndicator.holding = true;
+}
+function drawSoundIndicator(widthPixels, heightPixels) {
+  if (!soundIndicator.kind) return;
+  const fade = soundIndicator.holding ? 1
+    : 1 - (performance.now() - soundIndicator.releasedAtMilliseconds)
+          / (SOUND_INDICATOR_FADE_SECONDS * 1000);
+  if (fade <= 0) { soundIndicator.kind = null; return; }
+
+  const viewAzimuthRadians = stage.viewAzimuthDegrees * Math.PI / 180;
+  const forwardX = -Math.cos(viewAzimuthRadians), forwardY = -Math.sin(viewAzimuthRadians);
+  const rightX = forwardY, rightY = -forwardX;
+  const soundX = Math.cos(soundIndicator.worldAngleRadians);
+  const soundY = Math.sin(soundIndicator.worldAngleRadians);
+  const along = soundX * forwardX + soundY * forwardY;
+  const lateral = soundX * rightX + soundY * rightY;
+  // 0 = dead ahead (arc at top centre), +pi/2 = right edge, pi = behind (bottom).
+  const screenAngleRadians = Math.atan2(lateral, along);
+
+  const scale = Math.max(0.75, heightPixels / REFERENCE_HEIGHT_PIXELS);
+  const radius = Math.min(widthPixels, heightPixels) * 0.34;
+  const stop = soundIndicator.kind === 'stop';
+  const tint = stop ? '244,86,86' : '235,235,238';
+  // Confidence is the opacity, floored so a real-but-unsure bearing is still
+  // visible: the indicator saying "roughly that way" is the point of it.
+  const alpha = fade * (0.28 + 0.72 * soundIndicator.confidence)
+    // Third person shows it too -- same maths, and it reads as "the robot heard
+    // that" -- but dimmer, because there the robot is on screen and the picture
+    // is already telling most of the story.
+    * ((stage.firstPersonEnabled && !stage.followGuide) ? 1 : 0.62);
+
+  snowContext.save();
+  snowContext.translate(widthPixels / 2, heightPixels / 2);
+  snowContext.rotate(screenAngleRadians);
+  const top = -Math.PI / 2;
+  snowContext.lineCap = 'round';
+  // A wide soft wash under a tight bright arc: the glow is what makes it read at
+  // the corner of the eye without a hard rectangle anywhere on a snow picture.
+  snowContext.strokeStyle = 'rgba(' + tint + ',' + (alpha * 0.20).toFixed(3) + ')';
+  snowContext.lineWidth = 26 * scale;
+  snowContext.beginPath();
+  snowContext.arc(0, 0, radius, top - 0.44, top + 0.44);
+  snowContext.stroke();
+  snowContext.strokeStyle = 'rgba(' + tint + ',' + alpha.toFixed(3) + ')';
+  snowContext.lineWidth = 4.4 * scale;
+  snowContext.beginPath();
+  snowContext.arc(0, 0, radius, top - 0.27, top + 0.27);
+  snowContext.stroke();
+  // The chevron just outside the arc: the arc says WHERE, the point says OUTWARD.
+  snowContext.fillStyle = 'rgba(' + tint + ',' + alpha.toFixed(3) + ')';
+  snowContext.beginPath();
+  snowContext.moveTo(0, -radius - 17 * scale);
+  snowContext.lineTo(-8 * scale, -radius - 6 * scale);
+  snowContext.lineTo(8 * scale, -radius - 6 * scale);
+  snowContext.closePath();
+  snowContext.fill();
+  snowContext.restore();
+}
+
 const snowLayout = { width: 0, height: 0, ratio: 0, shown: false };
 function syncSnowCanvas() {
   const rectangle = canvas.getBoundingClientRect();
@@ -1732,6 +1877,7 @@ function frame(nowMilliseconds) {
     updateWindRibbons(elapsedSeconds, snowLayout.width, snowLayout.height);
     snowContext.clearRect(0, 0, snowLayout.width, snowLayout.height);
     drawWindRibbons(snowLayout.width, snowLayout.height);
+    drawSoundIndicator(snowLayout.width, snowLayout.height);
   }
 }
 
@@ -1744,6 +1890,15 @@ window.appState = state;
 // bindings are not globals, so a screenshot harness cannot read the weather without one.
 // It exposes page-local state ONLY -- nothing here sends a knob, so driving it never
 // touches the running simulation.
+// The fourth verifier handle, same reason: a screenshot harness has to be able to
+// see the sound indicator without a shout having to reach the ear model first.
+// Page-local state ONLY -- it sends no knob and touches no running simulation.
+window.hearingIndicatorControls = {
+  soundIndicator,
+  note(heard, bearingDegrees, bearingConfidence) {
+    noteHeardSound(heard, Number(bearingDegrees), Number(bearingConfidence));
+  },
+};
 window.visibilityControls = {
   visibilityState, windScreen,
   setVisibility(meters) {

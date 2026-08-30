@@ -374,6 +374,20 @@ export class Stage {
     return this.firstPersonEnabled
       ? this.activeFirstPerson.azimuthDegrees() : this.chase.azimuthDegrees;
   }
+  // WHERE THE ROBOT IS FACING, world radians. `_headingRadians` above is the
+  // BOOM's subject and becomes the HIKER's the moment the guide is on, so
+  // anything about the ROBOT's own body -- the sound-direction indicator, whose
+  // bearing arrives in the robot's body frame -- must read the pelvis itself and
+  // not the boom. Same yaw-about-world-z formula as the update (a pelvis on a
+  // 38.6 deg face is pitched over, so its local +x is nothing like its heading).
+  get robotHeadingRadians() {
+    const pelvisNode = (this.world && this.world.bodies)
+      ? this.world.bodies[this.world.pelvisIndex] : null;
+    if (!pelvisNode) return this._headingRadians;
+    const quaternion = pelvisNode.quaternion;
+    const w = quaternion.w, x = quaternion.x, y = quaternion.y, z = quaternion.z;
+    return Math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z));
+  }
   look(movementX, movementY) {
     if (this.firstPersonEnabled) this.activeFirstPerson.look(movementX, movementY);
     else this.chase.look(movementX, movementY);
