@@ -29,6 +29,9 @@ MID360_POS = HEAD + [0.0, 0.0, 0.50]
 TOOL_LINK = "right_wrist_yaw_link"
 ASCENDER_USD = os.path.join(HERE, "..", "..", "ascender", "ascender.usd")
 ROBOT_TOOL_USD = os.path.join(HERE, "..", "g1_unitree_ascender.usd")
+ASCENDER_TEX = os.path.join(HERE, "..", "..", "ascender", "textures", "orange_metal_pulley_3d_model_basecolor.JPEG")
+LOGO_PNG = os.path.join(HERE, "textures", "everest_logo.png")
+LOGOS = {"logo_back": ((0.0, 0.17), 0.17, -1), "logo_chest_right": ((-0.055, 0.235), 0.06, +1)}   # (center_yz, width, side) as build_g1_usd
 
 
 def rgba(c): return f"{c[0]} {c[1]} {c[2]} 1"
@@ -38,6 +41,57 @@ def write_obj(name, v, f):
     os.makedirs(MESH_DIR, exist_ok=True)
     trimesh.Trimesh(v, f, process=False).export(os.path.join(MESH_DIR, name + ".obj"))
     return name
+
+
+def write_obj_uv(name, v, f, uv):
+    """OBJ with per-vertex texture coords (MuJoCo reads v/vt/f)."""
+    os.makedirs(MESH_DIR, exist_ok=True)
+    with open(os.path.join(MESH_DIR, name + ".obj"), "w") as fh:
+        fh.write("".join("v %.6f %.6f %.6f\n" % tuple(p) for p in v))
+        fh.write("".join("vt %.6f %.6f\n" % tuple(t) for t in uv))
+        fh.write("".join("f %d/%d %d/%d %d/%d\n" % (a+1, a+1, b+1, b+1, c+1, c+1) for a, b, c in f))
+    return name
+
+
+def decimate_uv(v, f, uv_wedge, voxel):
+    """Vertex-clustering decimation on a voxel grid; keeps one UV per cluster (scan atlas -> minor seam artefacts)."""
+    key = np.floor(v / voxel).astype(np.int64)
+    _, first, cluster = np.unique(key, axis=0, return_index=True, return_inverse=True)
+    cluster = cluster.ravel()
+    nv = np.zeros((len(first), 3)); cnt = np.zeros(len(first))
+    np.add.at(nv, cluster, v); np.add.at(cnt, cluster, 1); nv /= cnt[:, None]
+    wedge_cluster = cluster[f.ravel()]                # first wedge UV seen for each cluster
+    cids, widx = np.unique(wedge_cluster, return_index=True)
+    uv = np.zeros((len(first), 2)); uv[cids] = uv_wedge[widx]
+    nf = cluster[f]
+    nf = nf[(nf[:, 0] != nf[:, 1]) & (nf[:, 1] != nf[:, 2]) & (nf[:, 0] != nf[:, 2])]
+    return nv, nf, uv
+
+
+def logo_patch(hull_v, hull_f, center_yz, width, side, n=(10, 7)):
+    """Same geometry as build_g1_usd.logo_patch: textured quad shrink-wrapped on the jacket hull along +/-X, 4 mm proud."""
+    hull = trimesh.Trimesh(hull_v, hull_f)
+    ys = np.linspace(center_yz[0] - width / 2, center_yz[0] + width / 2, n[0])
+    zs = np.linspace(center_yz[1] - width * 0.69 / 2, center_yz[1] + width * 0.69 / 2, n[1])
+    pts, uvs = [], []
+    for j, z in enumerate(zs):
+        for i, y in enumerate(ys):
+            loc, _, _ = hull.ray.intersects_location([[side * 1.0, y, z]], [[-side, 0, 0]])
+            x = (loc[:, 0].max() if side > 0 else loc[:, 0].min()) if len(loc) else side * 0.09
+            pts.append([x + side * 0.004, y, z]); uvs.append([(i / (n[0] - 1)) if side > 0 else 1 - i / (n[0] - 1), j / (n[1] - 1)])
+    faces = []
+    for j in range(n[1] - 1):
+        for i in range(n[0] - 1):
+            a = j * n[0] + i; b = a + 1; c = a + n[0]; d = c + 1
+            faces += [[a, b, d], [a, d, c]] if side > 0 else [[a, d, b], [a, c, d]]
+    return np.array(pts), np.array(faces), np.array(uvs)
+
+
+def png_texture(src, name, max_size=2048):
+    from PIL import Image
+    im = Image.open(src).convert("RGB"); im.thumbnail((max_size, max_size))
+    os.makedirs(MESH_DIR, exist_ok=True); im.save(os.path.join(MESH_DIR, name + ".png"))
+    return "mjcf_meshes/" + name + ".png"
 
 
 def gear_meshes(model):
@@ -64,6 +118,8 @@ def gear_meshes(model):
         if name == "torso_link":
             hv[:, 2] = np.minimum(hv[:, 2], 0.30)   # collar stops below the head
         out[name] = (write_obj(f"{name}_{gname}", hv, hf), color)
+        if name == "torso_link":
+            out["_torso_hull"] = (hv, hf)
     return out
 
 
@@ -77,8 +133,12 @@ def ascender_meshes():
             poly = idx[k:k + n]; k += n
             faces += [[poly[0], poly[i], poly[i + 1]] for i in range(1, n - 1)]
         return pts, np.array(faces)
-    # visual: the 25k-vert collision mesh (the textured 2M-face visual is useless in MuJoCo, no PBR);
+    # visual: the scanned mesh (972k verts) voxel-decimated to ~1 mm with its basecolor UVs;
     # collision: convex hull of a 2k-vertex subsample (MuJoCo re-hulls anyway; keeps the file small)
+    vis_prim = st.GetPrimAtPath("/Ascender/visual/mesh")
+    vv, vf = tri(vis_prim)
+    st_uv = np.array(UsdGeom.PrimvarsAPI(vis_prim).GetPrimvar("st").Get(), dtype=float)
+    dv, df, duv = decimate_uv(vv, vf, st_uv, voxel=0.0012)
     cv, cf = tri(st.GetPrimAtPath("/Ascender/collision"))
     sub = cv[np.random.default_rng(0).choice(len(cv), 2000, replace=False)]
     hull = trimesh.PointCloud(sub).convex_hull
@@ -88,7 +148,7 @@ def ascender_meshes():
            UsdGeom.Xformable(robot.GetPrimAtPath(f"/G1/{TOOL_LINK}/tool_ascender")).GetOrderedXformOps()}
     pos = np.array(ops["xformOp:translate"], dtype=float); q = ops["xformOp:orient"]
     quat = np.array([q.GetReal(), *q.GetImaginary()], dtype=float)          # w x y z, same convention as MuJoCo
-    return (write_obj("ascender_visual", cv, cf), write_obj("ascender_collision", hull.vertices, hull.faces),
+    return (write_obj_uv("ascender_visual", dv, df, duv), write_obj("ascender_collision", hull.vertices, hull.faces),
             float(m.GetMassAttr().Get()), np.array(m.GetCenterOfMassAttr().Get(), dtype=float), pos, quat)
 
 
@@ -97,16 +157,25 @@ def build(xml, with_tool):
     tree = ET.parse(xml); root = tree.getroot()
     root.set("model", "g1_himalaya" + ("_ascender" if with_tool else ""))
     # mesh paths: output xml lives in assets/robots/, stock STLs in g1/_menagerie/..., generated OBJs in g1/mjcf_meshes/
-    comp = root.find("compiler"); comp.set("meshdir", "g1")
+    comp = root.find("compiler"); comp.set("meshdir", "g1"); comp.set("texturedir", "g1")
     asset = root.find("asset")
     for m in asset.findall("mesh"):
         m.set("file", "_menagerie/unitree_g1/assets/" + m.get("file"))
-    for n, c in (("jacket", JACKET_BLUE), ("boot", BOOT_YELLOW), ("boot_trim", BOOT_TRIM), ("ascender", (0.85, 0.55, 0.05))):
+    for n, c in (("jacket", JACKET_BLUE), ("boot", BOOT_YELLOW), ("boot_trim", BOOT_TRIM)):
         ET.SubElement(asset, "material", name=n, rgba=rgba(c))
+    ET.SubElement(asset, "texture", name="everest_logo", type="2d", file=png_texture(LOGO_PNG, "everest_logo", 1024))
+    ET.SubElement(asset, "material", name="logo", texture="everest_logo", specular="0.1")
+    ET.SubElement(asset, "texture", name="ascender_basecolor", type="2d", file=png_texture(ASCENDER_TEX, "ascender_basecolor"))
+    ET.SubElement(asset, "material", name="ascender", texture="ascender_basecolor", specular="0.6", shininess="0.5")
     bodies = {b.get("name"): b for b in root.iter("body")}
 
     # gear shells (visual, no collision, no mass — class="visual" has contype=0 density=0)
-    for link, (mesh, color) in gear_meshes(model).items():
+    gear = gear_meshes(model); hv, hf = gear.pop("_torso_hull")
+    for name, (cyz, width, side) in LOGOS.items():   # sponsor patches like a real jacket
+        pv, pf, puv = logo_patch(hv, hf, cyz, width, side)
+        ET.SubElement(asset, "mesh", name=name, file="mjcf_meshes/" + write_obj_uv(name, pv, pf, puv) + ".obj")
+        ET.SubElement(bodies["torso_link"], "geom", {"class": "visual", "mesh": name, "material": "logo"})
+    for link, (mesh, color) in gear.items():
         ET.SubElement(asset, "mesh", name=mesh, file="mjcf_meshes/" + mesh + ".obj")
         mat = "jacket" if color == JACKET_BLUE else "boot" if color == BOOT_YELLOW else "boot_trim"
         ET.SubElement(bodies[link], "geom", {"class": "visual", "mesh": mesh, "material": mat})

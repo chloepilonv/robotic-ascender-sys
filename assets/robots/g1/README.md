@@ -78,6 +78,6 @@ Mid-360 site) and the ascender mount pose from `g1_unitree_ascender.usd`. Output
 | `assets/robots/g1/mjcf_meshes/*.obj` | generated gear + ascender meshes (4 MB, tracked) |
 
 Stock link STLs come from `g1/_menagerie/` (git-ignored, auto-cloned on first run).
-Not ported: logo patches and PBR textures (MuJoCo has no PBR; flat colors instead).
+Textures: ascender basecolor + Everest logo patches (PNG). Not ported: metallic/roughness/normal maps (MuJoCo has no PBR).
 
 ![validation](../../../img/g1_mjcf_validation.png)

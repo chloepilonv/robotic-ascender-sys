@@ -1,5 +1,5 @@
 <mujoco model="g1_himalaya">
-  <compiler angle="radian" meshdir="g1" />
+  <compiler angle="radian" meshdir="g1" texturedir="g1" />
   <option integrator="implicitfast" />
   <default>
     <default class="g1">
@@ -58,7 +58,12 @@
     <material name="jacket" rgba="0.42 0.12 0.65 1" />
     <material name="boot" rgba="0.95 0.8 0.05 1" />
     <material name="boot_trim" rgba="0.1 0.1 0.1 1" />
-    <material name="ascender" rgba="0.85 0.55 0.05 1" />
+    <texture name="everest_logo" type="2d" file="mjcf_meshes/everest_logo.png" />
+    <material name="logo" texture="everest_logo" specular="0.1" />
+    <texture name="ascender_basecolor" type="2d" file="mjcf_meshes/ascender_basecolor.png" />
+    <material name="ascender" texture="ascender_basecolor" specular="0.6" shininess="0.5" />
+    <mesh name="logo_back" file="mjcf_meshes/logo_back.obj" />
+    <mesh name="logo_chest_right" file="mjcf_meshes/logo_chest_right.obj" />
     <mesh name="left_ankle_pitch_link_boot_cuff" file="mjcf_meshes/left_ankle_pitch_link_boot_cuff.obj" />
     <mesh name="left_ankle_roll_link_boot" file="mjcf_meshes/left_ankle_roll_link_boot.obj" />
     <mesh name="right_ankle_pitch_link_boot_cuff" file="mjcf_meshes/right_ankle_pitch_link_boot_cuff.obj" />
@@ -278,6 +283,8 @@
                 <geom class="visual" mesh="right_shoulder_roll_link_jacket_sleeve" material="jacket" />
               </body>
             </body>
+            <geom class="visual" mesh="logo_back" material="logo" />
+            <geom class="visual" mesh="logo_chest_right" material="logo" />
             <geom class="visual" mesh="torso_link_jacket_body" material="jacket" />
             <camera name="d435i" pos="0.0789635 0 0.386" xyaxes="0 -1 0  0 0 1" fovy="58" />
             <site name="mid360" pos="0.0039635 0 0.456" size="0.02" rgba="0 1 0 1" />
