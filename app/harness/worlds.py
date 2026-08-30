@@ -3,9 +3,13 @@
 The four legacy `legacy_climb_env` worlds (the old flat tilted plane from
 `rl/environment/climb_env.py`) are removed: that env is deleted, and training
 now runs on `G1ClimbTerrain` (the same merged terrain). This module now
-delegates everything to `climb_worlds`, keeping the names `runtime.py` has
-always imported (`WORLD_DEFINITIONS`, `describe_worlds`, `world_names`,
-`ascender_geom_ids`).
+delegates the world definitions to `climb_worlds` and keeps the names
+`runtime.py` has always imported (`WORLD_DEFINITIONS`, `describe_worlds`,
+`world_names`, `resolve_world_name`, `ascender_geom_ids`).
+
+The old world *names* (`free_0`, `climb_30`, ...) survive as aliases so
+external callers (app/bms_ui's selftest) don't break; `resolve_world_name`
+maps them to the closest ClimbScene world.
 """
 
 from app.harness.climb_worlds import (
@@ -14,16 +18,50 @@ from app.harness.climb_worlds import (
 )
 
 WORLD_DEFINITIONS = CLIMB_WORLD_DEFINITIONS
+
 DEFAULT_WORLD_NAME = DEFAULT_CLIMB_WORLD
+
+# Old names from the legacy_climb_env era -> the closest ClimbScene world.
+WORLD_ALIASES = {
+    "free_0": "flat_0",
+    "climb_0": "flat_0",
+    "free_30": "lhotse_B_free",
+    "climb_30": "lhotse_B",
+    # the legacy_* names from the intermediate rename, too
+    "legacy_free_0": "flat_0",
+    "legacy_climb_0": "flat_0",
+    "legacy_free_30": "lhotse_B_free",
+    "legacy_climb_30": "lhotse_B",
+}
+
+
+def resolve_world_name(name: str) -> str:
+    """Accept an old name, return the current one. Unknown names pass through."""
+    if name in WORLD_DEFINITIONS:
+        return name
+    resolved = WORLD_ALIASES.get(name)
+    if resolved is not None:
+        print(f"[worlds] {name!r} is an old name; using {resolved!r}", flush=True)
+        return resolved
+    return name
+
 
 def world_names():
     return list(WORLD_DEFINITIONS)
 
 
 def describe_worlds():
-    return [
-        dict(defn, name=name) for name, defn in WORLD_DEFINITIONS.items()
-    ]
+    """The rows `/api/worlds` serves to the map selector."""
+    return [{
+        "name": name,
+        "label": definition["label"],
+        "slope_degrees": definition["slope_degrees"],
+        "rope": definition["rope"],
+        "robot": definition["robot"],
+        "kind": definition["kind"],
+        "slope_provenance": definition.get("slope_provenance"),
+        "description": definition["description"],
+    } for name, definition in WORLD_DEFINITIONS.items()]
 
 
 def ascender_geom_ids(model, meta):

@@ -17,3 +17,4 @@ assets/environments/lhotse_face/data/*.tif
 .reference/
 build/
 MUJOCO_LOG.TXT
+app/harness/scene_assets/
