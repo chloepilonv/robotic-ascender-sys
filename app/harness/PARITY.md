@@ -1625,6 +1625,16 @@ is: **it stops her, and R is what starts her again.** The ask on the `rl/` side
 is a recovery term or a stand-still mode in the training distribution — v7's
 SLIDE/WALK mode bit is the shape that would fix it.
 
+**This bites the guide switch too, and a demo operator should know.** With
+`guide` ON the follower owns the command, so it owns the gate. v3 walks uphill
+*backwards* (no heading term in its reward — `rl/chloe/README.md` says so), the
+human ends up behind the cameras within about three seconds, the follower drops
+to WAIT/LOST and commands zero, and the gate closes. Measured on `chloe_20`,
+guide ON, W held: 0.83 m of rope by t = 3 s and then flat to the end of the run,
+torso `up_z` settling at +0.56. Nothing crashes, the eyes keep rendering and
+every readout stays live — but the climb is over. Until the policy can recover,
+run these two worlds with the guide OFF if what you want is a climb.
+
 ### What the harness does NOT do to her
 
 * **No steering.** `yaw_command_available` is forced False on these worlds and

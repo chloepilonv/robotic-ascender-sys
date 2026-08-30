@@ -553,6 +553,13 @@ that measures out at is in PARITY.md; the short version is that **she stops,
 and she does not start again**. See "the one-way stop" there before you build
 anything on top of it.
 
+That is also why you want the **guide switch OFF** on these two worlds if what
+you want is a climb: the follower owns the command, so it owns the gate, and v3
+walks uphill *backwards* — the human is behind the cameras within about three
+seconds, the follower commands zero, and the gate shuts for good. Everything
+still runs and every readout stays live; the climbing stops. Measured in
+PARITY.md.
+
 ### The plant is hers, and every part of it is load-bearing
 
 * actuators: mjlab's `G1_ARTICULATION` — per-motor-group `kp`/`kd`/`armature`
