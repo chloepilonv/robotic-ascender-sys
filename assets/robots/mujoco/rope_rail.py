@@ -7,7 +7,10 @@ Adds to a robot MjSpec (g1_unitree_ascender.xml):
   └── rope_carriage   ONE slide joint `rope_slide` along +x (a prismatic joint)
         weld  rope_carriage <-> right_wrist_yaw_link, so the rope always runs
         through the ascender's channel: the tool slides along the rope and
-        nothing else. `ratchet()` is the cam (up only).
+        nothing else. `ratchet()` is the cam: the slide joint's LOWER LIMIT is
+        the highest point reached, so it can never go back down (solved with
+        the weld by the constraint solver — never overwrite qpos, that fights
+        the solver and the weld drifts by centimetres).
 
 The channel = the tool-frame Z axis through the collision-mesh centre, mapped
 through the mount pose (assets/ascender/MOUNT.md: the cam head is centred on
@@ -153,14 +156,16 @@ def add_rope_rail(
   rg.fromto = [-ROPE_TAIL, 0, 0, ROPE_LENGTH, 0, 0]
 
   carrier = wb_spec.add_body(name=CARRIER_BODY, pos=grip_w)
-  carrier.add_joint(
+  sj = carrier.add_joint(
     name=SLIDE_JOINT,
     type=mujoco.mjtJoint.mjJNT_SLIDE,
     axis=[1, 0, 0],
-    range=[-ROPE_LENGTH, ROPE_LENGTH],  # symmetric: soft limits (x0.9) must include 0
+    range=[-ROPE_LENGTH, ROPE_LENGTH],  # lower bound is moved up by ratchet(); symmetric so soft limits include 0
     damping=2.0,
     frictionloss=CAM_FRICTION_N,
   )
+  sj.solref_limit = [0.01, 1.0]  # stiff limit: the cam does not sag under load
+  sj.solimp_limit = [0.99, 0.999, 0.001, 0.5, 2.0]
   carrier.add_geom(
     name="carrier_geom",
     type=mujoco.mjtGeom.mjGEOM_SPHERE,
@@ -192,12 +197,16 @@ def add_rope_rail(
   return out
 
 
-def ratchet(model: mujoco.MjModel, data: mujoco.MjData, prev_slide: float, prefix: str = "") -> None:
-  """The cam: call after each mj_step with the slide qpos from before the step."""
+def ratchet(model: mujoco.MjModel, data: mujoco.MjData, prefix: str = "") -> None:
+  """The cam: call BEFORE every mj_step. Lower limit of the slide = highest point reached."""
   jid = model.joint(prefix + SLIDE_JOINT).id
-  q, v = model.jnt_qposadr[jid], model.jnt_dofadr[jid]
-  data.qvel[v] = max(data.qvel[v], 0.0)
-  data.qpos[q] = max(data.qpos[q], prev_slide)
+  model.jnt_range[jid, 0] = max(model.jnt_range[jid, 0], data.qpos[model.jnt_qposadr[jid]])
+
+
+def ratchet_reset(model: mujoco.MjModel, data: mujoco.MjData, prefix: str = "") -> None:
+  """Call after you move the robot (reset): the cam releases and re-engages where it is now."""
+  jid = model.joint(prefix + SLIDE_JOINT).id
+  model.jnt_range[jid, 0] = data.qpos[model.jnt_qposadr[jid]]
 
 
 def rope_state(model, data, prefix: str = "", slide_joint: str = SLIDE_JOINT) -> dict:

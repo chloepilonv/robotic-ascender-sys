@@ -28,7 +28,7 @@ TORSO_BODY = "torso_link"
 FOOT_GEOM_REGEX = ".*_foot_[0-3]"
 
 BASE_JOINT_POS = dict(g1.KNEES_BENT_KEYFRAME.joint_pos)
-INIT_POS = (0.0, 0.0, 0.80)
+FOOT_CLEARANCE = 0.005  # m between the lowest foot sphere and the floor at spawn
 
 
 def slope_quat(slope_deg: float) -> tuple[float, float, float, float]:
@@ -67,27 +67,40 @@ def _body_joint_pos(slope_deg: float) -> dict:
   return joint_pos
 
 
+_Z_CACHE: dict[float, float] = {}
 _POSE_CACHE: dict[float, dict] = {}
 
 
+def init_pos(slope_deg: float) -> tuple[float, float, float]:
+  """Spawn position: feet just touching the floor in the tilted reset pose (cached)."""
+  if slope_deg not in _Z_CACHE:
+    model = _base_spec().compile()
+    data = mujoco.MjData(model)
+    rail.set_pose(model, data, (0, 0, 0.8), slope_quat(slope_deg), _body_joint_pos(slope_deg))
+    feet = [i for i in range(model.ngeom) if model.geom(i).name.endswith(tuple(f"_foot_{k}" for k in range(4)))]
+    lowest = min(data.geom_xpos[i][2] - model.geom_size[i][0] for i in feet)
+    _Z_CACHE[slope_deg] = 0.8 - lowest + FOOT_CLEARANCE
+  return (0.0, 0.0, _Z_CACHE[slope_deg])
+
+
 def reset_joint_pos(slope_deg: float) -> dict:
-  """Reset joint angles incl. the solved wrist and the rail joints (cached per slope)."""
+  """Reset joint angles incl. the solved arm and the rail joint (cached per slope)."""
   if slope_deg not in _POSE_CACHE:
     _POSE_CACHE[slope_deg] = rail.add_rope_rail(
-      _base_spec(), INIT_POS, slope_quat(slope_deg), _body_joint_pos(slope_deg)
+      _base_spec(), init_pos(slope_deg), slope_quat(slope_deg), _body_joint_pos(slope_deg)
     )
   return _POSE_CACHE[slope_deg]
 
 
 def get_spec(slope_deg: float = 0.0) -> mujoco.MjSpec:
   spec = _base_spec()
-  rail.add_rope_rail(spec, INIT_POS, slope_quat(slope_deg), _body_joint_pos(slope_deg))
+  rail.add_rope_rail(spec, init_pos(slope_deg), slope_quat(slope_deg), _body_joint_pos(slope_deg))
   return spec
 
 
 def get_robot_cfg(slope_deg: float) -> EntityCfg:
   init = EntityCfg.InitialStateCfg(
-    pos=INIT_POS,
+    pos=init_pos(slope_deg),
     rot=slope_quat(slope_deg),
     joint_pos=reset_joint_pos(slope_deg),
     joint_vel={".*": 0.0},

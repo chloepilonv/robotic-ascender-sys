@@ -53,9 +53,9 @@ joint_pos = rail.add_rope_rail(spec, root_pos=(0, 0, 0.8), root_quat=(1, 0, 0, 0
 model = spec.compile(); data = mujoco.MjData(model)
 rail.set_pose(model, data, (0, 0, 0.8), (1, 0, 0, 0), joint_pos)   # wrist angles solved for you
 
-prev = data.qpos[model.jnt_qposadr[model.joint("rope_slide").id]]
+rail.ratchet_reset(model, data)          # after any reset / teleport
+rail.ratchet(model, data)                # the cam: up only — call BEFORE every mj_step
 mujoco.mj_step(model, data)
-rail.ratchet(model, data, prev)          # the cam: up only — call after EVERY mj_step
 print(rail.rope_state(model, data))      # {"rope_progress_m", "tension_N", "engaged"}
 ```
 
@@ -64,5 +64,5 @@ print(rail.rope_state(model, data))      # {"rope_progress_m", "tension_N", "eng
 - Slope: tilt gravity (`model.opt.gravity = (-g sin s, 0, -g cos s)`, +x uphill) rather than the floor;
   the rope stays a +x line. This is what the RL task does (`rl/chloe/task/robot.py`).
 - Inside mjlab the names are prefixed: `robot/rope_slide` etc. (`prefix="robot/"` in `ratchet`/`rope_state`).
-- Cam friction 3 N, rope Ø11 mm, weld near-hard (`solimp 0.99/0.999`); MuJoCo `njmax` must be ≥ ~1000
-  or the weld silently drops.
+- The cam is a **moving lower joint limit** (never overwrite qpos: that fights the solver and the
+  weld drifts by centimetres). Cam friction 3 N, rope Ø11 mm; MuJoCo `njmax` ≥ ~1000 or the weld drops.

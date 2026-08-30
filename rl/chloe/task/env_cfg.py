@@ -31,6 +31,9 @@ from . import robot as R
 
 # The 29 real G1 joints; excludes the rope slide joint (not on the real robot).
 G1_JOINTS = SceneEntityCfg("robot", joint_names=(".*_joint",))
+# Joints that get reset noise: everything except the right arm, which is on the
+# rope at reset (noise there would start the weld violated and yank the tool).
+NOISY_JOINTS = SceneEntityCfg("robot", joint_names=(r"(?!right_(shoulder|elbow|wrist)).*_joint",))
 FEET = SceneEntityCfg("robot", geom_names=(R.FOOT_GEOM_REGEX,))
 SLIDE_JOINT_CFG = SceneEntityCfg("robot", joint_names=(R.SLIDE_JOINT,))
 
@@ -38,12 +41,17 @@ SLIDE_JOINT_CFG = SceneEntityCfg("robot", joint_names=(R.SLIDE_JOINT,))
 class RatchetEnv(ManagerBasedRlEnv):
   """ManagerBasedRlEnv + the ascender cam: the rope slide joint never moves down.
 
-  After every physics substep the slide velocity is clamped to >= 0 and its
-  position to >= the value before the substep. Cheap, jit-free, and exactly
-  what a real ascender does under load.
+  Before every physics substep the slide joint's lower limit (per env) is set
+  to the highest position reached, so the constraint solver enforces "up only"
+  together with the weld. (Overwriting qpos instead fights the solver.)
   """
 
   MAX_ACTION_DELAY = 2  # policy steps (0-2 @ 50 Hz = 0-40 ms, the real G1 pipeline)
+
+  def reset(self, *args, **kwargs):
+    out = super().reset(*args, **kwargs)
+    self._ratchet_release(torch.arange(self.num_envs, device=self.device))
+    return out
 
   def __init__(self, cfg, device: str, **kwargs):
     super().__init__(cfg, device=device, **kwargs)
@@ -52,6 +60,8 @@ class RatchetEnv(ManagerBasedRlEnv):
     self._act_delay = torch.randint(0, self.MAX_ACTION_DELAY + 1, (n,), device=self.device)
     model = self.sim.mj_model
     jid = model.joint(f"robot/{R.SLIDE_JOINT}").id
+    self._slide_jid = jid
+    self.sim.expand_model_fields(("jnt_range",))  # per-env lower limit (the cam)
     self._slide_qadr = int(model.jnt_qposadr[jid])
     self._slide_dadr = int(model.jnt_dofadr[jid])
     self._sim_step = self.sim.step
@@ -66,6 +76,7 @@ class RatchetEnv(ManagerBasedRlEnv):
     out = super().step(delayed)
     done = self.reset_buf.nonzero(as_tuple=False).flatten()
     if len(done):
+      self._ratchet_release(done)
       self._act_hist[:, done] = 0.0
       self._act_delay[done] = torch.randint(
         0, self.MAX_ACTION_DELAY + 1, (len(done),), device=self.device
@@ -73,12 +84,16 @@ class RatchetEnv(ManagerBasedRlEnv):
     return out
 
   def _ratcheted_step(self) -> None:
-    qpos = self.sim.data.qpos
-    qvel = self.sim.data.qvel
-    prev = qpos[:, self._slide_qadr].clone()
+    """The cam: the slide's lower limit (per env) = highest point reached, then step."""
+    jr = self.sim.model.jnt_range
+    jr[:, self._slide_jid, 0] = torch.maximum(
+      jr[:, self._slide_jid, 0], self.sim.data.qpos[:, self._slide_qadr]
+    )
     self._sim_step()
-    qvel[:, self._slide_dadr].clamp_(min=0.0)
-    qpos[:, self._slide_qadr] = torch.maximum(qpos[:, self._slide_qadr], prev)
+
+  def _ratchet_release(self, env_ids: torch.Tensor) -> None:
+    """After a reset the cam re-engages where the carriage now is."""
+    self.sim.model.jnt_range[env_ids, self._slide_jid, 0] = self.sim.data.qpos[env_ids, self._slide_qadr]
 
 
 def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -134,9 +149,9 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
       func=base_mdp.reset_root_state_uniform,
       mode="reset",
       params={
-        # No x/y jitter: the rope carrier resets to the rope start, which is the
-        # wrist position of the nominal reset pose.
-        "pose_range": {"z": (0.0, 0.02)},
+        # No pose jitter: the carriage resets to the rope start = the ascender
+        # channel of the nominal reset pose, so the weld starts satisfied.
+        "pose_range": {},
         "velocity_range": {},
       },
     ),
@@ -146,7 +161,7 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
       params={
         "position_range": (-0.05, 0.05),
         "velocity_range": (0.0, 0.0),
-        "asset_cfg": G1_JOINTS,
+        "asset_cfg": NOISY_JOINTS,
       },
     ),
     "reset_slide": EventTermCfg(

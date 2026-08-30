@@ -64,9 +64,12 @@ def main() -> None:
     import rl.chloe.task.robot as _r
     _r.rail.CHANNEL_PITCH_DEG = args.channel_pitch
   m, jnames, scale, offset, qpos0 = build(args.slope)
+  import rl.chloe.task.robot as _r
+  rail = _r.rail
   d = mujoco.MjData(m)
   d.qpos[:] = qpos0
   mujoco.mj_forward(m, d)
+  rail.ratchet_reset(m, d, prefix="robot/")
 
   jid = np.array([m.joint(n).id for n in jnames])
   qadr, dadr = m.jnt_qposadr[jid], m.jnt_dofadr[jid]
@@ -102,10 +105,8 @@ def main() -> None:
     d.ctrl[:] = target[ctrl_map]
     d.xfrc_applied[torso, 0] = -wind_f
     for _ in range(decimation):
-      prev = d.qpos[s_q]
+      rail.ratchet(m, d, prefix="robot/")  # the ascender cam (moving lower limit)
       mujoco.mj_step(m, d)
-      d.qvel[s_d] = max(d.qvel[s_d], 0.0)  # the ascender cam
-      d.qpos[s_q] = max(d.qpos[s_q], prev)
     step += 1
     if step % 50 == 0:
       gap = np.linalg.norm(d.site_xpos[anchor] - d.xpos[carrier])
