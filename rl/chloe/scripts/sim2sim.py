@@ -91,6 +91,7 @@ def main() -> None:
   has_mode = sess.get_inputs()[0].shape[1] == 97  # v4+: mode command in the obs
   mode = torch.tensor([CM.SLIDE])
   slide_at_switch = torch.tensor([float(d.qpos[s_q])])
+  phase_t = torch.zeros(1)
   last_action = np.zeros(len(jid), dtype=np.float32)
   decimation, dt = 4, m.opt.timestep
 
@@ -108,7 +109,9 @@ def main() -> None:
   while (d.time < args.seconds) if args.headless else viewer.is_running():
     if has_mode:
       rel_x = torch.tensor([float(d.xpos[carrier][0] - d.qpos[0])])
-      mode, slide_at_switch = CM.update_mode(mode, torch.tensor([float(d.qpos[s_q])]), slide_at_switch, rel_x)
+      mode, slide_at_switch, phase_t = CM.update_mode(
+        mode, torch.tensor([float(d.qpos[s_q])]), slide_at_switch, rel_x, phase_t, decimation * dt
+      )
     action = sess.run(None, {"obs": obs()})[0][0]
     last_action = action.astype(np.float32)
     target = offset + scale * action

@@ -110,3 +110,28 @@ def get_robot_cfg(slope_deg: float) -> EntityCfg:
     spec_fn=functools.partial(get_spec, slope_deg),
     articulation=g1.G1_ARTICULATION,
   )
+
+
+# ----------------------------------------------------------------------------
+# Per-env slope: spawn table (used by the reset event in mdp.py)
+# ----------------------------------------------------------------------------
+
+NOMINAL_SLOPE_DEG = 20.0  # the global gravity / rope geometry is built for this slope
+SLOPE_TABLE_DEG = (0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0)
+_SPAWN_CACHE: dict = {}
+
+
+def spawn_table() -> dict:
+  """slope_deg -> (root_pos, root_quat, joint_pos dict, channel_x_world). Cached."""
+  if _SPAWN_CACHE:
+    return _SPAWN_CACHE
+  for sd in SLOPE_TABLE_DEG:
+    pos, rot, jp = init_pos(sd), slope_quat(sd), reset_joint_pos(sd)
+    model = _base_spec().compile()
+    data = mujoco.MjData(model)
+    rail.set_pose(model, data, pos, rot, jp)
+    wb = model.body(WRIST_BODY).id
+    grip_link, _ = rail.ascender_channel(model)
+    cx = float((data.xpos[wb] + data.xmat[wb].reshape(3, 3) @ grip_link)[0])
+    _SPAWN_CACHE[sd] = (pos, rot, jp, cx)
+  return _SPAWN_CACHE
