@@ -237,10 +237,8 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
       func=mdp.reset_slope_wind,
       mode="reset",
       params={
-        # No pose jitter: the carriage resets to the rope start = the ascender
-        # channel of the nominal reset pose, so the weld starts satisfied.
-        "pose_range": {},
-        "velocity_range": {},
+        "slope_range": (20.0, 20.0),  # fixed 20° (tilted gravity is global; this just picks the spawn pose)
+        "speed_range": (0.0, 10.0),   # wind 0-10 m/s
       },
     ),
     "reset_joints": EventTermCfg(
@@ -259,15 +257,6 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
         "position_range": (0.0, 0.0),  # exact solved IK pose — no noise on the rope arm
         "velocity_range": (0.0, 0.0),
         "asset_cfg": RIGHT_ARM,
-      },
-    ),
-    "reset_slide": EventTermCfg(
-      func=base_mdp.reset_joints_by_offset,
-      mode="reset",
-      params={
-        "position_range": (0.0, 0.0),
-        "velocity_range": (0.0, 0.0),
-        "asset_cfg": SLIDE_JOINT_CFG,
       },
     ),
     # Ground friction, fixed per env for the run.
@@ -348,12 +337,6 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
         "operation": "add",
         "ranges": {0: (-0.03, 0.03), 1: (-0.03, 0.03), 2: (-0.03, 0.03)},
       },
-    ),
-    # Wind: steady, random horizontal direction, resampled each episode.
-    "wind": EventTermCfg(
-      func=mdp.wind_on_torso,
-      mode="reset",
-      params={"speed_range": (0.0, 10.0), "asset_cfg": mdp.TORSO},
     ),
   }
 
