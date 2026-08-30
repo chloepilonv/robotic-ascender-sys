@@ -884,6 +884,24 @@ def run(arguments) -> str:
             if sleep_for > 0:
                 time.sleep(sleep_for)
 
+        if (hearing_system.enabled
+                and episode.tick % int(episode.control_hz) == 0):
+            # ONCE A SECOND, WHAT THE MICROPHONE ACTUALLY DELIVERED. The page is
+            # asked for no automatic gain control, so this number really is how
+            # loudly the person spoke -- and a shout is what carries through
+            # wind.
+            print(hearing_system.microphone.describe(), flush=True)
+            print(f"[hearing] {hearing_system.behaviour.mode}"
+                  f"  voice p={hearing_system.ears.voice_probability:.2f}"
+                  f"  heard={hearing_system.ears.heard}"
+                  f" ({hearing_system.ears.stop_confidence:.2f})"
+                  f"  bearing="
+                  + ("--" if hearing_system.ears.bearing_radians is None else
+                     f"{math.degrees(hearing_system.ears.bearing_radians):+.0f}°")
+                  + f" (conf {hearing_system.ears.bearing_confidence:.2f})"
+                  f"  ear level {hearing_system.ears.level_db:.0f} dBFS"
+                  f"  | {hearing_system.describe_cost()[10:]}", flush=True)
+
         if episode.tick % int(episode.control_hz) == 0:
             print(f"[runtime] {episode.world_name:<9}"
                   f" t={row['time_seconds']:6.1f}s "

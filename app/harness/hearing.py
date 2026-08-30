@@ -198,6 +198,16 @@ VOICE_PRESENT_SHARE = 0.30
 SEGMENT_END_SILENCE_SECONDS = 0.20
 SEGMENT_MAXIMUM_SECONDS = 2.0
 SEGMENT_MINIMUM_SECONDS = 0.12    # shorter than this is a click, not speech
+# PRE-ROLL: how much audio from BEFORE the VAD said "voice" is glued onto the
+# front of an utterance. It is not a nicety. The VAD runs at 10 Hz, so it can
+# be up to 100 ms late, and the recogniser is then handed a word with its first
+# consonant missing -- for `stop` that is the /s/, and "top" is exactly one of
+# the near-misses the grammar is built to reject. MEASURED: with no pre-roll a
+# "stop" spoken at a robot 6 m away came back `[unk]` with 0.000 confidence,
+# while the SAME clip through the SAME ear model with 300 ms of silence in
+# front of it came back 1.000. The offline tables were passing only because
+# their clips were padded; the live path had no pad and no chance.
+SEGMENT_PREROLL_SECONDS = 0.30
 # The bearing is measured on the LOUDEST window of the segment, because the
 # quiet head and tail of an utterance are mostly the noise floor and GCC-PHAT
 # would be cross-correlating wind with wind.
@@ -224,7 +234,7 @@ VOSK_GRAMMAR = '["stop", "[unk]"]'
 # threshold the test prints and the runtime uses; re-run the test if the ear
 # model, the corpus or the wind law changes, and move this line to whatever the
 # table says.
-STOP_CONFIDENCE_THRESHOLD = 0.90
+STOP_CONFIDENCE_THRESHOLD = 0.85
 
 # ------------------------------------------------------------- the behaviour
 HEARING_MODES = ("IDLE", "LISTENING", "COMING_BY_EYES", "COMING_BY_EARS",
@@ -254,17 +264,44 @@ EAR_MAXIMUM_YAW_RATE_RADIANS_PER_SECOND = 0.5
 # back to wherever it was, because a stale bearing is not worth holding a torso
 # twisted for.
 EAR_WAIST_AIM_SECONDS = 3.0
+# HOW FAR THE EAR LAYER MAY TWIST THE WAIST, and it is much less than the
+# waist's own 60 degree limit. `guide.WAIST_LIMIT_RADIANS` was measured on a
+# robot STANDING STILL and sweeping; this one is walking and turning at the same
+# time, and the two loads add. MEASURED on `terrain_free_0`, ear-driven approach,
+# 90 s budget:
+#
+#     60 deg -> FELL at 4.5 s | 25 deg -> fell at 89.8 s | 15 deg -> survived
+#      0 deg -> survived
+#
+# 20 degrees is inside the surviving band and still worth about a third of the
+# camera's half-FOV, which is the point of aiming at all.
+EAR_WAIST_AIM_LIMIT_RADIANS = math.radians(20.0)
 EAR_BEARING_DEADBAND_RADIANS = math.radians(4.0)
-# TURN FIRST, THEN WALK. Beyond this the robot pivots on the spot: walking while
-# turning 120 degrees traces a long arc away from the person, and the whole
-# point of the ear cue is that it is the only information there is.
-EAR_TURN_IN_PLACE_BEYOND_RADIANS = math.radians(60.0)
-# A bearing this uncertain is not a direction. Below it the cue is kept but the
-# robot walks straight ahead rather than turning toward noise.
+# THE ROBOT NEVER TURNS ON THE SPOT, and this is a measured decision that reads
+# backwards until you see the number. The obvious design is "if she is more than
+# 60 degrees off, stop and pivot, then walk" -- walking while turning traces a
+# long arc. It does not work, because THIS POLICY HAS NO YAW AUTHORITY AT ZERO
+# FORWARD SPEED: yaw comes out of the stepping gait, and a robot commanded
+# `[0, 0, +0.5]` is standing still. MEASURED on `terrain_free_0`: with the
+# pivot-first rule the heading error sat at +80 degrees for EIGHTY-FIVE SECONDS,
+# the waist pinned at its +60 degree limit, the base not moving at all, and the
+# robot ended the run further from her than it started. With `lin_vel_x` held at
+# the walk speed the whole time, the same controller closes 3.2 m of a 45 degree
+# approach in 30 s (table 4a's companion measurement). So the robot walks while
+# it turns, and the arc is the price.
+# A bearing this uncertain is not a direction. Below it no cue is taken and the
+# robot listens rather than walking toward noise.
 EAR_BEARING_MINIMUM_CONFIDENCE = 0.25
-# How long an ear cue stays worth steering by with no new voice. She is not
-# moving much, and re-shouting every second is not how people talk.
-EAR_CUE_VALID_SECONDS = 20.0
+# HOW LONG AN EAR CUE LASTS, and it is deliberately long. "Voice is a trigger,
+# not a leash" (user): one shout starts the walk and SILENCE DOES NOT STOP IT --
+# the walk ends at the person, at a `stop`, or when the eyes have taken over.
+# The first version expired the cue after twenty seconds, which on this
+# walker's measured ground speed (about 0.1 m/s of PROGRESS toward a heading,
+# `test_hearing` table 4a) is two metres: the robot gave up two thirds of the
+# way to a person who had done nothing wrong. This number is therefore a
+# runaway guard, not a policy -- long enough to be irrelevant to any real
+# approach, short enough that a cue cannot drive a forgotten robot for ever.
+EAR_CUE_VALID_SECONDS = 120.0
 # How far back the yaw history reaches. An utterance plus its measurement
 # window is under two seconds; three is headroom.
 YAW_HISTORY_SECONDS = 3.0
@@ -346,6 +383,15 @@ class MicrophoneStream:
         self.samples_received = 0
         self.samples_dropped = 0
         self.samples_starved = 0
+        # WHAT ARRIVED, UNTOUCHED. The runtime prints these once a second and
+        # the page draws the meter from `level_db`, because the whole point of
+        # turning AGC off in the browser is that a SHOUT must arrive as a shout:
+        # nothing between the capsule and the ear model may normalise it.
+        self.recent_rms = 0.0
+        self.recent_peak = 0.0
+        # (sample_count, sum_of_squares, peak) per push, trimmed to one second,
+        # so the printed level is "the last second" and not "the last 32 ms".
+        self._level_window = []
 
     def push_pcm_bytes(self, payload: bytes) -> int:
         """int16 little-endian PCM (with or without the `MIC0` prefix). -> count."""
@@ -358,6 +404,16 @@ class MicrophoneStream:
 
     def push(self, samples) -> int:
         samples = np.asarray(samples, dtype=np.float32)
+        if samples.size:
+            self._level_window.append((int(samples.size),
+                                       float(np.sum(samples.astype(np.float64) ** 2)),
+                                       float(np.max(np.abs(samples)))))
+            total = sum(row[0] for row in self._level_window)
+            while len(self._level_window) > 1 and total > SAMPLE_RATE_HZ:
+                total -= self._level_window.pop(0)[0]
+            self.recent_rms = float(np.sqrt(
+                sum(row[1] for row in self._level_window) / max(total, 1)))
+            self.recent_peak = max(row[2] for row in self._level_window)
         with self.lock:
             self.buffer = np.concatenate((self.buffer, samples))
             self.samples_received += int(samples.size)
@@ -383,6 +439,26 @@ class MicrophoneStream:
     def clear(self) -> None:
         with self.lock:
             self.buffer = np.zeros(0, dtype=np.float32)
+        self._level_window = []
+        self.recent_rms = 0.0
+        self.recent_peak = 0.0
+
+    def describe(self) -> str:
+        """One line of what the microphone is delivering, RAW.
+
+        NOTHING IN THIS PIPELINE NORMALISES THE INCOMING PCM (user's ruling,
+        2026-08-30) -- the browser is asked for `autoGainControl: false` and the
+        ear model applies only the world: 1/r, the propagation delay, the air's
+        low-pass and the wind. So a shout carries further than a mumble, which
+        is the whole reason the level is printed rather than assumed.
+        """
+        return (f"[hearing] microphone in (last 1 s): rms {self.recent_rms:.4f}"
+                f" ({decibels(self.recent_rms):+.1f} dBFS), peak"
+                f" {self.recent_peak:.3f}"
+                f" ({decibels(self.recent_peak):+.1f} dBFS);"
+                f" {self.samples_received} samples received,"
+                f" {self.samples_dropped} dropped (page ran ahead),"
+                f" {self.samples_starved} silent (page ran behind)")
 
 
 class VoiceInjector:
@@ -925,13 +1001,17 @@ class Ears:
         # The loudest the rolling VAD window got during the last utterance --
         # reported by `test_hearing` so a miss can be told from a near-miss.
         self.segment_peak_voice_probability = 0.0
+        # The loudest the front ear got during the last utterance, dBFS.
+        self.segment_peak_level_db = -80.0
         self._segment_peak = 0.0
+        self._segment_peak_level = -80.0
 
         self._segment = []
         self._segment_channels = []
         self._silence_seconds = 0.0
         self._segment_seconds = 0.0
         self._detector_buffer = []      # channels awaiting a detector tick
+        self._preroll = []              # the last few blocks, for the onset
         self.array_milliseconds = 0.0
         self.detector_milliseconds = 0.0
         if verbose:
@@ -959,12 +1039,16 @@ class Ears:
         self.new_segment = False
         self.bearing_age_seconds = 0.0
         self.segment_peak_voice_probability = 0.0
+        # The loudest the front ear got during the last utterance, dBFS.
+        self.segment_peak_level_db = -80.0
         self._segment_peak = 0.0
+        self._segment_peak_level = -80.0
         self._segment = []
         self._segment_channels = []
         self._silence_seconds = 0.0
         self._segment_seconds = 0.0
         self._detector_buffer = []
+        self._preroll = []
 
     def microphone_positions_world(self, head_position, head_rotation):
         """The four capsules in the world. -> (4, 3)."""
@@ -1002,10 +1086,18 @@ class Ears:
         self.voice_activity.feed(monitor)
         self.voice_probability = self.voice_activity.probability
         self._segment_peak = max(self._segment_peak, self.voice_probability)
+        self._segment_peak_level = max(self._segment_peak_level, self.level_db)
         voiced = self.voice_activity.voice_present
         seconds = block.shape[1] / SAMPLE_RATE_HZ
 
         if voiced:
+            if not self._segment:
+                # THE ONSET. Glue the pre-roll on before the first voiced block,
+                # so the recogniser gets the whole word and not its tail.
+                for past_monitor, past_block in self._preroll:
+                    self._segment.append(past_monitor)
+                    self._segment_channels.append(past_block)
+                    self._segment_seconds += past_block.shape[1] / SAMPLE_RATE_HZ
             self._segment.append(monitor)
             self._segment_channels.append(block)
             self._segment_seconds += seconds
@@ -1017,6 +1109,14 @@ class Ears:
             self._segment_channels.append(block)
             self._segment_seconds += seconds
             self._silence_seconds += seconds
+        # The pre-roll ring is kept whether or not a segment is open; the
+        # blocks it holds cost 100 ms each and it is three deep.
+        self._preroll.append((monitor, block))
+        preroll_blocks = max(1, int(round(SEGMENT_PREROLL_SECONDS
+                                          / max(seconds, 1e-6))))
+        while len(self._preroll) > preroll_blocks:
+            self._preroll.pop(0)
+
         if self._segment and (self._silence_seconds >= SEGMENT_END_SILENCE_SECONDS
                               or self._segment_seconds >= SEGMENT_MAXIMUM_SECONDS):
             self._close_segment()
@@ -1028,13 +1128,16 @@ class Ears:
         channels = np.concatenate(self._segment_channels, axis=1)
         self._segment = []
         self._segment_channels = []
+        self._preroll = []
         speech_seconds = self._segment_seconds - self._silence_seconds
         self._segment_seconds = 0.0
         self._silence_seconds = 0.0
         peak, self._segment_peak = self._segment_peak, 0.0
+        peak_level, self._segment_peak_level = self._segment_peak_level, -80.0
         if speech_seconds < SEGMENT_MINIMUM_SECONDS:
             return
         self.segment_peak_voice_probability = peak
+        self.segment_peak_level_db = peak_level
         self.segments_heard += 1
         self.new_segment = True
         self.stop_confidence = self.stop_word.confidence(monitor)
@@ -1138,6 +1241,12 @@ class HearingBehaviour:
         self.cue_bearing_radians = None      # as measured, for the HUD
         self.cue_confidence = 0.0
         self.cue_age_seconds = 0.0
+        # A cue is SPENT once the eyes have taken over from it. What that buys:
+        # the robot walks to her on one shout (silence does not stop it), and
+        # yet losing her mid-walk AFTER vision had her does not send it
+        # trudging off along a bearing that was true a minute ago -- it stands
+        # and LISTENS, which is the user's 2026-08-30 ruling.
+        self.cue_spent = False
         self.bearing_error_radians = 0.0     # what the yaw command is closing
         self._command = np.zeros(3)
 
@@ -1149,6 +1258,7 @@ class HearingBehaviour:
         self.cue_bearing_radians = None
         self.cue_confidence = 0.0
         self.cue_age_seconds = 0.0
+        self.cue_spent = False
         self.bearing_error_radians = 0.0
         self._command = np.zeros(3)
 
@@ -1192,6 +1302,7 @@ class HearingBehaviour:
                         + float(ears.bearing_radians))
                     self.cue_confidence = float(ears.bearing_confidence)
                     self.cue_age_seconds = 0.0
+                    self.cue_spent = False
 
         if self.stopped:
             self.mode = "STOPPED"
@@ -1207,6 +1318,7 @@ class HearingBehaviour:
             # VISION OWNS THE NAVIGATION from here. The follower's own command
             # is handed through byte for byte -- its hysteresis and its 1 m WAIT
             # band are exactly what they were.
+            self.cue_spent = True         # vision has it from here
             if follower.mode == "WAIT":
                 self.mode = "WAIT"
                 self.called = False       # arrived; the next shout re-calls
@@ -1215,7 +1327,7 @@ class HearingBehaviour:
             self._command = np.asarray(guide_command, dtype=float).copy()
             return self._command
 
-        if (self.cue_heading_world_radians is None
+        if (self.cue_heading_world_radians is None or self.cue_spent
                 or self.cue_age_seconds > EAR_CUE_VALID_SECONDS):
             # Called, but with no eyes on her and no direction worth steering
             # by. STAND STILL AND LISTEN. Walking off in the last known
@@ -1242,9 +1354,8 @@ class HearingBehaviour:
                 EAR_BEARING_GAIN_PER_RADIAN * bearing,
                 -EAR_MAXIMUM_YAW_RATE_RADIANS_PER_SECOND,
                 EAR_MAXIMUM_YAW_RATE_RADIANS_PER_SECOND))
-        forward = (0.0 if abs(bearing) > EAR_TURN_IN_PLACE_BEYOND_RADIANS
-                   else self.walk_speed)
-        return np.array([forward, 0.0, yaw_rate])
+        # ALWAYS WALKING. See the comment at EAR_BEARING_DEADBAND_RADIANS.
+        return np.array([self.walk_speed, 0.0, yaw_rate])
 
     def command(self) -> np.ndarray:
         return self._command
@@ -1276,8 +1387,9 @@ class HearingSystem:
         self.ear_pcm = None
         self.injectors = []
         self.samples_per_tick = self.ears.samples_per_tick
-        # (time_seconds, yaw) for the last few seconds. See
-        # `Ears.bearing_age_seconds` for why a cue needs the OLD yaw.
+        # (time_seconds, torso_yaw) for the last few seconds. See
+        # `Ears.bearing_age_seconds` for why a cue needs the OLD yaw, and
+        # `update` for why it is the TORSO's yaw and not the base's.
         self._yaw_history = []
         self._monitor_pending = []
         self.head_body_id = self._find_head_body(model, verbose=verbose)
@@ -1399,10 +1511,25 @@ class HearingSystem:
         # The robot's heading about world +z, from the free joint's quaternion.
         # The ear cue is remembered in the WORLD frame, so the behaviour needs
         # it -- see `HearingBehaviour.cue_heading_world_radians`.
+        # TWO YAWS, AND THEY ARE NOT THE SAME ANGLE.
+        #   base yaw   -- the free joint's heading. This is what `ang_vel_yaw`
+        #                 steers, so it is what a heading ERROR must be measured
+        #                 against.
+        #   torso yaw  -- the microphone array's own heading. The ear bearing is
+        #                 measured in THIS frame, so it is what a bearing must be
+        #                 converted to a world heading WITH.
+        # They differ by the waist joint plus whatever the torso is doing, and on
+        # this robot that is not small: MEASURED at the spawn of
+        # `terrain_free_0`, a hiker placed 45 deg off the BASE sits 24 deg off
+        # the TORSO. Converting a torso-frame bearing with the base's yaw put
+        # every ear cue about 20 degrees wide, and the robot walked past her.
         w, x, y, z = [float(v) for v in data.qpos[3:7]]
         robot_yaw = math.atan2(2.0 * (w * z + x * y),
                                1.0 - 2.0 * (y * y + z * z))
-        self._yaw_history.append((float(time_seconds), robot_yaw))
+        rotation = np.asarray(data.xmat[self.head_body_id],
+                              dtype=float).reshape(3, 3)
+        torso_yaw = math.atan2(rotation[1, 0], rotation[0, 0])
+        self._yaw_history.append((float(time_seconds), torso_yaw))
         horizon = float(time_seconds) - YAW_HISTORY_SECONDS
         while self._yaw_history and self._yaw_history[0][0] < horizon:
             self._yaw_history.pop(0)
@@ -1437,7 +1564,9 @@ class HearingSystem:
         # The cue in the BODY's frame right now: the remembered world heading
         # minus where the body is pointing. `bearing_error_radians` is already
         # exactly that.
-        guide_system.waist.target_radians = behaviour.bearing_error_radians
+        guide_system.waist.target_radians = float(np.clip(
+            behaviour.bearing_error_radians,
+            -EAR_WAIST_AIM_LIMIT_RADIANS, EAR_WAIST_AIM_LIMIT_RADIANS))
 
     def take_ear_pcm(self):
         """The newest monitor mix, ONCE. -> bytes or None."""
@@ -1459,7 +1588,14 @@ class HearingSystem:
                                 else round(math.degrees(bearing), 1)),
             "bearing_confidence": round(float(ears.bearing_confidence), 3),
             "mode": self.behaviour.mode,
+            # What the EAR hears (front microphone, after 1/r and the wind).
             "level_db": round(float(ears.level_db), 1),
+            # What the MICROPHONE delivered, raw and un-normalised -- the meter
+            # that shows the operator their own shout.
+            "microphone_level_db": round(decibels(
+                self.microphone.recent_rms), 1),
+            "microphone_peak_db": round(decibels(
+                self.microphone.recent_peak), 1),
         }
 
     def recorded(self) -> dict:

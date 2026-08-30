@@ -180,8 +180,8 @@
           font-weight: 600; font-size: 10px; letter-spacing: .1em;
           background: var(--elevated); border: 1px solid var(--border); color: var(--ink-2); }
   .pill.follow { background: rgba(34,197,94,.14); border-color: rgba(34,197,94,.4); color: var(--good); }
-  .pill.wait, .pill.search { background: rgba(245,158,11,.14); border-color: rgba(245,158,11,.35);
-                             color: var(--warn); }
+  .pill.wait { background: rgba(245,158,11,.14); border-color: rgba(245,158,11,.35);
+               color: var(--warn); }
   .pill em { font-style: normal; font-weight: 500; letter-spacing: .04em; opacity: .72;
              margin-left: 6px; text-transform: lowercase; }
   .pill.lost { background: rgba(239,68,68,.14); border-color: rgba(239,68,68,.4); color: var(--bad); }
@@ -189,7 +189,24 @@
   #eyeView { display: none; width: 100%; aspect-ratio: 4 / 3; margin-top: 10px;
              border: 1px solid var(--border); border-radius: 6px; background: #000; }
 
-  #bmsCard { display: none; order: 4; }
+  #hearingCard { order: 4; }
+  #hearingReadout { display: none; }
+  .pill.coming { background: rgba(34,197,94,.14); border-color: rgba(34,197,94,.4); color: var(--good); }
+  .pill.stopped { background: rgba(239,68,68,.14); border-color: rgba(239,68,68,.4); color: var(--bad); }
+  .pill.listening { background: rgba(245,158,11,.14); border-color: rgba(245,158,11,.35); color: var(--warn); }
+  #hearingReadout .kv { margin-top: 9px; }
+  #micToggle { width: auto; padding: 2px 9px; font-size: 10px; font-weight: 600; letter-spacing: .08em;
+               border-radius: 999px; color: var(--ink-3); }
+  #micToggle.live { color: var(--good); border-color: rgba(34,197,94,.4); }
+  #micToggle.denied { color: var(--bad); border-color: rgba(239,68,68,.4); }
+  .hearingtools { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+  #earMonitorToggle { width: auto; padding: 2px 9px; font-size: 10px; font-weight: 600;
+                      letter-spacing: .08em; border-radius: 999px; color: var(--ink-3); }
+  #earMonitorToggle.live { color: var(--good); border-color: rgba(34,197,94,.4); }
+  #levelBar { margin: 9px 0 0; }
+  #levelBar i { background: var(--good); }
+
+  #bmsCard { display: none; order: 5; }
   #bmsCard.cutoff { border-color: rgba(239,68,68,.5); }
   #bmsSoc { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .bmsbar { grid-column: auto; margin: 1px 0 0; }
@@ -209,7 +226,7 @@
                    color: var(--bad); font-style: normal; font-weight: 600;
                    font-size: 10.5px; letter-spacing: .08em; }
 
-  #liveFooter { order: 5; margin-top: auto; position: sticky; bottom: -12px; z-index: 1;
+  #liveFooter { order: 6; margin-top: auto; position: sticky; bottom: -12px; z-index: 1;
                 background: var(--bg); padding: 8px 0 12px; display: flex;
                 flex-direction: column; gap: 9px; }
   #liveFooter::before { content: ""; position: absolute; left: 0; right: 0; top: -10px;
@@ -313,6 +330,25 @@
       </div>
     </div>
     <canvas id="eyeView" width="320" height="240"></canvas>
+  </section>
+
+  <!-- HEARING. Four virtual microphones on the robot's head; the voice is the
+       Mac's own, streamed up as MIC0 and emitted at the hiker's mouth. -->
+  <section class="card" id="hearingCard">
+    <div class="head"><h2>Hearing</h2>
+      <span class="hearingtools">
+        <button class="iconbtn" id="micToggle" title="stream the Mac microphone">MIC</button>
+        <button class="iconbtn" id="earMonitorToggle" title="listen to what the robot hears">EAR</button>
+      </span>
+      <button class="switchrow" id="hearingSwitch" role="switch" aria-checked="false" title="the robot listens"><i class="switch"></i></button></div>
+    <div id="hearingReadout">
+      <i class="pill" id="hearingMode">IDLE</i>
+      <div class="bar" id="levelBar"><i id="levelBarFill"></i></div>
+      <div class="kv">
+        <span>Heard</span><b id="hearingHeard">—</b>
+        <span>Bearing</span><b id="hearingBearing">—</b>
+      </div>
+    </div>
   </section>
 
   <section class="card" id="bmsCard">
@@ -420,6 +456,7 @@ function paintHud(frame) {
   noteVisibility(frame.visibility_meters);
   paintBatteryCard(frame);
   paintGuideCard(frame);
+  paintHearingCard(frame);
   paintAutonomyKeys(frame);
   const climbing = Number(command[0]) > 0;
   const fell = Boolean(frame.fell);
@@ -432,7 +469,7 @@ function paintHud(frame) {
   motion.classList.toggle('climbing',
     !fell && !state.paused && (followerWord ? guideState.mode === 'FOLLOW' : climbing));
   motion.classList.toggle('waiting', !fell && !state.paused && Boolean(followerWord)
-    && (guideState.mode === 'WAIT' || guideState.mode === 'SEARCH'));
+    && guideState.mode === 'WAIT');
   motion.classList.toggle('fell', fell || (!state.paused && Boolean(followerWord) && guideState.mode === 'LOST'));
   if (frame.slope_degrees !== undefined && frame.slope_degrees !== null) state.slopeDegrees = frame.slope_degrees;
   const banner = $('banner');
@@ -543,9 +580,8 @@ function setBatteryRow(rowElementId, valueElementId, text, mutedNote = null) {
 }
 
 // ---------- GUIDE (ported verbatim from the retired index.html) ----------
-const GUIDE_MODE_CLASSES = { FOLLOW: 'follow', WAIT: 'wait', LOST: 'lost', SEARCH: 'search' };
-const GUIDE_MODE_STATUS_WORDS = { FOLLOW: 'following', WAIT: 'waiting', LOST: 'lost',
-                                  SEARCH: 'searching' };
+const GUIDE_MODE_CLASSES = { FOLLOW: 'follow', WAIT: 'wait', LOST: 'lost' };
+const GUIDE_MODE_STATUS_WORDS = { FOLLOW: 'following', WAIT: 'waiting', LOST: 'lost' };
 const EYE_FRAME_STALE_MILLISECONDS = 2000;
 const guideState = { on: false, mode: null, lastEyeFrameMilliseconds: 0 };
 const eyeCanvas = $('eyeView'), eyeContext = eyeCanvas.getContext('2d');
@@ -588,12 +624,6 @@ function paintGuideCard(frame) {
   const pill = $('guideMode');
   pill.textContent = mode || '—';
   pill.className = 'pill ' + (GUIDE_MODE_CLASSES[mode] || '');
-  // SEARCH also says WHAT it is doing -- sweep / acquire / realign -- muted beside the mode
-  if (mode === 'SEARCH' && typeof guide.search_phase === 'string' && guide.search_phase) {
-    const phase = document.createElement('em');
-    phase.textContent = guide.search_phase;
-    pill.appendChild(phase);
-  }
   // CHLOE'S WORLDS: the follower still SEES -- the distance and bearing below
   // are a real stereo measurement -- but her ascender network has no command
   // port, so nothing here aims the robot. The mode is honest about what the
@@ -632,6 +662,172 @@ function paintEyeViewVisibility() {
   if (shown === eyeViewShown) return;
   eyeViewShown = shown;
   eyeCanvas.style.display = shown ? 'block' : 'none';
+}
+
+// ---------- HEARING ----------
+// The page does NO audio processing. It captures the Mac microphone at 16 kHz
+// mono with every browser "helper" turned OFF -- no automatic gain, no noise
+// suppression, no echo cancellation -- and ships raw int16 PCM as `MIC0` +
+// samples. That matters: the ear model is meant to hear a SHOUT as louder than
+// a mumble, and automatic gain would flatten exactly that difference before the
+// runtime ever saw it.
+const MICROPHONE_SAMPLE_RATE_HZ = 16000;
+const MICROPHONE_BLOCK_SAMPLES = 512;          // 32 ms
+const MIC_MESSAGE_PREFIX = [0x4D, 0x49, 0x43, 0x30];   // "MIC0"
+const EAR_FRAME_MAGIC = [0x45, 0x41, 0x52, 0x30];      // "EAR0"
+const HEARING_MODE_CLASSES = { IDLE: '', LISTENING: 'listening', COMING_BY_EYES: 'coming',
+                               COMING_BY_EARS: 'coming', STOPPED: 'stopped', WAIT: 'wait' };
+const LEVEL_METER_FLOOR_DB = -60;
+const hearingState = { on: false, micWanted: false, micLive: false, context: null,
+                       stream: null, node: null, source: null,
+                       monitorOn: false, monitorContext: null, monitorTime: 0 };
+
+function paintHearingSwitch() {
+  $('hearingSwitch').setAttribute('aria-checked', String(hearingState.on));
+}
+$('hearingSwitch').addEventListener('click', () => {
+  hearingState.on = !hearingState.on;
+  paintHearingSwitch();
+  send({ type: 'knob', name: 'hearing', value: hearingState.on ? 1 : 0 });
+});
+
+async function startMicrophone() {
+  if (hearingState.micLive) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { autoGainControl: false, noiseSuppression: false,
+               echoCancellation: false, channelCount: 1,
+               sampleRate: MICROPHONE_SAMPLE_RATE_HZ } });
+    // Ask the AudioContext for 16 kHz so the browser resamples once, in C, and
+    // the page never has to. Safari ignores the hint on some versions, so the
+    // block below resamples by linear interpolation when the rate differs --
+    // which is the one and only piece of signal processing this page does.
+    const context = new (window.AudioContext || window.webkitAudioContext)(
+      { sampleRate: MICROPHONE_SAMPLE_RATE_HZ });
+    const source = context.createMediaStreamSource(stream);
+    const node = context.createScriptProcessor(MICROPHONE_BLOCK_SAMPLES, 1, 1);
+    node.onaudioprocess = event => sendMicrophoneBlock(
+      event.inputBuffer.getChannelData(0), context.sampleRate);
+    source.connect(node);
+    // A ScriptProcessor only runs while it is connected to the destination.
+    // Route it through a silent gain so nothing is played back and the node
+    // still gets called -- connecting it straight to `destination` would echo
+    // the room out of the speakers and into the microphone again.
+    const silence = context.createGain();
+    silence.gain.value = 0;
+    node.connect(silence); silence.connect(context.destination);
+    Object.assign(hearingState, { context, stream, node, source, micLive: true });
+    $('micToggle').classList.remove('denied');
+    $('micToggle').classList.add('live');
+  } catch (error) {
+    hearingState.micLive = false;
+    $('micToggle').classList.remove('live');
+    $('micToggle').classList.add('denied');
+  }
+}
+function stopMicrophone() {
+  if (hearingState.node) { hearingState.node.disconnect(); hearingState.node.onaudioprocess = null; }
+  if (hearingState.source) hearingState.source.disconnect();
+  if (hearingState.stream) hearingState.stream.getTracks().forEach(track => track.stop());
+  if (hearingState.context) hearingState.context.close();
+  Object.assign(hearingState, { context: null, stream: null, node: null,
+                                source: null, micLive: false });
+  $('micToggle').classList.remove('live');
+}
+function sendMicrophoneBlock(samples, sampleRate) {
+  if (!state.socket || state.socket.readyState !== 1 || !hearingState.on) return;
+  let source = samples;
+  if (Math.abs(sampleRate - MICROPHONE_SAMPLE_RATE_HZ) > 1) {
+    const count = Math.round(samples.length * MICROPHONE_SAMPLE_RATE_HZ / sampleRate);
+    const resampled = new Float32Array(count);
+    for (let index = 0; index < count; index++) {
+      const position = index * (samples.length - 1) / Math.max(count - 1, 1);
+      const low = Math.floor(position), share = position - low;
+      resampled[index] = samples[low] * (1 - share) + samples[Math.min(low + 1, samples.length - 1)] * share;
+    }
+    source = resampled;
+  }
+  const frame = new Uint8Array(4 + source.length * 2);
+  frame.set(MIC_MESSAGE_PREFIX, 0);
+  const view = new DataView(frame.buffer, 4);
+  for (let index = 0; index < source.length; index++) {
+    // NO GAIN, NO LIMITER, NO NORMALISATION -- just the clamp that int16 forces.
+    const value = Math.max(-1, Math.min(1, source[index]));
+    view.setInt16(index * 2, Math.round(value * 32767), true);
+  }
+  state.socket.send(frame.buffer);
+}
+$('micToggle').addEventListener('click', () => {
+  hearingState.micWanted = !hearingState.micWanted;
+  if (hearingState.micWanted) startMicrophone(); else stopMicrophone();
+});
+$('earMonitorToggle').addEventListener('click', () => {
+  hearingState.monitorOn = !hearingState.monitorOn;
+  $('earMonitorToggle').classList.toggle('live', hearingState.monitorOn);
+  send({ type: 'knob', name: 'ear_monitor', value: hearingState.monitorOn ? 1 : 0 });
+});
+// EAR0: what the robot hears, played back. Scheduled end to end so 100 ms
+// blocks do not click; a late block restarts the schedule rather than piling up.
+function playEarFrame(buffer) {
+  if (!hearingState.monitorOn) return;
+  if (!hearingState.monitorContext) {
+    hearingState.monitorContext = new (window.AudioContext || window.webkitAudioContext)(
+      { sampleRate: MICROPHONE_SAMPLE_RATE_HZ });
+  }
+  const context = hearingState.monitorContext;
+  const pcm = new Int16Array(buffer, 4);
+  const audio = context.createBuffer(1, pcm.length, MICROPHONE_SAMPLE_RATE_HZ);
+  const channel = audio.getChannelData(0);
+  for (let index = 0; index < pcm.length; index++) channel[index] = pcm[index] / 32768;
+  const node = context.createBufferSource();
+  node.buffer = audio; node.connect(context.destination);
+  const now = context.currentTime;
+  hearingState.monitorTime = Math.max(hearingState.monitorTime, now + 0.02);
+  node.start(hearingState.monitorTime);
+  hearingState.monitorTime += audio.duration;
+}
+function paintHearingCard(frame) {
+  const hearing = frame.hearing;
+  const readout = $('hearingReadout');
+  if (!hearing || typeof hearing !== 'object' || Array.isArray(hearing)) {
+    readout.style.display = 'none';
+    return;
+  }
+  if (hearing.enabled !== undefined && Boolean(hearing.enabled) !== hearingState.on) {
+    hearingState.on = Boolean(hearing.enabled);
+    paintHearingSwitch();
+  }
+  readout.style.display = 'block';
+  const mode = typeof hearing.mode === 'string' ? hearing.mode.toUpperCase() : null;
+  const pill = $('hearingMode');
+  pill.textContent = mode ? mode.replace(/_/g, ' ') : '—';
+  pill.className = 'pill ' + (HEARING_MODE_CLASSES[mode] || '');
+  const heard = hearing.heard;
+  const confidence = Number(hearing.stop_confidence);
+  $('hearingHeard').textContent =
+    heard === 'stop' ? 'STOP ' + (Number.isFinite(confidence) ? confidence.toFixed(2) : '')
+    : heard === 'voice' ? 'voice' : '—';
+  // `Number(null)` is 0, not NaN, so a bearing that has never been measured
+  // would print a confident "0°" -- straight ahead -- which is the one wrong
+  // answer that looks like a right one. Test for null before converting.
+  const bearing = hearing.bearing_degrees === null || hearing.bearing_degrees === undefined
+    ? NaN : Number(hearing.bearing_degrees);
+  const bearingConfidence = Number(hearing.bearing_confidence);
+  $('hearingBearing').textContent = Number.isFinite(bearing)
+    ? bearing.toFixed(0) + '°' : '—';
+  const confidenceNote = document.createElement('em');
+  confidenceNote.textContent = Number.isFinite(bearing) && Number.isFinite(bearingConfidence)
+    ? 'conf ' + bearingConfidence.toFixed(2) : '';
+  $('hearingBearing').appendChild(confidenceNote);
+  // THE METER IS THE MICROPHONE'S OWN LEVEL, un-normalised end to end, so
+  // shouting really does move it. It falls back to the ear level when the page
+  // is not the one supplying the voice (a `--inject-voice` run).
+  const microphoneDb = Number(hearing.microphone_level_db);
+  const earDb = Number(hearing.level_db);
+  const shown = hearingState.micLive && Number.isFinite(microphoneDb) ? microphoneDb : earDb;
+  const share = Number.isFinite(shown)
+    ? Math.max(0, Math.min(1, (shown - LEVEL_METER_FLOOR_DB) / -LEVEL_METER_FLOOR_DB)) : 0;
+  $('levelBarFill').style.width = (100 * share).toFixed(1) + '%';
 }
 
 // ---------- WIND RIBBONS (ported from the retired index.html; the flakes are in the 3-D scene) ----------
@@ -869,6 +1065,7 @@ function connect() {
     const bytes = new Uint8Array(event.data);
     if (hasMagic(bytes, POSE_FRAME_MAGIC)) { readPoseFrame(event.data); return; }
     if (hasMagic(bytes, EYE_FRAME_MAGIC)) { paintEyeFrame(event.data.slice(4)); return; }
+    if (hasMagic(bytes, EAR_FRAME_MAGIC)) { playEarFrame(event.data); return; }
     // Nothing else is expected on the wire: the chase-camera JPEG the 2-D page
     // displayed is gone from the harness. An unknown binary frame is dropped
     // WITHOUT DECODING rather than guessed at.

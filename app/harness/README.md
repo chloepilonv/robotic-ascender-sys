@@ -299,68 +299,144 @@ Physics is untouched by any of it. The whole executable change is one statement
 and `test_guide` D and `test_search` M both report **0.000e+00 across every
 array**.
 
-## SEARCH: finding her again
+## Hearing: she calls, the robot comes (`app/harness/hearing.py`)
 
-The follower no longer gives up. A second with no detection used to mean LOST,
-which commanded zero for ever -- the robot stood facing an empty slope. It now
-goes and looks.
+**The camera sweep is gone** (user's ruling, 2026-08-30). The follower used to
+answer "I have lost her" by swinging its waist through a 20/60/90° ladder
+hunting for orange, then running an acquire/realign hand-over back to FOLLOW. It
+worked and it was measured — `flat_0` roped: 0.20 s to acquire, hand-over at
+0.24 s, 10.2° of camera-bearing error; `terrain_free_10` rope off: 0.40 s and
+1.00 s; the 60° waist clamp is what survived that experiment, and it is still
+`guide.WAIST_LIMIT_RADIANS` — and it is deleted, along with `test_search.py`,
+because the robot now has **EARS**. A machine that has lost the person it is
+following should not wave its torso about hoping. It should hold still and wait
+to be called, and the next shout hands it a direction a camera sweep never
+could. LOST is now `LISTENING`.
 
-**THE G1 HAS NO NECK.** The stereo pair rides `torso_link`, and the chain from
-the pelvis is `pelvis -> waist_yaw_link -> waist_roll_link -> torso_link`, so
-**waist yaw** is the joint that pans the cameras and the only one. "Turn the
-head" is therefore a waist-yaw offset added to the walking policy's OWN PD
-target, after the policy writes it and before the `mj_step` that acts on it
-(`ClimbSceneEpisode.control_hooks`). The policy is not retrained, not asked for
-anything, and not modified.
+### The pipeline, and where the honesty line is
 
-| phase | what it does |
-|---|---|
-| `sweep` | zero locomotion; the waist swings left/right at 20°, then 60°, then 90° (clamped -- see below) until the detector sees her on **two consecutive** vision updates |
-| `acquire` | one tick: `θ_waist + β` is the direction to her in the BODY's frame. The image bearing alone is relative to wherever the waist is pointing |
-| `realign` | keep the waist on her, resume walking up the rope. Hands over to FOLLOW/WAIT once she is centred in the picture AND inside the cone the cameras will still see when the waist straightens |
-| `idle` | 15 s of sweeping with nothing found: stop, sit still, sweep again every 5 s |
+Turn the **`hearing`** knob on (it needs `guide` on too — the voice comes out of
+HER mouth and the hand-over is to HER eyes) and:
 
-**The body does not turn, by default.** `yaw_command_available` is False for
-every climb world: the policy was trained with `ang_vel_yaw ≈ 0` and the palm is
-clipped to a fixed line, so a commanded turn does almost nothing (PARITY.md:
-+1.0 and −1.0 rad/s for 3 s end 10° apart). With it False, `ang_vel_yaw` is zero
-in **every** guide state and `realign_mode` is `"waist"`. `--policy` (a mels npz,
-trained to turn) sets it True and the mode becomes `"body+waist"`.
+1. **The page captures the Mac microphone** and streams 16 kHz mono int16 PCM up
+   the socket as `MIC0` + samples. The browser does **no** processing:
+   `getUserMedia` is asked for `autoGainControl: false`, `noiseSuppression:
+   false`, `echoCancellation: false`, and the runtime never normalises what
+   arrives. That is deliberate and it is testable — **a shout has to carry
+   further than a mumble** (table 1d), and automatic gain would flatten exactly
+   that difference before the runtime ever saw it. The incoming rms and peak are
+   printed once a second and the card draws a meter from them. Click **MIC** to
+   allow it; the page works without it, and `--inject-voice` drives everything
+   with no microphone at all.
+2. **The ears are synthesised from truth positions**, exactly as `StereoEyes`
+   renders two pictures from truth geometry. The voice is emitted at the
+   **hiker's mouth** (a point on her head, read off her own `human_head` geom)
+   and received by **four virtual microphones on the robot's head** —
+   front/back/left/right, 7 cm out, on `torso_link`, the same body the eyes ride.
+   Per microphone: `1/r` gain, a **fractional propagation delay** (c = 330 m/s),
+   a gentle air-absorption low-pass, and **wind noise**. Every decision after
+   that reads the four ear signals and nothing else.
+3. **Three detectors, all at 10 Hz on a rolling buffer** —
+   **voice activity** is `webrtcvad` (Google's WebRTC VAD, the one telephony
+   ships) on 30 ms frames. *Not Silero*: Silero is a torch model and this venv is
+   JAX/brax with no torch, and pulling 250 MB of torch into a 50 Hz control loop
+   to answer a yes/no question a 158 kB C library answers in 40 µs is the wrong
+   trade. Its verdict is binary per frame, so the "probability" reported is the
+   **voiced-frame share** of a 480 ms window — an honest fraction, not a
+   confidence dressed up as one.
+   **the word `stop`** is `vosk` small English (`vosk-model-small-en-us-0.15`,
+   40 MB) with a **grammar of exactly `["stop", "[unk]"]`**. The grammar is what
+   makes a small model usable: the decoder can only emit `stop` or garbage, so
+   "come here" cannot be scored as a partial match and the confidence attached to
+   `stop` is a real posterior over a two-way choice. Run **once per utterance**,
+   on the whole segment.
+   **bearing** is GCC-PHAT between the front/back and the left/right pairs. Four
+   microphones, not two, so there is **no front/back ambiguity**: one opposed
+   pair gives `u_x`, the other gives `u_y`, and the azimuth is `atan2(u_y, u_x)`
+   in the robot's body frame (+ = to its LEFT, the same sign the eyes and
+   `ang_vel_yaw` use). Confidence is the correlation peak's sharpness.
 
-**Measured** (`python -m app.harness.test_search`), human placed 60° off-axis,
-outside the ±36.5° half-FOV so the robot genuinely cannot see her at t = 0:
+### The behaviour, layered on the follower
 
-| world | rope | time to ACQUIRE | hand-over | camera-bearing error at hand-over | fell |
-|---|---|---|---|---|---|
-| `flat_0` | on | **0.20 s** | 0.24 s → FOLLOW | **10.2°** | no |
-| `terrain_free_10` | off | **0.40 s** | 1.00 s → FOLLOW | **3.2°** | no |
+| mode | when | what it commands |
+|---|---|---|
+| `IDLE` | nobody has called yet | zero |
+| `COMING_BY_EYES` | called, and the eyes have her | the follower's own command, byte for byte |
+| `COMING_BY_EARS` | called, the eyes do not have her, an ear cue does | walk, and turn toward the remembered heading |
+| `WAIT` | the follower reached its 1 m band | zero; the next shout re-calls |
+| `LISTENING` | called, no eyes, no cue worth steering by | zero — stand still and wait to be called |
+| `STOPPED` | a confident `stop` | zero, latched |
 
-On the rope-off world it then keeps following for the rest of the run (detector
-sees her on 64% of vision frames, 5.0° error at the end). On the roped world it
-walks past a human who is standing still and goes back to sweeping — the walker
-overruns, which is the plant, not the search.
+**Voice is a trigger, not a leash.** One shout starts the walk and silence does
+not stop it; the walk ends at the person, at a `stop`, or when vision takes
+over. A cue is *spent* once the eyes have had her, so losing her again lands in
+`LISTENING` rather than sending the robot off along a bearing that was true a
+minute ago.
 
-**Two honest limits, both measured:**
+**THE CUE IS REMEMBERED AS A WORLD HEADING, NOT A BODY BEARING.** The ears
+measure a direction relative to the robot; the robot then turns, which makes
+that number stale immediately. Steering by the stored bearing is a feedback loop
+dressed as a controller: measured on `terrain_free_5`, the robot spiralled for
+eleven seconds, fell over, and got no closer than 2.7 m to a person 6 m away.
+The bearing is converted once, at the moment it is measured, using the **torso's**
+yaw (the array's own frame — 21° from the base's at the spawn of
+`terrain_free_0`, and converting with the base's yaw put every cue about 20°
+wide), and the heading error is re-derived from the **base's** yaw every tick.
 
-* **The sweep is clamped to 60°, not 90°.** Sweeping `flat_0` roped for 25 s:
-  90° → fell at 9.5 s, 80° → 8.3 s, 75° → 5.6 s, 70° → survived, 65° → 21.6 s,
-  **60° → survived, upright 0.96**. A torso twisted further than that on a robot
-  hanging off a rope by one palm falls over. The 20/60/90 ladder is left in the
-  code because it is the design; the clamp is the measured safety bound.
-* **The searchable cone is ±96.5°** (60° of waist plus 36.5° of half-FOV), so a
-  human who ends up BEHIND the robot cannot be found. Hold **S** until she walks
-  past the robot and the follower correctly goes FOLLOW → WAIT → SEARCH/sweep
-  and never re-acquires. Turning the body is the only fix, and that is the ASK.
+### Measured (`python -m app.harness.test_hearing`)
 
-State gains `guide.search_phase`, `guide.waist_yaw_degrees` and
-`guide.realign_mode`; episodes record `guide_search_phase`,
-`guide_waist_yaw_degrees` and `guide_realign_body_yaw`. The eye overlay reads
-e.g. `-- m · SEARCH:sweep +52°`.
+TABLES_PENDING
 
-**ASK to Mrinal:** randomise `ang_vel_yaw` in the training commands if a
-steerable turn is wanted. Everything above is a workaround for a policy that
-cannot turn, and a policy that could would let the body take the angle and the
-waist unwind — which is what `realign_mode: "body+waist"` is already written for.
+    python -m app.harness.hearing_corpus     # the say(1) corpus, first
+    python -m app.harness.test_hearing       # the tables above
+    python -m app.harness.runtime --world terrain_free_0 --duration 20 --guide \
+        --hearing --inject-voice app/harness/hearing_corpus/stop/Samantha_150_stop.wav@1.0
+
+### Two things that were bugs, and are worth not re-introducing
+
+* **The onset must be pre-rolled.** The VAD runs at 10 Hz, so it is up to 100 ms
+  late, and the recogniser was handed a `stop` with its `/s/` missing — which is
+  "top", one of the near-misses the grammar exists to reject. Measured: a `stop`
+  spoken at a robot 6 m away came back `[unk]`, confidence 0.000, while the same
+  clip with 300 ms of silence in front of it came back 1.000. The offline tables
+  were passing only because their clips were padded; the live path had no pad and
+  no chance. `SEGMENT_PREROLL_SECONDS` is 0.30.
+* **The bearing table needs angles that are not multiples of 45°.** The first
+  version measured 0/45/90/135/180 and reported an error of **0.0° in every
+  cell**, which is not an array that is perfect — at those angles the two pairs'
+  delays are equal in magnitude or one is zero, so `atan2` returns the exact
+  answer for *any* common scaling of the two components. A 20% calibration error
+  in the baseline, the speed of sound or the sample rate would have gone straight
+  through. 25°, 70° and 160° are in the table for that reason.
+
+### The models this needs installed
+
+    pip install vosk soundfile webrtcvad-wheels
+    # then the 40 MB acoustic model, ONCE (python's urllib has no CA bundle here,
+    # so vosk's own auto-download fails; curl has one):
+    curl -L -o /tmp/m.zip \
+      https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+    unzip /tmp/m.zip -d ~/.cache/vosk/
+
+Installed into `.venv_everest` on 2026-08-30: `vosk 0.3.44`, `soundfile 0.14.0`,
+`webrtcvad-wheels 2.0.14` (the maintained wheel build of `webrtcvad`, which has
+no Python 3.12 wheels of its own). Both detectors degrade to "unavailable" with a
+printed line rather than crashing, so a machine without them still runs the rest
+of the harness — it simply never hears anything.
+
+### Honesty note
+
+The **microphone signal is real**: it is a human being's actual voice, captured
+by the Mac and not processed by anything before the runtime sees it. The **ear
+signals are synthesised** from truth positions, the same way the eyes are
+rendered from truth geometry — the simulator supplies *where the mouth is* and
+*where the head is*, and the model turns that into what four capsules would have
+received. Everything after `EarArray.feed` reads only those four signals. What
+this model does **not** have, and would flatter the bearing if you forgot:
+no reverberation, no diffraction or shadowing around the torso, no elevation
+estimate, and wind noise that is independent per capsule with no coherent
+low-frequency component. The bearing numbers below are therefore an
+**optimistic** bound on a real array. `PARITY.md` carries the full ledger.
 
 ## Visibility (`app/harness/storm.py`)
 
