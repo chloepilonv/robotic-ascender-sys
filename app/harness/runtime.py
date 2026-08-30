@@ -853,6 +853,13 @@ def run(arguments) -> str:
                     frozen_state["hearing"] = hearing_system.state()
                     frozen_state["command"] = [0.0, 0.0, 0.0]
                     server.broadcast(frozen_state)
+            # THE CLOCK RUNS WHILE THE WORLD IS HELD. The eye render and the
+            # ear detectors are both `tick % N` gated, so a freeze that pinned
+            # the tick could start on the wrong remainder and then NEVER see
+            # her leave or hear the resume voice (and a --duration run would
+            # never end -- measured as a 10-minute hang). Advancing the tick
+            # without stepping physics keeps every cadence and exit alive.
+            episode.tick += 1
             # Rebase the pacing clock every held iteration, exactly as the
             # pause path does, so resuming does not fire a catch-up burst.
             wall_start = time.time() - episode.tick / episode.control_hz

@@ -1378,6 +1378,15 @@ class HearingBehaviour:
             self._command = np.asarray(guide_command, dtype=float).copy()
             return self._command
 
+        if not self.vector_steering:
+            # ON A ROPE the line IS the direction: a call means climb, and the
+            # follower's rope-mode command already does exactly that. A bearing
+            # would only fight the line.
+            self.mode = "COMING_BY_EARS"
+            self._command = (np.asarray(guide_command, dtype=float).copy()
+                             if guide_command is not None else np.zeros(3))
+            return self._command
+
         if (self.cue_heading_world_radians is None or self.cue_spent
                 or self.cue_age_seconds > EAR_CUE_VALID_SECONDS):
             # Called, but with no eyes on her and no direction worth steering

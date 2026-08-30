@@ -1693,8 +1693,13 @@ class GuideFollower:
 
     def __init__(self, command_speed=FOLLOW_SPEED_METERS_PER_SECOND,
                  waist=None, yaw_command_available=False,
-                 vector_steering=False):
+                 vector_steering=False, rope_climb=False):
         self.command_speed = float(command_speed)
+        # ROPE MODE (user's ruling, 2026-08-30): on a roped world the robot
+        # climbs the line INDEFINITELY -- there is nowhere else to go on a
+        # fixed rope -- until the eyes have her inside the WAIT band (1.5 m),
+        # which freezes the world. Not seeing her is not a reason to stop.
+        self.rope_climb = bool(rope_climb)
         # WALK THE VECTOR, DON'T STEER WITH THE RUDDER (user's ruling,
         # 2026-08-30). True on rope-off worlds, where the body is free to move
         # sideways and `lin_vel_y` is a real actuator; False on every roped
@@ -1794,6 +1799,8 @@ class GuideFollower:
         what gives it somewhere to go.
         """
         if self.mode != "FOLLOW":
+            if self.rope_climb and self.mode == "LOST":
+                return np.array([self.command_speed, 0.0, 0.0])
             return np.zeros(3)
         if self.vector_steering:
             # The BODY bearing, not the image bearing: the ear layer may have
@@ -1893,7 +1900,8 @@ class GuideSystem:
         self.waist = WaistYaw()
         self.follower = GuideFollower(
             waist=self.waist, yaw_command_available=yaw_command_available,
-            vector_steering=vector_steering)
+            vector_steering=vector_steering,
+            rope_climb=not free_walk)
         self.latest = None                 # the last vision measurement
         self.eye_jpeg = None
         self.true_range_meters = float("nan")

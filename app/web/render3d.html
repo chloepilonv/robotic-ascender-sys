@@ -310,7 +310,7 @@
         <line id="windDialArrow" x1="0" y1="0" x2="0" y2="0" stroke="var(--ink-2)" stroke-width="5" stroke-linecap="round"/>
         <circle id="windDot" cx="55" cy="0" r="11" fill="var(--ink)"/>
       </svg>
-      <input type="range" id="windStrength" min="0" max="25" step="0.5" value="0">
+      <input type="range" id="windStrength" min="0" max="10" step="0.5" value="0">
       <div class="windswitches">
         <button class="switchrow" id="naturalSwitch" role="switch" aria-checked="false">natural<i class="switch"></i></button>
       </div>
@@ -1353,7 +1353,7 @@ function weatherIsFrozen() { return document.hidden || state.paused; }
 
 // ---------- WIND SOUND (ported verbatim from the retired index.html) ----------
 const WIND_SOUND_SILENT_METERS_PER_SECOND = 1.0;
-const WIND_SOUND_FULL_METERS_PER_SECOND = 20.0;
+const WIND_SOUND_FULL_METERS_PER_SECOND = 10.0;  // loudest at 10 m/s (user ruling)
 const WIND_GAIN_TIME_CONSTANT_SECONDS = 0.15;
 const WIND_SOUND_UPDATE_INTERVAL_MILLISECONDS = 60;
 const windSound = { context: null, master: null, bandPass: null, lowPass: null, muted: false, speed: 0 };
@@ -1417,7 +1417,7 @@ function updateWindSound() {
   // heard through falling snow". With visibility split off into its own dial, wind keeps
   // doing what wind does and visibility does only visibility, so those two multipliers
   // are gone rather than re-pointed at the new knob.
-  const gain = silent ? 0 : Math.min(0.95, 0.9 * Math.pow(share, 1.5));
+  const gain = silent ? 0 : Math.min(1.0, 1.15 * Math.pow(share, 1.5));  // scaled up, capped (user ruling)
   windSound.master.gain.setTargetAtTime(gain, now, WIND_GAIN_TIME_CONSTANT_SECONDS);
   windSound.bandPass.frequency.setTargetAtTime(300 + 1100 * share, now, 0.25);
   windSound.bandPass.Q.setTargetAtTime(0.7 + 2.3 * share, now, 0.25);
