@@ -101,7 +101,63 @@ def ik_right_arm(hand_dx: float, hand_dz: float) -> ArmPose:
     })
 
 
+class MjIK:
+    """Numerical IK on the G1 MJCF (same URDF as the robot): palm site -> 4 arm joints.
+    Damped least squares on shoulder pitch/roll/yaw + elbow, wrist fixed. Used by every
+    backend when mujoco is importable; analytic ik_right_arm() is the fallback."""
+    JOINTS = [R_SHOULDER_PITCH, R_SHOULDER_ROLL, R_SHOULDER_YAW, R_ELBOW]
+
+    def __init__(self):
+        import mujoco, numpy as np
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from rl.environment import robot as robot_mod
+        self.mj, self.np = mujoco, np
+        spec = mujoco.MjSpec.from_file(robot_mod.HIMALAYA_ROBOT_BARE); robot_mod.adapt(spec)
+        self.m = spec.compile(); self.d = mujoco.MjData(self.m)
+        mujoco.mj_resetDataKeyframe(self.m, self.d, self.m.key("knees_bent").id)
+        mujoco.mj_forward(self.m, self.d)
+        self.palm = self.m.site("right_palm").id
+        self.shoulder = self.d.xpos[self.m.body("right_shoulder_pitch_link").id].copy()
+        self.dofs = [self.m.jnt_dofadr[1 + j] for j in self.JOINTS]      # joint j is MJCF joint 1+j
+        self.qadr = [self.m.jnt_qposadr[1 + j] for j in self.JOINTS]
+        self.q0 = self.d.qpos.copy()
+        self.cache = {}
+
+    def solve(self, hand_dx: float, hand_dy: float, hand_dz: float) -> ArmPose:
+        key = (round(hand_dx, 3), round(hand_dy, 3), round(hand_dz, 3))
+        if key in self.cache: return self.cache[key]
+        mj, np = self.mj, self.np
+        target = self.shoulder + np.array([hand_dx, hand_dy, hand_dz])
+        self.d.qpos[:] = self.q0
+        jacp = np.zeros((3, self.m.nv))
+        for _ in range(200):
+            mj.mj_forward(self.m, self.d)
+            err = target - self.d.site_xpos[self.palm]
+            if np.linalg.norm(err) < 1e-3: break
+            mj.mj_jacSite(self.m, self.d, jacp, None, self.palm)
+            J = jacp[:, self.dofs]
+            dq = J.T @ np.linalg.solve(J @ J.T + 1e-3 * np.eye(3), err)
+            for a, delta in zip(self.qadr, dq):
+                self.d.qpos[a] += 0.5 * float(delta)
+            for a, j in zip(self.qadr, self.JOINTS):                       # respect joint limits
+                lo, hi = self.m.jnt_range[1 + j]
+                self.d.qpos[a] = min(max(self.d.qpos[a], lo), hi)
+        pose = ArmPose({j: float(self.d.qpos[a]) for j, a in zip(self.JOINTS, self.qadr)})
+        for j in (R_WRIST_ROLL, R_WRIST_PITCH, R_WRIST_YAW): pose.q[j] = 0.0
+        self.cache[key] = pose
+        return pose
+
+
+_IK = None
+
 def hand_on_rope(dx: float, lift: float = 0.0) -> ArmPose:
+    global _IK
+    if _IK is None:
+        try: _IK = MjIK()
+        except Exception as e:                                          # no mujoco on the robot
+            print(f"note: analytic IK fallback ({e.__class__.__name__})"); _IK = False
+    if _IK:
+        return _IK.solve(dx, ROPE_Y - SHOULDER_Y, (ROPE_Z + lift) - SHOULDER_Z)
     return ik_right_arm(dx, (ROPE_Z + lift) - SHOULDER_Z)
 
 
@@ -223,6 +279,12 @@ class Sim:
 
         self.weight, self.target = 0.0, None
         self.vx, self.goal = 0.0, self.d.qpos[:2].copy()
+        self.key_ctrl = self.m.key("knees_bent").ctrl.copy()
+        self.gain_rl, self.bias_rl = self.m.actuator_gainprm.copy(), self.m.actuator_biasprm.copy()
+        self.mode, self.mode_t = "stand", 0.0
+        self.stand_ctrl = self.key_ctrl.copy()
+        self.feet = [self.m.site("left_foot").id, self.m.site("right_foot").id]
+        self.com_err_prev = None
         self.palm = self.m.site("right_palm").id
         self.t, self.phase, self.log = 0.0, "init", []
         self.viewer = mujoco.viewer.launch_passive(self.m, self.d) if viewer else None
@@ -237,11 +299,73 @@ class Sim:
         w, x, y, z = self.d.qpos[3:7]
         return math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
 
-    def start(self): print("sim: walking policy up (knees_bent)")
+    def start(self): print("sim: standing (stiff knees_bent hold); walking policy used only while moving")
     def set_arm_weight(self, w): self.weight = max(0.0, min(1.0, w))
     def send_arm(self, pose: ArmPose): self.target = pose
-    def move(self, vx): self.vx = vx
-    def stop_move(self): self.vx = 0.0
+    # -- stand / walk modes -------------------------------------------------------------
+    # The walking policy cannot stand still (it marches in place and drifts), unlike the
+    # real loco controller. So STAND = stiff hold of the knees_bent keyframe (kp 500, like
+    # the stock MJCF), WALK = policy with the RL-tuned gains. Transitions blend over BLEND_S.
+    STAND_KP, BLEND_S, SETTLE_S, SETTLE_V, FOOT_DOWN_Z = 500.0, 0.3, 0.5, 0.2, 0.042
+    ANKLE_KP, ANKLE_KD = 2.0, 0.2         # ankle strategy: rad per m of CoM offset from the feet centre
+    L_ANKLE_PITCH, L_ANKLE_ROLL, R_ANKLE_PITCH, R_ANKLE_ROLL = 4, 5, 10, 11
+
+    def _set_gains(self, a):
+        """a=0: RL gains (policy), a=1: stiff stand gains."""
+        kp = self.STAND_KP
+        self.m.actuator_gainprm[:, 0] = (1 - a) * self.gain_rl[:, 0] + a * kp
+        self.m.actuator_biasprm[:, 1] = (1 - a) * self.bias_rl[:, 1] + a * (-kp)
+        self.m.actuator_biasprm[:, 2] = (1 - a) * self.bias_rl[:, 2] + a * (-math.sqrt(kp))
+
+    def move(self, vx):
+        self.vx = vx
+        if self.mode not in ("walk", "unblend"):
+            self.walk.reset(); self.mode, self.mode_t = "unblend", 0.0
+    def stop_move(self):
+        self.vx = 0.0
+        if self.mode == "walk": self.mode, self.mode_t = "settle", 0.0
+
+    def _leg_ctrl(self):
+        """Fill d.ctrl for the whole body according to the mode; returns blend a (0 policy, 1 stand)."""
+        if self.mode in ("walk", "unblend"):           # unblend: gains stiff -> RL while policy runs
+            a = 0.0 if self.mode == "walk" else max(0.0, 1.0 - self.mode_t / self.BLEND_S)
+            if self.mode == "unblend" and a <= 0.0: self.mode = "walk"
+            self.goal[0] += self.vx * self.DT
+            err = self.goal - self.d.qpos[:2]
+            self.walk.command[0] = max(-1.0, min(1.0, self.vx + self.POS_KP * err[0]))
+            self.walk.command[1] = max(-0.5, min(0.5, self.POS_KP * err[1]))
+            self.walk.command[2] = max(-0.5, min(0.5, -self.HEADING_KP * self._yaw()))
+            self.walk.substep(self.d)
+            if a > 0: self.d.ctrl[:] = (1 - a) * self.d.ctrl + a * self.stand_ctrl
+            return a
+        if self.mode == "settle":                       # zero command: policy marches in place, slows
+            self.walk.command[:] = [0.0, 0.0, max(-0.5, min(0.5, -self.HEADING_KP * self._yaw()))]
+            self.walk.substep(self.d)
+            slow = float(self.np.linalg.norm(self.d.qvel[:2])) < self.SETTLE_V
+            feet = self.d.site_xpos[self.feet][:, 2]
+            both_down = bool((feet < self.FOOT_DOWN_Z).all())      # freeze only in double support
+            if self.mode_t >= self.SETTLE_S and ((slow and both_down) or self.mode_t > 4.0):
+                self.mode, self.mode_t = "blend", 0.0
+                self.stand_ctrl = self.d.qpos[7:7 + 29].copy()   # freeze where the feet ARE (not the keyframe)
+            return 0.0
+        if self.mode == "blend":                        # hold the actual pose, ramp gains -> stiff
+            a = min(1.0, self.mode_t / self.BLEND_S)
+            self.d.ctrl[:] = self.stand_ctrl; self._ankle_balance()
+            if a >= 1.0: self.mode = "stand"; self.goal[:] = self.d.qpos[:2]
+            return a
+        self.d.ctrl[:] = self.stand_ctrl; self._ankle_balance(); return 1.0   # stand
+
+    def _ankle_balance(self):
+        """A stiff statue topples slowly; nudge the ankles to keep the CoM over the feet."""
+        e = (self.d.subtree_com[0][:2] - self.d.site_xpos[self.feet].mean(0)[:2])
+        v = (e - self.com_err_prev) / self.DT if self.com_err_prev is not None else self.np.zeros(2)
+        self.com_err_prev = e.copy()
+        yaw = self._yaw(); c, s_ = math.cos(yaw), math.sin(yaw)
+        ex, ey = c * e[0] + s_ * e[1], -s_ * e[0] + c * e[1]          # body frame
+        vx, vy = c * v[0] + s_ * v[1], -s_ * v[0] + c * v[1]
+        for j in (self.L_ANKLE_PITCH, self.R_ANKLE_PITCH): self.d.ctrl[j] += self.ANKLE_KP * ex + self.ANKLE_KD * vx
+        for j in (self.L_ANKLE_ROLL, self.R_ANKLE_ROLL):   self.d.ctrl[j] += self.ANKLE_KP * ey + self.ANKLE_KD * vy
+
     def tilt_ok(self):
         w, x, y, z = self.d.qpos[3:7]
         roll = math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
@@ -252,17 +376,11 @@ class Sim:
     def sleep(self, s):
         t_wall = time.time()
         for _ in range(max(1, int(round(s / self.DT)))):
-            self.goal[0] += self.vx * self.DT                # goal advances only while "walking"
-            err = self.goal - self.d.qpos[:2]
-            err = self.np.where(self.np.abs(err) < 0.05, 0.0, err)      # deadband: don't chase 5 cm
-            self.walk.command[0] = max(-1.0, min(1.0, self.vx + self.POS_KP * err[0]))
-            self.walk.command[1] = max(-0.5, min(0.5, self.POS_KP * err[1]))
-            self.walk.command[2] = max(-0.5, min(0.5, -self.HEADING_KP * self._yaw()))
-            self.walk.substep(self.d)                       # writes d.ctrl for all 29 joints
+            a = self._leg_ctrl(); self._set_gains(a)
             if self.target is not None:                     # arm_sdk-style override, right arm only
                 for j, q in self.target.q.items():
                     self.d.ctrl[j] = self.weight * q + (1 - self.weight) * self.d.ctrl[j]
-            self.mj.mj_step(self.m, self.d); self.t += self.DT
+            self.mj.mj_step(self.m, self.d); self.t += self.DT; self.mode_t += self.DT
         self.log.append((self.t, self.phase, self.hand_xyz().copy(), self.d.qpos[:3].copy()))
         if self.viewer is not None:
             self.viewer.sync(); time.sleep(max(0.0, s - (time.time() - t_wall)))
@@ -314,8 +432,9 @@ class RopeWalker:
             self.bot.sleep(self.dt)
 
     def abort(self, why):
-        print(f"!! ABORT ({why}): StopMove + arm weight -> 0")
+        print(f"!! ABORT ({why}) at t={getattr(self.bot, 't', 0):.2f}s: StopMove + arm weight -> 0")
         self.bot.stop_move(); self.bot.set_arm_weight(0.0); self.bot.send_arm(self.cur)
+        if hasattr(self.bot, "finish"): self.bot.finish()
         sys.exit(1)
 
     def take_arm(self):
@@ -346,7 +465,7 @@ class RopeWalker:
         if dur > track:
             self._ramp(self.cur, dur=dur - track)                 # hand slides, arm holds
         self.bot.stop_move()
-        self.bot.sleep(1.5)                                           # let the gait settle
+        self.bot.sleep(3.0)                                           # let the gait settle (real: ~1.5 s)
         # hold pose while settling (keeps arm_sdk alive)
         self._ramp(self.cur, dur=0.5)
 

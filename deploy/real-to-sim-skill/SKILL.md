@@ -37,7 +37,8 @@ SDK gives for free (IMU, joint q), the body exposes it as a plain float/dict.
 | motor index 0..28 (`rt/lowcmd`, `rt/lowstate`) | actuator index 0..28 in `g1_unitree.xml` — **same order** (verified) |
 | `LowCmd_.motor_cmd[j].q/kp/kd`              | `<position kp=...>` actuator, `d.ctrl[j] = q`                   |
 | `rt/arm_sdk` weight (motor 29)              | linear blend between your target and the keyframe ctrl          |
-| `LocoClient` (balance + gait, onboard)      | a walking policy: `rl/environment/walk_policy.WalkController` (mels G1 joystick MLP, NumPy) on the model patched by `rl/environment/robot.adapt()`. It never stands still → add an outer x,y goal hold + yaw hold to imitate `StopMove` |
+| `LocoClient.Move`                           | a walking policy: `rl/environment/walk_policy.WalkController` (mels G1 joystick MLP, NumPy) on the model patched by `rl/environment/robot.adapt()`, plus an outer x/y goal + yaw hold |
+| `LocoClient.StopMove` / standing            | the policy cannot stand (it marches and drifts). STAND mode = wait for double support, freeze the *actual* joint pose with stiff gains (kp 500), plus an ankle-strategy CoM feedback (a stiff statue topples in ~1 s). Freezing the keyframe pose, or blending from the policy's targets, both fall over |
 | `rt/lowstate.imu_state.rpy`                 | `d.xquat[pelvis]` or the `imu_in_pelvis` site                   |
 | `rt/lowstate.motor_state[j].q`              | `d.qpos[m.jnt_qposadr[joint_id]]` (skip the 7 free-joint dofs!)  |
 | `CRC()`                                     | nothing                                                         |
@@ -60,6 +61,9 @@ Findings for the G1 that broke the first drafts of `rope_walk.py`:
 - shoulder z is 1.085 m, not ~0.95 → a 0.60 m rope is 0.10 m out of reach with a vertical arm
 - elbow `q=0` is already bent 90° (forearm horizontal); `q≈+π/2` is a straight arm
 - shoulder pitch `<0` = forward, right shoulder roll `<0` = outward
+- analytic 2-link IK was 0.15-0.3 m off (roll is applied after pitch). Use numerical IK on the
+  MJCF (`MjIK`: `mj_jacSite` + damped least squares on 4 joints) — same URDF as the robot, so
+  the joint targets transfer as-is
 
 ## 4. Build the scene in code (MjSpec)
 
