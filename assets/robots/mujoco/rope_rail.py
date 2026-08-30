@@ -47,7 +47,7 @@ CAM_FRICTION_N = 3.0  # push needed to slide the cam up the rope
 # rope; 3/4 view: rope clear of the forearm), 2026-08-30. The Ø16 mm bore at
 # x=-21 mm found on the mesh is the carabiner hole, not the channel.
 CHANNEL_CENTRE_TOOL = (0.015, -0.0012, 0.055)  # m, tool frame (z = mid-tool)
-CHANNEL_PITCH_DEG = 25.0  # set by eye from side renders: tool lies along the rope (2026-08-30)
+CHANNEL_PITCH_DEG = 5.0  # set by eye from side renders with the channel at x=+15 mm: tool parallel to the rope (2026-08-30)
 ROPE_HEIGHT = 0.60  # m above the ground at reset (arm pose is solved for it)
 RIGHT_ARM_IK = ("right_shoulder_pitch_joint", "right_elbow_joint") + RIGHT_WRIST
 
