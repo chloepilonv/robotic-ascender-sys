@@ -53,7 +53,7 @@ def build(a) -> CS.ClimbScene:
         policy_compat=not a.stock_plant,
         lean_frac=a.lean_frac,
         friction=CS.FrictionParams.from_scalar(a.friction),
-        rope=CS.RopeParams(n_waypoints=a.waypoints),
+        rope=CS.RopeParams(n_waypoints=a.waypoints, collide=not a.rope_scenery),
         ratchet=not a.no_ratchet,
         spawn_frac=a.spawn_frac,
     )
@@ -268,10 +268,22 @@ def check(a) -> int:
         print(f"   friction mu={mu:<5} foot-contact mu seen {sorted(seen)}  "
               f"{'OK' if hit else 'FAIL'}")
     ok &= friction_ok
-    wind_r = [
-        simulate(build(a), 3.0, CS.WindParams(speed=w, heading=np.pi))["dz"]
-        for w in (0.0, 30.0)
-    ]
+    # Wind is asserted on the force actually written to the torso. Its effect on
+    # the roped sag is small now that a solid rope holds the robot against the
+    # slope, so that trajectory statistic no longer separates the settings --
+    # same reason friction is checked directly.
+    wind_ok = True
+    forces = []
+    for w in (0.0, 10.0, 30.0):
+        sc_w = build(a)
+        sc_w.reset()
+        sc_w.apply_wind(CS.WindParams(speed=w, heading=np.pi))
+        forces.append(float(np.linalg.norm(sc_w.data.xfrc_applied[sc_w.torso_body_id, :3])))
+    wind_ok = forces[0] == 0.0 and forces[1] > 1.0 and forces[2] > 4 * forces[1]
+    ok &= wind_ok
+    print(f"   wind     torso force at 0/10/30 m/s: "
+          f"{forces[0]:.1f} / {forces[1]:.1f} / {forces[2]:.1f} N   "
+          f"{'OK' if wind_ok else 'FAIL'}")
     slope_r = [
         simulate(CS.build_scene(T.make_terrain(s, 0.12, 1)), 3.0, CS.WindParams())["dz"]
         for s in (25, 50)
@@ -281,7 +293,6 @@ def check(a) -> int:
         for sd in (1, 7)
     ]
     for name, vals, tol in [
-        ("wind     (roped sag)", wind_r, 0.05),
         ("slope    (roped sag)", slope_r, 0.01),
         ("surface  (roped sag)", seed_r, 0.001),
     ]:
@@ -456,7 +467,8 @@ def verify_policy(a) -> int:
     for label, use_policy, want_up in (("mels policy", True, True),
                                        ("no policy (keyframe hold)", False, False)):
         sc = CS.build_scene(T.make_terrain(0, 0.12, 1), robot_scene=robot_scene(a),
-                            policy_compat=not a.stock_plant)
+                            policy_compat=not a.stock_plant,
+                            rope=CS.RopeParams(collide=False))
         m, d = sc.model, sc.data
         m.eq_active0[m.equality("ascender_grip").id] = 0
         sc.reset()
@@ -477,8 +489,11 @@ def verify_policy(a) -> int:
     print("   (body frame: the command is forward velocity in the robot's own")
     print("    frame, and yaw drifts freely, so world-frame x is meaningless)")
     for cmd, lo, hi in ((0.0, None, 0.15), (0.6, 0.30, None), (1.0, 0.40, None)):
+        # No rope collision here: this measures the policy, and a solid rope in
+        # the path of a wandering robot confounds it.
         sc = CS.build_scene(T.make_terrain(0, 0.12, 1), robot_scene=robot_scene(a),
-                            policy_compat=not a.stock_plant)
+                            policy_compat=not a.stock_plant,
+                            rope=CS.RopeParams(collide=False))
         m, d = sc.model, sc.data
         m.eq_active0[m.equality("ascender_grip").id] = 0
         sc.reset()
@@ -544,6 +559,8 @@ def main(argv=None) -> int:
                    choices=("himalaya", "himalaya-bare", "playground"),
                    help="himalaya = assets/robots/mujoco (jacket, boots, ascender); "
                         "playground = the model the mels policy was trained in")
+    p.add_argument("--rope-scenery", action="store_true",
+                   help="make the rope non-colliding (visual only), as it was before")
     p.add_argument("--haul", type=float, default=0.0, metavar="N",
                    help="force up the fall line, newtons. The walking policy cannot "
                         "climb, so use this to see the ascender slide. The robot "

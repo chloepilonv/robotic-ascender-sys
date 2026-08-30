@@ -56,6 +56,39 @@ DEFAULT_ROBOT_SCENE = robot_mod.PLAYGROUND_SCENE
 # is the point of the scene; it belongs in a group that shows up by default.
 GROUP_TERRAIN = 0
 GROUP_ROPE = 1
+
+# Collision bitmasks. MuJoCo pairs two geoms when
+# (contype1 & conaffinity2) or (contype2 & conaffinity1), so separate bits give
+# the rope its own channel:
+#
+#   bit 0  the world  -- terrain, and everything the robot normally touches
+#   bit 1  the rope   -- carried only by geoms allowed to hit the line
+#
+# The gripping hand is deliberately left off bit 1. It is held *on* the rope by
+# the ascender equality, so it would otherwise be in permanent contact with it,
+# fighting the constraint that put it there.
+BIT_WORLD = 1
+BIT_ROPE = 2
+
+# Bodies exempt from rope collision: the whole gripping arm.
+#
+# The palm is pinned to the line, so the entire right arm necessarily lies
+# alongside it and snags on the rope it is holding. The elbow alone accounted
+# for 1215 contacts over a 10 s roped run -- the only body touching the rope --
+# and exempting it merely moved the problem to the shoulder. Excluding a held
+# object from the limb holding it is the normal treatment.
+#
+# Torso, pelvis, legs, head and the left arm still collide, so the robot cannot
+# walk through the line -- pushed at it, it travels 0.16 m instead of 0.66 m.
+GRIP_BODIES = (
+    "right_shoulder_pitch_link",
+    "right_shoulder_roll_link",
+    "right_shoulder_yaw_link",
+    "right_elbow_link",
+    "right_wrist_roll_link",
+    "right_wrist_pitch_link",
+    "right_wrist_yaw_link",
+)
 GROUP_GEAR = 2   # alongside the G1's own visual meshes
 
 
@@ -71,6 +104,19 @@ class RopeParams:
     margin: float = 1.0           # keep the anchors this far inside the patch
     standoff: float | None = None  # None => match the robot's rest palm height
     rgba: tuple = (0.85, 0.08, 0.05, 1.0)
+    collide: bool = True          # solid rope; limbs cannot pass through it
+    # Firm normally, slippery tangentially. The rope has to stop a body walking
+    # into it, and a soft contact simply does not: at solref 0.03 or above the
+    # robot pushes straight through (0.67 m under a 250 N shove, against 0.66 m
+    # with no rope at all), while 0.02 holds it to 0.13 m.
+    #
+    # "Too solid" was never the normal stiffness -- it was tangential grab by the
+    # gripping arm, fixed by GRIP_BODIES. Low friction then keeps limbs sliding
+    # along the line instead of catching on it: 0.15 gives 121 contacts over a
+    # 10 s roped run where 0.4 gives 305, and blocks marginally better.
+    friction: float = 0.15
+    solref: tuple = (0.02, 1.0)
+    solimp: tuple = (0.9, 0.95, 0.001, 0.5, 2.0)
 
 
 # A condim=3 contact with friction exactly 0 has a zero-width friction cone,
@@ -332,6 +378,28 @@ def _write_hfield_bin(path: str, grid: np.ndarray) -> None:
         f.write(np.ascontiguousarray(grid, dtype="<f4").tobytes())
 
 
+def _open_rope_channel(spec) -> int:
+    """Let the robot collide with the rope -- except the hand holding it.
+
+    Without this the rope is scenery and limbs pass straight through it. Every
+    colliding robot geom gains the rope bit, apart from the wrist chain carrying
+    the ascender: that hand is pinned to the line by the grip equality, so giving
+    it rope collision puts it in permanent self-contradiction with the constraint
+    holding it there.
+    """
+    n = 0
+    for body in spec.bodies:
+        if body.name in GRIP_BODIES:
+            continue
+        for g in body.geoms:
+            if g.contype == 0 and g.conaffinity == 0:
+                continue  # visual-only: jacket, boots, logos
+            g.contype = int(g.contype) | BIT_ROPE
+            g.conaffinity = int(g.conaffinity) | BIT_ROPE
+            n += 1
+    return n
+
+
 def _set_foot_friction(spec, friction) -> int:
     """Put `friction.foot` on whatever actually carries foot-ground contact.
 
@@ -562,8 +630,13 @@ def build_scene(
             type=mujoco.mjtGeom.mjGEOM_CAPSULE,
             size=[rope.radius, 0, 0],
             rgba=list(rope.rgba),
-            contype=0,
-            conaffinity=0,
+            contype=BIT_ROPE if rope.collide else 0,
+            conaffinity=BIT_ROPE if rope.collide else 0,
+            condim=3,
+            friction=[rope.friction, 0.005, 0.0001],
+            solref=list(rope.solref),
+            solimp=list(rope.solimp),
+            priority=1,          # so the rope's softness wins over the robot's
             mass=0.0,
             group=GROUP_ROPE,
         )
@@ -591,6 +664,8 @@ def build_scene(
             axis=axis,
             damping=float(carrier_damping),
         )
+    if rope.collide:
+        _open_rope_channel(spec)
     carrier.add_site(name="carrier_site", size=[0.02, 0, 0])
     carrier.add_geom(
         name="carrier_geom",

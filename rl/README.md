@@ -138,6 +138,22 @@ python -m rl.scripts.climb_scene --patch B --haul 260 --view   # ascender rides 
 python -m rl.scripts.climb_scene --patch B_slope0 --view       # walking drags it ~1.5 m / 10 s
 ```
 
+### The rope is solid
+
+Limbs cannot pass through it: shoved sideways into the line the robot travels
+0.13 m instead of 0.66 m. `--rope-scenery` restores the old non-colliding rope.
+
+The **gripping arm is exempt** (`GRIP_BODIES`, shoulder through hand). The palm
+is pinned to the line, so that arm necessarily lies alongside it and snags on the
+rope it is holding — the elbow alone was 1215 contacts over a 10 s roped run, the
+only body touching the rope, and it reads as the rope being "too solid".
+Excluding a held object from the limb holding it is the normal treatment. Torso,
+pelvis, legs, head and the left arm still collide.
+
+Contact is firm normally and slippery tangentially (`solref (0.02, 1)`,
+friction 0.15). Softening the normal direction does not help and breaks the
+blocking: at `solref 0.03` the robot pushes straight through.
+
 Verified: hauling the robot up the fall line advances the ascender 15 m and it
 clamps at the rope's end; roped it sags 0.8 m and holds; unroped it falls off the
 face. Ratchet backsliding over 2000 steps is exactly 0, and the hand stays within

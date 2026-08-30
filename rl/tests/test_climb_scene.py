@@ -569,8 +569,11 @@ def test_policy_tracks_forward_command_in_the_body_frame():
     from rl.environment import walk_policy as WP
 
     def body_vx(cmd):
+        # The rope is solid, so a wandering robot bumps into it; this measures
+        # the policy, not the rope.
         sc = CS.build_scene(T.make_terrain(0, 0.12, 1),
-                            robot_scene=R.resolve("himalaya").xml)
+                            robot_scene=R.resolve("himalaya").xml,
+                            rope=CS.RopeParams(collide=False))
         m, d = sc.model, sc.data
         m.eq_active0[m.equality("ascender_grip").id] = 0
         sc.reset()
@@ -610,3 +613,87 @@ def test_standing_friction_threshold_is_where_it_is_documented():
 
     assert upright_after(CS.STAND_FRICTION + 0.1) > 0.9    # comfortably above
     assert upright_after(CS.MIN_FRICTION) < 0.6            # an ice rink
+
+
+# -- rope collider ---------------------------------------------------------
+
+def _rope_geoms(m):
+    return {i for i in range(m.ngeom)
+            if (mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, i) or "").startswith("ropeseg")}
+
+
+def test_rope_blocks_the_body_but_not_the_gripping_arm():
+    """Solid enough to stop a walk-through, invisible to the arm holding it.
+
+    Both halves matter. Without collision the rope is scenery and limbs pass
+    through. With the gripping arm colliding, its own elbow snags on the rope it
+    is holding -- 1215 contacts over a 10 s roped run, the only body touching it.
+    """
+    from rl.environment import walk_policy as WP
+
+    def push_through(collide):
+        sc = CS.build_scene(T.load_patch("B_slope0"),
+                            robot_scene=R.resolve("himalaya").xml,
+                            rope=CS.RopeParams(collide=collide))
+        m, d = sc.model, sc.data
+        sc.reset()
+        ctl = WP.WalkController(m)
+        pelvis = m.body("pelvis").id
+        y0 = float(d.qpos[1])
+        for _ in range(3000):
+            ctl.substep(d)
+            d.xfrc_applied[pelvis, :3] = (0.0, -250.0, 0.0)   # shove into the line
+            sc.step()
+        return abs(float(d.qpos[1]) - y0)
+
+    assert push_through(True) < 0.5 * push_through(False)
+
+
+def test_gripping_arm_is_exempt_from_rope_collision():
+    m = CS.build_scene(T.load_patch("B"), robot_scene=R.resolve("himalaya").xml).model
+    for i in range(m.ngeom):
+        body = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, m.geom_bodyid[i]) or ""
+        if m.geom_contype[i] == 0 and m.geom_conaffinity[i] == 0:
+            continue
+        has_rope_bit = bool(int(m.geom_contype[i]) & CS.BIT_ROPE)
+        assert has_rope_bit == (body not in CS.GRIP_BODIES), body
+
+
+def test_gripping_arm_does_not_snag_while_roped():
+    """The arm holding the rope must not rub against it during a normal run."""
+    from rl.environment import walk_policy as WP
+
+    sc = CS.build_scene(T.load_patch("B_slope0"), robot_scene=R.resolve("himalaya").xml)
+    m, d = sc.model, sc.data
+    sc.reset()
+    ctl = WP.WalkController(m)
+    rope = _rope_geoms(m)
+    snags = 0
+    for _ in range(int(8.0 / m.opt.timestep)):
+        ctl.substep(d)
+        sc.step()
+        for i in range(d.ncon):
+            c = d.contact[i]
+            if c.geom1 in rope or c.geom2 in rope:
+                other = c.geom2 if c.geom1 in rope else c.geom1
+                body = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, m.geom_bodyid[other])
+                if body in CS.GRIP_BODIES:
+                    snags += 1
+    assert snags == 0
+
+
+def test_rope_collision_does_not_stop_the_ascender_sliding():
+    from rl.environment import walk_policy as WP
+
+    sc = CS.build_scene(T.load_patch("B"), robot_scene=R.resolve("himalaya").xml)
+    m, d = sc.model, sc.data
+    sc.reset()
+    ctl = WP.WalkController(m)
+    pelvis = m.body("pelvis").id
+    s0 = sc.ascender.s
+    for _ in range(5000):
+        ctl.substep(d)
+        d.xfrc_applied[pelvis, :3] = 260.0 * sc.route.tangent_at(sc.ascender.s)
+        sc.step()
+    assert sc.ascender.s - s0 > 1.0
+    assert sc.hand_rope_distance() < 0.025
