@@ -1,7 +1,7 @@
 # Humans (for the detection gate)
 
 `human.xml` — a 1.75 m Himalayan hiker (down jacket, beanie, backpack, boots, hands on the rope) from primitives on one **mocap** body. No physics, no
-collision: it exists to be *seen* by `app/safety/human_gate.py`, not walked into.
+collision: it exists to be *seen* by `human-safety/human_gate.py`, not walked into.
 
 - Place: `data.mocap_pos[model.body_mocapid[body_id]] = (x, y, z_ground)`.
 - Detect: body names `human_*`, geom group 2, geom names `human_*` (segmentation

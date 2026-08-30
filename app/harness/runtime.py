@@ -66,7 +66,9 @@ from app.harness import worlds as worlds_module  # noqa: E402
 from app.harness import climb_worlds as climb_worlds_module  # noqa: E402
 from app.harness import graphics as graphics_module  # noqa: E402
 from app.harness.natural_wind import NaturalWind  # noqa: E402
-from app.safety.human_gate import (  # noqa: E402
+sys.path.insert(0, os.path.join(  # human-safety/ is a program, not a package
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", "human-safety"))
+from human_gate import (  # noqa: E402
     HumanGate, HumanWorld, VirtualFrustumDetector)
 
 RENDER_WIDTH, RENDER_HEIGHT = 960, 540    # 16:9 -- the page fills the viewport with it
@@ -718,7 +720,7 @@ def run(arguments) -> str:
     if server is not None:
         server.knobs["friction"] = meta["foot_friction"]
 
-    # HUMAN GATE (app/safety/human_gate.py). Deterministic, outside the policy:
+    # HUMAN GATE (human-safety/human_gate.py). Deterministic, outside the policy:
     # the forward (= up-rope) command is clamped to <= 0 while a human is in the
     # d435i frustum. Humans are virtual (no physics; THEIR model is untouched).
     human_world = HumanWorld.from_model(model)   # virtual unless the model has human_* bodies

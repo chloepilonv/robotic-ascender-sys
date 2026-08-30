@@ -1,19 +1,20 @@
 """Gate unit tests on the raw G1 MJCF (the same `d435i` camera the team
 model inherits; no jax needed). Run:
-  python -m pytest app/safety/test_human_gate.py -q
+  python -m pytest human-safety -q
 """
 import os
+import sys
 
 import mujoco
 import numpy as np
 import pytest
 
-from app.safety.human_gate import HumanGate, HumanWorld, VirtualFrustumDetector
+from human_gate import HumanGate, HumanWorld, VirtualFrustumDetector
 
 
 @pytest.fixture(scope="module")
 def sim():
-    path = os.path.join(os.path.dirname(__file__), "..", "..",
+    path = os.path.join(os.path.dirname(__file__), "..",
                         "assets", "robots", "mujoco", "g1_unitree.xml")
     model = mujoco.MjModel.from_xml_path(os.path.abspath(path))
     data = mujoco.MjData(model)
@@ -75,8 +76,9 @@ def test_torso_fallback_matches_real_camera(sim):
 
 
 def test_model_backed_humans_are_moved_and_seen():
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
     from assets.humans.humans import build_scene_with_humans
-    path = os.path.join(os.path.dirname(__file__), "..", "..",
+    path = os.path.join(os.path.dirname(__file__), "..",
                         "assets", "robots", "mujoco", "g1_unitree.xml")
     model, body_ids = build_scene_with_humans(os.path.abspath(path), 1)
     data = mujoco.MjData(model)
