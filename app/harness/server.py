@@ -12,6 +12,12 @@ THE SERVER SENDS NO PICTURE OF THE SCENE (user's ruling, 2026-08-30, when the
 render every control tick; the page draws the scene itself in three.js from the
 pose stream, so that render and its frame are gone.
 
+In  (binary)  : the 4 ASCII bytes `MIC0` followed by 16 kHz mono int16
+                little-endian PCM -- the Mac microphone, captured by the page
+                and streamed straight here with NO browser-side processing. The
+                runtime turns it into what four microphones on the robot's head
+                would have received (app/harness/hearing.py). Any other binary
+                frame is dropped without being decoded.
 Out (binary)  : `POS0` then every body's world pose, once per control tick --
                 app/harness/pose_stream.py owns the layout, and this is what the
                 3-D view is drawn from.
@@ -21,6 +27,9 @@ Out (binary)  : `POS0` then every body's world pose, once per control tick --
                 "2.4 m . FOLLOW" drawn on it. That one is a SENSOR readout, not
                 a view of the world. The two are told apart by their first four
                 bytes.
+                PLUS, while the `ear_monitor` knob is on: `EAR0` followed by
+                16 kHz mono int16 PCM of the FRONT microphone's own signal --
+                the voice as the robot hears it, wind noise and all.
 Out (text)    : {"type":"state", "tick":int, "time_seconds":f,
                  "command":[lin_vel_x, lin_vel_y, ang_vel_yaw],
                  "wind_velocity_world_meters_per_second":[f,f],
@@ -40,7 +49,17 @@ Out (text)    : {"type":"state", "tick":int, "time_seconds":f,
                           "distance_meters":f|null,     # stereo, metres
                           "bearing_degrees":f|null,     # + = human to the LEFT
                           "true_distance_meters":f|null,# LABELLED CHEAT, HUD only
-                          "human_progress_meters":f}}
+                          "human_progress_meters":f},
+                 "hearing":{"enabled":bool,
+                          "voice_probability":f,          # 0-1, VAD window
+                          "heard":"none"|"voice"|"stop",  # the last utterance
+                          "stop_confidence":f,            # 0-1, vosk
+                          "bearing_degrees":f|null,       # + = to the LEFT
+                          "bearing_confidence":f,         # 0-1, peak sharpness
+                          "mode":"IDLE"|"LISTENING"|"COMING_BY_EYES"
+                                 |"COMING_BY_EARS"|"STOPPED"|"WAIT",
+                          "level_db":f}}                  # front mic, full scale
+                The `hearing` block is present every tick, hearing on or off.
                 The `guide` block is present every tick, guide on or off.
                 A state with "loading":true is the last frame before the loop
                 blocks to build a newly selected world; frames resume when it
@@ -98,6 +117,8 @@ import threading
 
 import websockets
 
+from app.harness import hearing as hearing_module
+
 REPOSITORY_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
@@ -129,6 +150,14 @@ class Server:
                       # follows it by stereo vision. While it is 1, W drives the
                       # HUMAN and the robot's command comes from the follower.
                       "guide": 0.0,
+                      # 0/1: the EARS. Four virtual microphones on the robot's
+                      # head hear the human's voice (streamed from the page as
+                      # `MIC0`); the robot comes when she calls and stops when
+                      # she says stop. Needs `guide` on. Default 0.
+                      "hearing": 0.0,
+                      # 0/1: send `EAR0` back -- the front microphone's signal,
+                      # so the operator can listen to what the robot hears.
+                      "ear_monitor": 0.0,
                       # METRES: how far the robot can see. 100 m is clear
                       # (the eyes are handed back untouched), 3 m is a
                       # white-out. Visual and sensor only -- app/harness/
@@ -138,6 +167,12 @@ class Server:
         self.reset_requested = False
         self.paused = False
         self.world_requested = None
+        # Set by the runtime to a `hearing.MicrophoneStream`. Binary frames
+        # from the page are pushed into it from the WEBSOCKET thread; the
+        # simulation thread pulls one control tick's worth per tick. None until
+        # the runtime wires it, and a `MIC0` frame arriving before then is
+        # dropped rather than queued.
+        self.microphone = None
         self.worlds = list(worlds or [])
         self.loop = asyncio.new_event_loop()
         self.ready = threading.Event()
@@ -171,6 +206,17 @@ class Server:
         self.clients.add(websocket)
         try:
             async for message in websocket:
+                if isinstance(message, (bytes, bytearray)):
+                    # THE ONLY BINARY FRAME THE PAGE SENDS. Before the ears
+                    # existed every inbound message was JSON, and `json.loads`
+                    # on a PCM frame raises inside the socket handler and kills
+                    # the connection -- so the type check comes FIRST and an
+                    # unrecognised prefix is dropped in silence rather than
+                    # parsed.
+                    if (message[:4] == hearing_module.MIC_MESSAGE_PREFIX
+                            and self.microphone is not None):
+                        self.microphone.push_pcm_bytes(bytes(message))
+                    continue
                 data = json.loads(message)
                 if data["type"] == "input":
                     self.latest_input = data
