@@ -394,8 +394,24 @@ slider's own centre at `sqrt(100 × 3)` = 17.3 m. It lives in `whiteoutShare`
 duplicated in both. If one moves, move the other, or the picture and the robot
 stop being in the same weather.
 
+**One law, one colour** (user's ruling, 2026-08-30). The two sides used to fog
+by two different laws in two different colours — the eyes ramped LINEARLY from
+`0.15 × v` toward a flat white, the page ran `FogExp2` toward a colour that
+starts as blue-grey haze and only becomes snow-white further down the dial, and
+the page painted a 2-D white veil on top that the eye image never received. Same
+knob, two weathers, and the eye PiP visibly disagreed with the viewport. The
+eyes now adopt the page's law, `f = 1 − exp(−(d × 1.73 / v)²)`, and the page's
+colour ramp; the veil is gone. The five constants live in
+`app/web/three/world.js` and are mirrored in `storm.py`, and `test_storm`
+section K reads them back out of the JS at run time and prints both laws at
+`d = 0.25v / 0.5v / v / 2v` so a drift is a failing row. Measured on a 1920×1080
+headless shot with the viewport put in first person on the ROBOT (same mount,
+same 58° fovy as the stereo eye): the sky region — where the fog colour is the
+whole answer — reads within **2–4 of 255** between the viewport and the PiP at
+30 m, 10 m and 3 m.
+
 **On the robot's eyes** the fog is composited per pixel from the eye renderer's
-own DEPTH buffer, `out = colour*(1 − f) + white*f`, plus a couple of grey levels
+own DEPTH buffer, `out = colour*(1 − f) + fog_colour*f`, plus a couple of grey levels
 of Gaussian sensor noise drawn INDEPENDENTLY per eye — the one thing fog does
 not reproduce, and what leaves the block matcher nothing to match. The grain now
 scales with the white-out share too (1.0 grey level at 100 m, 7.0 at 3 m); it
@@ -410,9 +426,13 @@ orange backpack as the target, `test_storm` sections E and F):
 | visibility | detected at 2 m | detected at 5 m | max detection range |
 |---|---|---|---|
 | 100 m (clear) | 100% | 100% | 16 m |
-| 30 m | 100% | 100% | 10 m |
-| 10 m | 100% | **0%** | **4 m** |
+| 30 m | 100% | 100% | 8 m |
+| 10 m | 100% | **0%** | **3 m** |
 | 3 m | **0%** | **0%** | **never seen** |
+
+(The max ranges were 16 / 10 / 4 / never under the retired linear ramp. Adopting
+the page's exp² law made the middle of the dial slightly thicker, which is where
+the two ranges moved.)
 
 and with the human parked at 9 m the follower goes to LOST on its own — 100% of
 detections at 100 m and 30 m, **0%** at 10 m and 3 m, and the mode follows.
@@ -423,9 +443,9 @@ not a wash (section E0, sensor noise off, the guide at 5 m):
 | visibility | mean pixel change NEAR (≤ 6 m) | mean pixel change FAR (> 6 m) |
 |---|---|---|
 | 100 m (clear) | 0.0 | 0.0 |
-| 30 m | 0.5 | 42.9 |
-| 10 m | 30.1 | 58.6 |
-| 3 m | 126.8 | 63.8 |
+| 30 m | 5.3 | 49.0 |
+| 10 m | 42.0 | 65.0 |
+| 3 m | 135.4 | 68.8 |
 
 
     python -m app.harness.test_storm      # the tables above + the eye contact sheet
@@ -445,6 +465,10 @@ the same measurement at 10 m visibility with the wind dial at 0 m/s and at
 the guide on. (`storm_before/` and `storm_after/` are the wind-indexed shots
 from the 2026-08-29 fog ruling, kept as history — their file names are wind
 speeds, from when visibility was derived from wind.)
+
+`render3d_shots/fogmatch_{100,30,10,3}.png` is the one-law proof: the viewport
+in first person on the robot beside the EYE0 PiP of the same camera, one shot
+per visibility.
 
 The camera-subject shots are `render3d_shots/camera_{guide,robot}_{3p,1p}.png`,
 one per state of the guide switch and the **V** toggle.
