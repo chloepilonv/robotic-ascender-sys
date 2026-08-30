@@ -88,6 +88,22 @@ the sequencer phase, print a per-phase table at the end. Ask each phase one ques
 - WALK: `hand x drift ≈ 0` while the arm tracks (hand fixed on the rope)?
 Render `--video out.mp4` (offscreen `mujoco.Renderer` + `imageio`) to sanity-check the pose.
 
+## 5b. Lessons from the rope walk (things that cost hours)
+
+- **Never open-loop the hand.** Re-solve the arm every tick from base odometry
+  (`base_pose()` → `hand_at_world()`); the report's "hand x drift ≈ 0 during WALK" proves it.
+- **Reach check must be 3-D** (dx, dy, dz from the shoulder). A 2-D check said 0.70 m was fine;
+  the lateral 0.2 m made it unreachable, the clamp lifted the hand off the rope, and the next
+  walk started with a stretched arm and fell.
+- **IK branch flips.** 4 joints for a 3-D point let DLS jump to a wild branch mid-walk. Use 3
+  joints (pitch/roll/elbow), and rate-limit joint targets (`MAX_DQ_TICK`).
+- **Isolate before tuning.** `walk→stand→walk` alone worked 4×; only the sequencer's REGRIP broke
+  walk 2. Test the suspect phase standalone before touching gains.
+- **The mels policy steers badly** (yaw command sensitivity 0.23 vs 1.65 for vx, veers −30°/3 s
+  even on its training model). Documented sim hack: virtual yaw/lateral springs on the pelvis,
+  plus x/roll/pitch springs while standing (`GUIDE_*`, `STAND_*` in `Sim`). Never a z force.
+- **Ascender = one-way cam** (slides up freely, bites under load): the grip point only advances.
+
 ## 6. What sim will NOT catch — check these on the robot with the e-stop in hand
 
 1. Onboard loco controller ≠ the mels policy (different gait, real StopMove, different reaction to an arm pushing on a rope).
