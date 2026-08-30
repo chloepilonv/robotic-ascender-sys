@@ -4,7 +4,7 @@
 collision: it exists to be *seen* by `app/safety/human_gate.py`, not walked into.
 
 - Place: `data.mocap_pos[model.body_mocapid[body_id]] = (x, y, z_ground)`.
-- Detect: body names `human_*`, geom group 3, geom names `human_*` (segmentation
+- Detect: body names `human_*`, geom group 2, geom names `human_*` (segmentation
   rendering of the `d435i` camera returns those geom ids).
 - Attach to any scene: `assets/humans/humans.py::attach_humans(spec, count)`.
 
