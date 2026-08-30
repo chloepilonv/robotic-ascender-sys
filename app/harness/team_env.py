@@ -94,7 +94,13 @@ def sensor_names_by_role(constants):
 
 
 def load_team_environment(config_overrides=None, slope_degrees=None):
-    """Instantiate their `G1ClimbAscender` (JAX/MJX object). Slow: ~25 s."""
+    """Instantiate their `G1ClimbAscender` (JAX/MJX object).
+
+    Costs a full __init__ -- JAX import plus `mjx.put_model` -- even when only
+    the plain MjModel is wanted. Measured warm: 1.64 s for the first in a
+    process, 0.21 s for each additional. Slower on a cold venv (the first run
+    also clones mujoco_menagerie).
+    """
     import rl.environment  # noqa: F401  registers G1ClimbAscender
     from mujoco_playground import registry
 
@@ -105,17 +111,24 @@ def load_team_environment(config_overrides=None, slope_degrees=None):
 
 
 def load_team_model(config_overrides=None, slope_degrees=None,
-                    write_fingerprint=True, print_fingerprint=True):
-    """(mujoco.MjModel, meta dict). See the module docstring for the contract."""
+                    write_fingerprint=True, print_fingerprint=True,
+                    fingerprint_path=None):
+    """(mujoco.MjModel, meta dict). See the module docstring for the contract.
+
+    `fingerprint_path` lets a caller that builds SEVERAL models (the world
+    library) give each one its own file instead of having the last build
+    overwrite the evidence for the others. Defaults to FINGERPRINT_PATH.
+    """
     environment = load_team_environment(config_overrides, slope_degrees)
     model, meta = describe_team_environment(environment)
     fingerprint = build_fingerprint(environment, model, meta)
     if print_fingerprint:
         print(format_fingerprint(fingerprint), flush=True)
     if write_fingerprint:
-        with open(FINGERPRINT_PATH, "w") as handle:
+        path = fingerprint_path or FINGERPRINT_PATH
+        with open(path, "w") as handle:
             json.dump(fingerprint, handle, indent=2, default=_jsonable)
-        print(f"[team_env] fingerprint written to {FINGERPRINT_PATH}", flush=True)
+        print(f"[team_env] fingerprint written to {path}", flush=True)
     return model, meta
 
 

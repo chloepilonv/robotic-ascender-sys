@@ -12,14 +12,18 @@ Out (text)    : {"type":"state", "tick":int, "time_seconds":f,
                  "command":[lin_vel_x, lin_vel_y, ang_vel_yaw],
                  "wind_velocity_world_meters_per_second":[f,f],
                  "wind_force_world_newtons":[f,f,f],
-                 "wind_in_training":false,
+                 "wind_in_training":false, "rope_enabled":bool,
+                 "world":str, "world_label":str, "loading":bool,
                  "fell":bool, "fall_reason":str|null,
                  "root_position_world":[f,f,f],
                  "rope_travel_meters":f, "climb_meters":f,
                  "hand_height_on_line_meters":f, "hand_line_error_meters":f,
                  "height_gained_meters":f, "rope_force_newtons":f,
                  "slope_degrees":f, "realtime_factor":f, "heading_degrees":f,
-                 "world":"team_climb_30", "paused":bool}
+                 "paused":bool}
+                A state with "loading":true is the last frame before the loop
+                blocks to build a newly selected world; frames resume when it
+                lands.
 In  (text)    : {"type":"input", "keys":["w"],
                  "camera":{"azimuth_degrees":f, "elevation_degrees":f}}
                     keys holds "w" while the key is down; W is the only key. The
@@ -34,11 +38,11 @@ In  (text)    : {"type":"input", "keys":["w"],
                 {"type":"reset"}      respawn at the knees_bent keyframe, ascender
                                       travel back to 0.
                 {"type":"pause", "value":true|false}
-                {"type":"world", "name":"..."}
-                    Accepted and LOGGED, but there is exactly one world here (the
-                    team climb env); any other name is ignored with a line on
-                    stdout. Kept so the UI's selector stays wired for when the
-                    team's env grows a second task.
+                {"type":"world", "name":"climb_30"|"free_30"|"free_0"|"climb_0"}
+                    switch maps: the runtime finalises the episode, opens that
+                    world (building its model on first selection, ~1.6 s warm,
+                    then cached) and starts a new episode folder. Unknown names are
+                    ignored with a line on stdout. See app/harness/worlds.py.
 
 HTTP: static files from the repository root, plus two generated endpoints so no
 listing can go stale -- GET /api/worlds and GET /api/episodes.

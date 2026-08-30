@@ -32,8 +32,8 @@ cd g1-himalayas
 ../.venv_everest/bin/python app/harness/team_env.py        # prints + writes fingerprint.json
 ../.venv_everest/bin/python -m app.harness.test_parity     # (a) and (b) below
 ../.venv_everest/bin/python rl/tests/test_climb_env.py     # their own baseline
-../.venv_everest/bin/python -m app.harness.runtime --duration 15 --hold-w --keep-going --no-render
-../.venv_everest/bin/python -m app.harness.runtime --live  # http://localhost:8766/app/web/index.html
+../.venv_everest/bin/python -m app.harness.runtime --world climb_30 --duration 10 --hold-w --keep-going --no-render
+../.venv_everest/bin/python -m app.harness.runtime --live --world free_0   # http://localhost:8766/app/web/index.html
 ```
 
 Environment: `/Users/dengjingxi/Documents/code/himalaya_hack/.venv_everest`,
@@ -74,6 +74,78 @@ is cloned automatically by playground on first import (commit
 | Wind drag law | `rl/environment/wind_env.py:28-36` (constants), `:57-59` (coefficient), `:92-103` (application) | **PORT**, constants imported at run time from `wind_env.default_config()`. Runtime prints `0.5*rho*Cd*A = 0.3675`. | live socket: 18 m/s dial → `wind_force_world_newtons = [120.3, -0.01, 0]`; 0.3675·18² = 119.1 N ✔ | ⚠️ **see gap G1** |
 
 ---
+
+## The four worlds — a stock-walking baseline, built from their env
+
+The map selector offers four worlds (`app/harness/worlds.py`). All four are
+**their** `G1ClimbAscender`; nothing is rebuilt by us. Two knobs separate them:
+
+* **slope** — a `config_overrides` entry, `climb_config.slope_deg`, handed
+  straight to their constructor. Nothing else is overridden.
+* **rope** — `data.eq_active[grip] = 0/1`, MuJoCo's own per-step enable for an
+  equality constraint. Their `climb_config` has no "disable the grip" key and
+  adding one would mean editing `rl/`, so the free worlds simply run the
+  identical model with the constraint off. The carrier body and the visual rope
+  stay where their `_build_model` put them; we set the two apparatus geoms'
+  **alpha to 0** so the picture is not misleading, which changes nothing
+  physical (both are already `contype=0/conaffinity=0`, climb_env.py:181-182
+  and :206-207). Those two geoms are **derived**, not named: the carrier body is
+  the one owning the slide joint, and the rope body is the static body sitting
+  at `line_point_world`.
+
+| world | slope | rope | what it isolates |
+|---|---|---|---|
+| `climb_30` | 30° | on | the training task itself (the harness default) |
+| `free_30` | 30° | **off** | how much of the behaviour is the slope alone |
+| `free_0` | 0° | **off** | the stock mels flat-walking baseline |
+| `climb_0` | 0° | on | what the grip alone costs a walker, slope removed |
+
+**Model cache.** Models are built lazily on first selection and cached. The
+cache key is the **full frozen `config_overrides` dict**, never a subset — a key
+that omits an override that changes the model is how a run silently reads a
+stale one. Because the rope flag is not an override, `climb_30`/`free_30` share
+one model and `free_0`/`climb_0` share another: **four worlds, two builds.**
+
+Measured build cost, warm (`WorldLibrary` in a fresh process): **free_0 1.64 s,
+climb_30 0.21 s, the two cache hits 0.00 s — 1.92 s for all four.** This
+corrects an earlier "~25 s per world" figure in this file, which was a
+**cold-start artifact**: the first run in a fresh venv also clones
+`mujoco_menagerie` and compiles bytecode. The sim loop is still what blocks
+during a build, so it broadcasts one state carrying `"loading": true` first, and
+`app/web/index.html`'s toast timeout was raised from 8 s to 60 s — headroom for
+a cold start, not a measured wait.
+
+## Test (d) — the four worlds with mels, W held (lin_vel_x 0.5), 10 s
+
+`--duration 10 --hold-w --keep-going --no-render`, noise off, no wind,
+deterministic reset.
+
+| world | slope | rope | fell? | fell at | pelvis displacement | rope travel | height gained | max grip force |
+|---|---|---|---|---|---|---|---|---|
+| `climb_30` | 30° | on | **yes** | 0.66 s | 0.765 m | **+0.187 m** | −0.708 m | 1162 N |
+| `free_30` | 30° | off | **yes** | 0.50 s | **25.124 m** | 0.000 m | **−13.510 m** | 0 N |
+| `free_0` | 0° | off | **no** | — | **4.320 m** | 0.000 m | −0.004 m | 0 N |
+| `climb_0` | 0° | on | **no** | — | 4.377 m | **+4.369 m** | −0.001 m | 22 N |
+
+What the four rows say together, which no single run could:
+
+* **mels walks fine on the flat** (`free_0`): 10 s upright, 4.320 m =
+  **0.432 m/s at a commanded 0.5 m/s** (86% of command). At
+  `--command-speed 1.0` it does **0.854 m/s** (85%), against
+  `README.md:82`'s claim of "0.75 m/s at cmd 1.0" — same ballpark, ours ~14%
+  faster; the claim is not exactly reproduced but the policy's ~15%
+  under-tracking of its command is.
+* **The rope is not what breaks it** (`climb_0`): with the grip on but the
+  slope removed, it still walks 4.377 m without falling, and the ascender
+  tracks the walk to **4.369 m of travel at only 22 N** of grip force. On flat
+  ground the fixed line costs a walker essentially nothing.
+* **The slope is what breaks it** (`free_30`): unroped on the incline it falls
+  in 0.50 s and then tumbles **25 m down and 13.5 m below** the spawn for the
+  rest of the run — the plane is infinite, so there is nothing to stop it.
+* **The rope catches it** (`climb_30`): the same fall, at 0.66 s, but the robot
+  ends **0.765 m** from spawn instead of 25 m, hanging at 250–320 N (1162 N at
+  the catch). The ascender does exactly its job; what is missing is a policy
+  that can stand on a 30° slope.
 
 ## Test (a) — observation parity, verbatim numbers
 
@@ -129,7 +201,7 @@ the ascender coordinate — the quantity the task is scored on — tracks to
 **4 mm over 2 s**. The 0.23 m mid-roll peak is the two bodies falling out of
 phase by a few tens of milliseconds, then re-converging.
 
-## Test (c) — 15 s of mels on the team env, vs their own baseline
+## Test (c) — 15 s of mels on `climb_30`, vs their own baseline
 
 `--duration 15 --keep-going --no-render`, observation noise off, no wind,
 deterministic reset (zero base velocity).
@@ -170,7 +242,8 @@ constants (`wind_env.py:28-36`, `:57-59`, `:92-103`), applied to the torso body
 `wind_config` (the two classes could share a `WindMixin` — the drag code is 12
 lines) or say explicitly that wind is out of scope for the climb task.
 
-**G2 — no Lhotse terrain / hfield in the climb env.** `G1ClimbAscender.__init__`
+**G2 — no Lhotse terrain / hfield in the climb env.**  *(The harness's four
+worlds are all the tilted plane at two angles; see "The four worlds" below.)* `G1ClimbAscender.__init__`
 *rejects* anything but `flat_terrain` (`climb_env.py:107-111`: "the
 rough_terrain hfield cannot be tilted"). Meanwhile `terrain/` and
 `assets/environments/lhotse_face/` build a real mesh of the face. The harness
@@ -225,13 +298,15 @@ demoed through JAX.
 build the climb model.** `climb_env.py:130-262` reads `self._config`,
 `self._task`, `self.sim_dt` and writes `self._mj_model`, `self._mjx_model`,
 `self._init_q`, `self._slide_qposadr`, `self._default_pose`, `self._lowers`…
-Consequence: getting an `MjModel` costs a full `G1ClimbAscender.__init__`,
-which imports JAX, `mjx.put_model`s the whole thing, and takes ~25 s. The
-harness pays that once per launch.
-**ASK:** split out a module-level
+Consequence: getting an `MjModel` costs a full `G1ClimbAscender.__init__` —
+importing JAX and `mjx.put_model`ing the whole model even when only the plain
+model is wanted. Measured warm: **1.64 s for the first, 0.21 s for each
+additional.** (An earlier draft of this file said ~25 s; that was a cold-start
+measurement and is withdrawn.) So this is a papercut, not a blocker.
+**ASK (low priority):** split out a module-level
 `build_climb_spec(config) -> mujoco.MjSpec` (or `build_climb_model(config) ->
-mujoco.MjModel`) with `_build_model` calling it. Pure win: the env keeps
-working, and viewers/harnesses/tests get the model in ~1 s with no JAX.
+mujoco.MjModel`) with `_build_model` calling it. The env keeps working, and
+viewers/harnesses/tests get the model with no JAX import at all.
 
 **G8 — `PLAN.md` and the code disagree about the grip.** `rl/PLAN.md:9` says
 "right-hand rail: world → slide joint (rope axis) → **ball → wrist weld**". The
@@ -303,7 +378,8 @@ every JPEG in RAM to mux at the end — ~2 MB/s — so the harness caps
 
 ## What is ours, so nobody looks for it in `rl/`
 
-`W` → `lin_vel_x = 0.5`; the camera-heading yaw controller (gain 2.0/rad,
+The four worlds and their slope/rope split; the model cache; `W` →
+`lin_vel_x = 0.5` (`--command-speed` to change it); the camera-heading yaw controller (gain 2.0/rad,
 ±1.0 rad/s, 2° deadband); the third-person orbit and its half-turn azimuth
 offset; the wind dial; the friction slider; pause/reset/record/replay; the
 websocket protocol and the page. None of it exists on their side, and none of it

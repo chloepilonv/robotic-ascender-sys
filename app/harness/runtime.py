@@ -62,6 +62,7 @@ from app.harness.playground_policy import (  # noqa: E402
     default_policy_path,
 )
 from app.harness.recorder import Recorder  # noqa: E402
+from app.harness import worlds as worlds_module  # noqa: E402
 
 RENDER_WIDTH, RENDER_HEIGHT = 640, 480
 JPEG_QUALITY = 80
@@ -84,6 +85,8 @@ HEADING_GAIN_PER_RADIAN = 2.0
 MAXIMUM_YAW_RATE_RADIANS_PER_SECOND = 1.0
 HEADING_DEADBAND_RADIANS = math.radians(2.0)
 # Their lin_vel_x training range is [-1, 1] m/s; a demo wants a steady pace.
+# Overridable with --command-speed so their README's "0.75 m/s at cmd 1.0"
+# claim can be checked rather than taken on faith.
 CLIMB_COMMAND_METERS_PER_SECOND = 0.5
 
 FALL_LINGER_SECONDS = 1.0     # timed runs end this long after the fall
@@ -99,8 +102,6 @@ GAIT_FREQUENCY_HZ = 1.375     # midpoint of their reset draw U(1.25, 1.5)
 # Imported at load time rather than restated; these are the fallback if the
 # import fails (e.g. their config keys get renamed) and the run says so.
 WIND_FALLBACK = {"rho": 1.225, "cd_torso": 1.2, "area_torso": 0.5}
-
-WORLD_NAME_TEMPLATE = "team_climb_{slope:.0f}"
 
 
 def wind_drag_coefficient():
@@ -136,10 +137,16 @@ def root_yaw_radians(quaternion_wxyz) -> float:
 class Episode:
     """One spawn-to-outcome run on the team env. Owns model, data, readouts."""
 
-    def __init__(self, model, meta, policy, wind_drag, seed=0,
-                 randomise_reset_velocity=False):
+    def __init__(self, model, meta, policy, wind_drag, definition,
+                 world_name, seed=0, randomise_reset_velocity=False):
         self.model = model
         self.meta = meta
+        self.definition = definition
+        self.world_name = world_name
+        # The ONE thing that separates a "free" world from a climbing one: the
+        # grip equality's runtime enable. Applied to MjData every reset, never
+        # to their model. See app/harness/worlds.py.
+        self.rope_enabled = bool(definition["rope"])
         self.policy = policy
         self.wind_drag_coefficient = wind_drag
         self.random = np.random.default_rng(seed)
@@ -166,10 +173,34 @@ class Episode:
         self.global_linvel_torso_slice = slice(
             *meta["sensor_addresses"]["torso_global_linvel"])
         self.slope_degrees = meta["slope_degrees"]
-        self.world_name = WORLD_NAME_TEMPLATE.format(slope=self.slope_degrees)
         self.wind_velocity_world = np.zeros(2)
         self.wind_force_world_newtons = np.zeros(3)
+        # Two worlds can SHARE an MjModel (climb_30/free_30, climb_0/free_0), and
+        # both of these write to the model, so re-apply them for every episode
+        # or the previous world's friction slider and rope visibility leak in.
+        self.set_foot_friction(meta["foot_friction"])
+        self._set_ascender_visible(self.rope_enabled)
         self.reset()
+
+    def _set_ascender_visible(self, visible: bool) -> None:
+        """Show/hide the carrier + visual rope. Cosmetic alpha only.
+
+        A "free walk" world still has the carrier body and the rope cylinder in
+        the model -- their `_build_model` always makes them and we do not edit
+        their model's structure. Drawing a rope the robot is not attached to
+        just misleads the viewer, so the apparatus geoms go transparent. Nothing
+        about the physics changes: both are already contype=0/conaffinity=0
+        (climb_env.py:181-182, :206-207), i.e. collision-free either way.
+        """
+        if not hasattr(self, "_ascender_geom_ids"):
+            self._ascender_geom_ids = worlds_module.ascender_geom_ids(
+                self.model, self.meta)
+            self._ascender_geom_alpha = [
+                float(self.model.geom_rgba[geom_id, 3])
+                for geom_id in self._ascender_geom_ids
+            ]
+        for geom_id, alpha in zip(self._ascender_geom_ids, self._ascender_geom_alpha):
+            self.model.geom_rgba[geom_id, 3] = alpha if visible else 0.0
 
     # ------------------------------------------------------------- state
     def reset(self) -> None:
@@ -187,6 +218,12 @@ class Episode:
             self.data.qvel[0:6] = self.random.uniform(-0.5, 0.5, 6)
         self.data.ctrl[:] = self.meta["keyframe_qpos"][7:self.slide_qpos_address]
         self.data.xfrc_applied[:] = 0.0
+        # THE ROPE FLAG. mj_resetData restores eq_active from model.eq_active0
+        # (their default: on), so a "free" world switches it off here, per
+        # MjData, leaving their model untouched. The ratchet keeps running
+        # either way -- with the grip off it simply parks the unloaded carrier
+        # at travel 0 instead of letting gravity drag it down the line.
+        self.data.eq_active[self.grip_equality_id] = 1 if self.rope_enabled else 0
         mujoco.mj_forward(self.model, self.data)
         self.ratchet.reset(self.data)
         self.gait_phase.reset()
@@ -358,10 +395,11 @@ class HeadingController:
     ang_vel_yaw).
     """
 
-    def __init__(self):
+    def __init__(self, command_speed=CLIMB_COMMAND_METERS_PER_SECOND):
         self.desired_heading_radians = math.radians(
             CAMERA_AZIMUTH_DEGREES + BROWSER_AZIMUTH_OFFSET_DEGREES)
         self.yaw_error_radians = 0.0
+        self.command_speed = float(command_speed)
 
     def set_browser_azimuth(self, azimuth_degrees) -> None:
         if azimuth_degrees is not None:
@@ -382,7 +420,7 @@ class HeadingController:
                 HEADING_GAIN_PER_RADIAN * self.yaw_error_radians,
                 -MAXIMUM_YAW_RATE_RADIANS_PER_SECOND,
                 MAXIMUM_YAW_RATE_RADIANS_PER_SECOND))
-        forward = CLIMB_COMMAND_METERS_PER_SECOND if walking else 0.0
+        forward = self.command_speed if walking else 0.0
         return np.array([forward, 0.0, yaw_rate])
 
 
@@ -405,6 +443,10 @@ def make_header(episode, meta, arguments) -> dict:
     return {
         "backend": "mujoco-c (plain), model from rl.environment.climb_env.G1ClimbAscender",
         "world": episode.world_name,
+        "world_label": episode.definition["label"],
+        "world_description": episode.definition["description"],
+        "config_overrides": dict(episode.definition["config_overrides"]),
+        "rope_enabled": episode.rope_enabled,
         "policy": "mels_g1_joystick.npz",
         "seed": arguments.seed,
         "slope_degrees": episode.slope_degrees,
@@ -414,6 +456,7 @@ def make_header(episode, meta, arguments) -> dict:
         "line_point_world": np.asarray(meta["line_point_world"]).tolist(),
         "slope_axis_world": np.asarray(meta["slope_axis_world"]).tolist(),
         "spawn_position_world": episode.spawn_position_world.tolist(),
+        "command_speed_meters_per_second": arguments.command_speed,
         "observation_noise_level": 0.0,
         "training_observation_noise_level": meta["noise_level"],
         "wind_in_training": False,
@@ -438,6 +481,7 @@ def episode_outcome(episode, realtime_factor: float, frames_rendered: int) -> di
         "maximum_rope_force_newtons": episode.maximum_rope_force_newtons,
         "hand_line_error_meters": episode.hand_line_error_meters(),
         "world": episode.world_name,
+        "rope_enabled": episode.rope_enabled,
         "slope_degrees": episode.slope_degrees,
         "realtime_factor": realtime_factor,
         "frames_rendered": frames_rendered,
@@ -446,44 +490,89 @@ def episode_outcome(episode, realtime_factor: float, frames_rendered: int) -> di
 
 # ---------------------------------------------------------------- the run
 def run(arguments) -> str:
-    model, meta = team_env.load_team_model(slope_degrees=arguments.slope)
     policy = MelsPolicy(arguments.policy or default_policy_path(_REPOSITORY_ROOT))
     print(policy.describe(), flush=True)
     wind_drag = wind_drag_coefficient()
-
-    episode = Episode(model, meta, policy, wind_drag, seed=arguments.seed,
-                      randomise_reset_velocity=arguments.randomise_reset_velocity)
-    print(f"[runtime] world={episode.world_name} slope={episode.slope_degrees} deg"
-          f"  control {episode.control_hz:.0f} Hz  physics"
-          f" {1.0 / meta['physics_dt_seconds']:.0f} Hz"
-          f"  substeps/tick={episode.substeps}", flush=True)
-    print(f"[runtime] spawn pelvis {episode.spawn_position_world.round(4).tolist()}"
-          f"  palm-on-line error {episode.hand_line_error_meters():.2e} m"
-          f"  rope travel {episode.rope_travel_meters:.4f} m", flush=True)
-    print(f"[runtime] observation noise OFF (training level {meta['noise_level']});"
-          f" wind NOT in training; friction knob starts at"
-          f" {meta['foot_friction']}", flush=True)
+    library = worlds_module.WorldLibrary()
 
     server = None
     if arguments.live:
         from app.harness.server import Server
-        server = Server(arguments.port, worlds=[{
-            "name": episode.world_name,
-            "label": f"team climb · {episode.slope_degrees:.0f}°",
-            "slope_degrees": episode.slope_degrees,
-        }])
+        server = Server(arguments.port, worlds=worlds_module.describe_worlds())
+
+    def announce_build(name):
+        """Tell the page why the picture is about to freeze.
+
+        A world's first selection costs a full G1ClimbAscender.__init__, and the
+        sim loop is what does it, so no frames go out while it runs. Measured
+        warm that is ~1.6 s for the first world and ~0.2 s for the second
+        distinct model -- brief, but a frozen picture with no explanation is
+        still worse than a labelled one, and a cold venv is slower. Push one
+        last state carrying `loading: true` before blocking; the page's toast
+        waits on it (timeout raised to 60 s, generous headroom).
+        """
+        if server is None:
+            return
+        if latest_state[0] is not None:
+            server.broadcast(dict(latest_state[0], paused=True, loading=True,
+                                  loading_world=name))
+        if latest_jpeg[0] is not None:
+            server.broadcast(latest_jpeg[0])
+
+    latest_jpeg = [None]
+    latest_state = [None]
+
+    def open_world(name):
+        model, meta, definition = library.load(
+            name, on_build_start=lambda: announce_build(name))
+        episode = Episode(model, meta, policy, wind_drag, definition, name,
+                          seed=arguments.seed,
+                          randomise_reset_velocity=arguments.randomise_reset_velocity)
+        print(f"[runtime] world={name} ({definition['label']})"
+              f"  slope={episode.slope_degrees} deg"
+              f"  rope={'ON' if episode.rope_enabled else 'OFF'}"
+              f"  control {episode.control_hz:.0f} Hz  physics"
+              f" {1.0 / meta['physics_dt_seconds']:.0f} Hz"
+              f"  substeps/tick={episode.substeps}", flush=True)
+        print(f"[runtime] spawn pelvis {episode.spawn_position_world.round(4).tolist()}"
+              f"  palm-on-line error {episode.hand_line_error_meters():.2e} m"
+              f"  rope travel {episode.rope_travel_meters:.4f} m"
+              f"  grip eq_active"
+              f" {int(episode.data.eq_active[episode.grip_equality_id])}",
+              flush=True)
+        return episode, model, meta
+
+    episode, model, meta = open_world(arguments.world)
+    print(f"[runtime] observation noise OFF (training level {meta['noise_level']});"
+          f" wind NOT in training; friction knob starts at"
+          f" {meta['foot_friction']}", flush=True)
+    if server is not None:
         server.knobs["friction"] = meta["foot_friction"]
 
     renderer = None
     camera = ChaseCamera()
-    heading = HeadingController()
+    heading = HeadingController(arguments.command_speed)
+    rendered_model = None
     if not arguments.no_render:
         renderer = mujoco.Renderer(model, RENDER_HEIGHT, RENDER_WIDTH)
+        rendered_model = model
 
     episodes_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "episodes")
-    stamp = time.strftime("%Y%m%d_%H%M%S")
-    name = arguments.output_name or f"{stamp}_{'live' if arguments.live else 'timed'}_{episode.world_name}"
-    output_directory = os.path.join(episodes_root, name)
+    directories_opened = []
+
+    def new_episode_directory() -> str:
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        # --output-name names the FIRST episode only; a map switch must never
+        # reopen it.
+        if arguments.output_name and not directories_opened:
+            name = arguments.output_name
+        else:
+            name = (f"{stamp}_{'live' if arguments.live else 'timed'}"
+                    f"_{episode.world_name}")
+        directories_opened.append(name)
+        return os.path.join(episodes_root, name)
+
+    output_directory = new_episode_directory()
     header = make_header(episode, meta, arguments)
     recorder = Recorder(output_directory, header, control_hz=episode.control_hz)
 
@@ -493,8 +582,6 @@ def run(arguments) -> str:
     wall_start = time.time()
     realtime_factor = 0.0
     frames_rendered = 0
-    latest_jpeg = None
-    latest_state = None
     applied_friction = meta["foot_friction"]
 
     while True:
@@ -521,10 +608,10 @@ def run(arguments) -> str:
                 # knows why nothing moves. The pacing clock is rebased every
                 # frame, so unpausing resumes at realtime instead of firing a
                 # catch-up burst of ticks for the paused wall seconds.
-                if latest_jpeg is not None:
-                    server.broadcast(latest_jpeg)
-                if latest_state is not None:
-                    server.broadcast(dict(latest_state, paused=True))
+                if latest_jpeg[0] is not None:
+                    server.broadcast(latest_jpeg[0])
+                if latest_state[0] is not None:
+                    server.broadcast(dict(latest_state[0], paused=True))
                 wall_start = time.time() - episode.tick / episode.control_hz
                 time.sleep(1.0 / PAUSED_BROADCAST_HZ)
                 continue
@@ -536,11 +623,36 @@ def run(arguments) -> str:
                 applied_friction = friction
             if server.world_requested is not None:
                 requested, server.world_requested = server.world_requested, None
-                if requested != episode.world_name:
-                    print(f"[runtime] ignoring world {requested!r}: this harness"
-                          f" serves exactly one world, {episode.world_name!r}"
-                          " (the team env). Add worlds when rl/environment does.",
-                          flush=True)
+                if requested not in worlds_module.WORLD_DEFINITIONS:
+                    print(f"[runtime] ignoring unknown world {requested!r}; have"
+                          f" {worlds_module.world_names()}", flush=True)
+                else:
+                    # Finalise the episode we are leaving, then open the new
+                    # world at its own spawn in a fresh episode folder. Building
+                    # a world for the first time blocks this loop (~1.6 s warm)
+                    # -- `announce_build` warns the page first.
+                    recorder.finalize(episode_outcome(
+                        episode, realtime_factor, frames_rendered))
+                    episode, model, meta = open_world(requested)
+                    if not arguments.no_render and model is not rendered_model:
+                        # The GL context is NOT garbage collected, and it is
+                        # bound to the model it was made for. Two worlds that
+                        # share a model share the renderer; a different model
+                        # needs a new one.
+                        renderer.close()
+                        renderer = mujoco.Renderer(model, RENDER_HEIGHT, RENDER_WIDTH)
+                        rendered_model = model
+                    # The friction knob still reads the OLD world; re-sync it or
+                    # the next tick paints the previous mu over the new map.
+                    applied_friction = meta["foot_friction"]
+                    server.knobs["friction"] = applied_friction
+                    header = make_header(episode, meta, arguments)
+                    recorder = Recorder(new_episode_directory(), header,
+                                        control_hz=episode.control_hz)
+                    last_logged_command = last_logged_wind = None
+                    frames_rendered = 0
+                    wall_start = time.time()
+                    continue
             if server.reset_requested:
                 server.reset_requested = False
                 episode.reset()
@@ -548,8 +660,7 @@ def run(arguments) -> str:
                 continue
         else:
             command = np.array([
-                CLIMB_COMMAND_METERS_PER_SECOND if arguments.hold_w else 0.0,
-                0.0, 0.0])
+                arguments.command_speed if arguments.hold_w else 0.0, 0.0, 0.0])
 
         row = episode.step(command, wind_velocity_world)
 
@@ -572,7 +683,7 @@ def run(arguments) -> str:
             renderer.update_scene(episode.data, camera.aim(
                 row["root_position_world"], azimuth_degrees, elevation_degrees))
             jpeg = encode_jpeg(renderer.render())
-            latest_jpeg = jpeg
+            latest_jpeg[0] = jpeg
             if not arguments.live or frames_rendered < LIVE_MAXIMUM_RECORDED_FRAMES:
                 recorder.append_frame(jpeg)
                 frames_rendered += 1
@@ -590,7 +701,7 @@ def run(arguments) -> str:
         if server is not None:
             if jpeg is not None:
                 server.broadcast(jpeg)
-            latest_state = {
+            latest_state[0] = {
                 "type": "state", "tick": episode.tick,
                 "time_seconds": row["time_seconds"],
                 "command": row["command"].tolist(),
@@ -610,15 +721,19 @@ def run(arguments) -> str:
                 "realtime_factor": realtime_factor,
                 "heading_degrees": heading.desired_heading_degrees,
                 "world": episode.world_name,
+                "world_label": episode.definition["label"],
+                "rope_enabled": episode.rope_enabled,
                 "paused": False,
+                "loading": False,
             }
-            server.broadcast(latest_state)
+            server.broadcast(latest_state[0])
             sleep_for = wall_start + episode.tick / episode.control_hz - time.time()
             if sleep_for > 0:
                 time.sleep(sleep_for)
 
         if episode.tick % int(episode.control_hz) == 0:
-            print(f"[runtime] t={row['time_seconds']:6.1f}s "
+            print(f"[runtime] {episode.world_name:<9}"
+                  f" t={row['time_seconds']:6.1f}s "
                   f" rope_travel={row['rope_travel_meters']:6.3f} m "
                   f" height={row['height_gained_meters']:+6.3f} m "
                   f" rope={row['rope_force_newtons']:7.1f} N "
@@ -650,8 +765,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
                              " the way live mode does")
     parser.add_argument("--hold-w", action="store_true",
                         help="timed runs: hold the climb command the whole way")
-    parser.add_argument("--slope", type=float, default=None,
-                        help="override climb_config.slope_deg (default: theirs, 30)")
+    parser.add_argument("--world", default=worlds_module.DEFAULT_WORLD_NAME,
+                        choices=worlds_module.world_names(),
+                        help="which world to start in (see app/harness/worlds.py)")
+    parser.add_argument("--command-speed", type=float,
+                        default=CLIMB_COMMAND_METERS_PER_SECOND,
+                        help="lin_vel_x commanded while W is held, m/s"
+                             " (their training range is [-1, 1])")
     parser.add_argument("--policy", default=None, help="path to a policy npz")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--randomise-reset-velocity", action="store_true",

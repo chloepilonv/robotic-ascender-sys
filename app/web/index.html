@@ -116,9 +116,10 @@
     <video id="video" controls></video>
     <div class="badges">
       <div class="badge">slope <b id="hudSlope">—</b>°</div>
+      <div class="badge" id="ropeBadge">rope —</div>
       <div class="badge" id="motionBadge">holding</div>
     </div>
-    <div id="lookHint">move mouse to look · hold W to climb</div>
+    <div id="lookHint">move mouse to look · hold W to climb · R to respawn</div>
     <div id="lockOverlay"><div><i id="pausedPill">PAUSED</i><b id="lockTitle">click to take control</b><span id="lockSubtitle">Esc to release</span></div></div>
     <div id="worldToast"></div>
     <div id="banner">FELL</div>
@@ -137,12 +138,12 @@
       <div class="climbkey"><div class="key" id="climbKey" data-key="w">W<small>hold to climb</small></div></div>
       <p class="hint"><b>Click the view</b> to take control, then move the mouse to look around — the G1 turns to
         face wherever you are looking. Hold <b>W</b> and it hauls itself that way up the fixed line; let go and it
-        just hangs on the ascender, standing in the wind. <b>Esc</b> releases the pointer, <b>R</b> recentres the
-        camera behind the robot.</p>
+        just hangs on the ascender, standing in the wind. <b>Esc</b> releases the pointer. <b>R</b> respawns the
+        climber and puts the camera back behind it, without giving up the pointer.</p>
       <h2>Mountain</h2>
       <div class="row"><label>map</label></div>
       <select id="worldSelect"></select>
-      <p class="hint" id="worldHint">One world: the team climb env. More appear when rl/environment does.</p>
+      <p class="hint" id="worldHint">Switching maps respawns the climber at that world’s start.</p>
       <div class="row"><label>wind speed</label><output id="windOut">0.0 m/s · 0°</output></div>
       <svg id="windDial" viewBox="-70 -70 140 140" style="width:140px;height:140px;display:block;margin:4px auto;cursor:grab;touch-action:none">
         <circle r="55" fill="none" stroke="var(--line)" stroke-width="2"/>
@@ -157,6 +158,7 @@
       <input type="range" id="friction" min="0.05" max="1.5" step="0.05" value="0.8">
       <p class="hint">Training pins this at <code>climb_config.foot_friction</code> = 0.8.</p>
       <p style="margin-top:14px"><button id="resetBtn">Reset climber</button></p>
+      <p class="hint">Same as pressing <b>R</b>, which also recentres the camera and keeps the pointer.</p>
       <p class="hint">Every live session is recorded to <code>app/harness/episodes/</code> and appears in Replay.</p>
     </div>
     <div id="replayPanel">
@@ -175,11 +177,14 @@ const EPISODES_URL_PREFIX = '/app/harness/episodes';
 const CAMERA_MESSAGE_INTERVAL_MILLISECONDS = 20;   // <= 50 messages / second
 const DEFAULT_AZIMUTH_DEGREES = 180;               // behind the robot, looking uphill
 const DEFAULT_ELEVATION_DEGREES = -15;
-const WORLD_ARRIVAL_TIMEOUT_MILLISECONDS = 8000;   // give up waiting for the map to load
+const WORLD_ARRIVAL_TIMEOUT_MILLISECONDS = 60000;  // a world's FIRST selection builds the env
+                                                   // (measured 1.6 s warm, slower cold), and the
+                                                   // sim loop is what does it, so no frames arrive
+                                                   // meanwhile. Generous headroom; 8 s was tight.
 const state = {
   mode: 'live', socket: null, keys: new Set(), hud: null, slopeDegrees: null,
   camera: { azimuth_degrees: DEFAULT_AZIMUTH_DEGREES, elevation_degrees: DEFAULT_ELEVATION_DEGREES },
-  worlds: {}, world: null, pendingWorld: null, paused: true, pauseIntent: true,
+  worlds: {}, world: null, pendingWorld: null, paused: true, pauseIntent: true, loading: false,
 };
 
 // ---------- HUD ----------
@@ -204,6 +209,9 @@ function paintHud(frame) {
   const motion = $('motionBadge');
   motion.textContent = state.paused ? 'paused' : climbing ? 'climbing' : 'holding';
   motion.classList.toggle('climbing', climbing && !state.paused);
+  if (frame.rope_enabled !== undefined) {
+    $('ropeBadge').textContent = frame.rope_enabled ? 'rope on' : 'no rope';
+  }
   const slope = frame.slope_degrees !== undefined && frame.slope_degrees !== null ? frame.slope_degrees : state.slopeDegrees;
   $('hudSlope').textContent = (slope === null || slope === undefined) ? '—' : Number(slope).toFixed(0);
   const banner = $('banner');
@@ -227,7 +235,12 @@ function connect() {
     if (typeof event.data === 'string') {
       const message = JSON.parse(event.data);
       if (state.mode !== 'live') return;
-      if (message.world !== undefined) noteWorldArrived(message.world);
+      if (message.loading !== undefined && Boolean(message.loading) !== state.loading) {
+        state.loading = Boolean(message.loading); paintWorldToast();
+      }
+      // A `loading` frame still carries the OLD world's name — it is the last
+      // frame before the build — so it must not clear the toast.
+      if (message.world !== undefined && !state.loading) noteWorldArrived(message.world);
       if (message.paused !== undefined) noteServerPaused(Boolean(message.paused));
       if (message.slope_degrees !== undefined) state.slopeDegrees = message.slope_degrees;
       paintHud(message);
@@ -320,12 +333,16 @@ document.addEventListener('mousemove', event => {
     state.camera.elevation_degrees - event.movementY * ELEVATION_DEGREES_PER_PIXEL));
   queueCameraMessage();
 });
-// R puts the camera back behind the robot without giving up the pointer
+// R is the panic key: respawn the climber AND put the camera back behind it,
+// all without giving up the pointer. Order matters only cosmetically -- the
+// camera message and the reset are independent -- but sending the camera first
+// means the very first frame of the new episode already arrives from behind.
 document.addEventListener('keydown', event => {
   if (event.key.toLowerCase() !== 'r' || event.repeat) return;
   state.camera.azimuth_degrees = DEFAULT_AZIMUTH_DEGREES;
   state.camera.elevation_degrees = DEFAULT_ELEVATION_DEGREES;
   sendInput();
+  send({ type: 'reset' });
 });
 
 $('friction').addEventListener('input', e => { $('frictionOut').textContent = Number(e.target.value).toFixed(2); send({ type: 'knob', name: 'friction', value: Number(e.target.value) }); });
@@ -360,7 +377,12 @@ function worldLabel(name, slopeDegrees) {
 function paintWorldToast() {
   const toast = $('worldToast');
   const waiting = state.pendingWorld && state.mode === 'live';
-  toast.textContent = waiting ? `dropping into ${state.pendingWorld} at the start…` : '';
+  const label = (state.worlds[state.pendingWorld] || {}).label || state.pendingWorld;
+  // The runtime says `loading:true` on the last frame before it blocks to build
+  // a world it has never opened. Say so, or 25 frozen seconds look like a crash.
+  toast.textContent = !waiting ? ''
+    : state.loading ? `building ${label} — first time only…`
+    : `dropping into ${label} at the start…`;
   toast.style.display = waiting ? 'block' : 'none';
 }
 function noteWorldArrived(name) {
@@ -388,12 +410,13 @@ async function listWorlds() {
   }
   if (state.world && state.worlds[state.world]) select.value = state.world;
   $('worldHint').textContent = entries.length
-    ? 'One world: the team climb env. More appear when rl/environment does.'
+    ? 'Switching maps respawns the climber at that world\u2019s start. A world\u2019s first selection builds its model, then it is cached.'
     : 'The runtime reported no worlds.';
 }
 $('worldSelect').addEventListener('change', event => {
   const name = event.target.value;
   state.pendingWorld = name;
+  state.loading = false;
   paintWorldToast();
   clearTimeout(worldArrivalTimer);
   // the backend may not answer at all; do not strand the toast on screen forever
