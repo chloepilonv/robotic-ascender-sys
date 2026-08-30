@@ -643,6 +643,7 @@ def run(arguments) -> str:
 
         guide_enabled = bool(arguments.guide)
         eyes_enabled = True   # headless default; the page's `eyes` knob overrides
+        world_frozen = False  # guide reached -> physics held (see the WAIT freeze)
         walking = bool(arguments.hold_w)
         backing = False
         # A/D as the HIKER's steering, +1 = left. Only ever non-zero on a
@@ -801,7 +802,66 @@ def run(arguments) -> str:
 
         gate = guide_gate if guide_command is not None else human_gate
         gate.update(episode.data, episode.tick / episode.control_hz)
-        command = gate.mask(command)
+        # ON AUTONOMOUS (rope-policy) WORLDS THE MASK IS SKIPPED -- user-found
+        # bug 2026-08-30: with the guide on, "a human is in front" clamped the
+        # forward command to zero, and on these worlds that IS the W gate, so
+        # the robot stood still forever while looking at her. The safety job
+        # moves to the follower's WAIT world-freeze below, which stops the
+        # robot the moment she is inside 1.5 m -- harder than a clamp does.
+        if not bool(getattr(episode, "autonomous", False)):
+            command = gate.mask(command)
+
+        # GUIDE REACHED -> FREEZE THE WORLD (user's ruling, 2026-08-30). While
+        # the follower says WAIT, physics is NOT stepped at all: the robot is
+        # held bit-identical mid-stride, so nothing -- wind, drift, a bad
+        # half-pose -- can knock it over while it waits, and resuming from an
+        # untouched state cannot fall. Everything above this line already ran
+        # this iteration, so the HUMAN still walks (she is mocap), the eyes
+        # still render and measure, and the ears still listen; the moment she
+        # is past the follow band (1.8 m) the follower flips to FOLLOW and the
+        # next iteration steps physics again. On autonomous rope worlds this
+        # freeze IS the human-safety stop (the gate mask is skipped there).
+        follower_waiting = (guide_command is not None
+                            and guide_system.follower.mode == "WAIT")
+        # A confident STOP freezes the world the same way (user's ruling,
+        # 2026-08-30): the ears keep listening while frozen, and the next
+        # voice that is not a stop flips the behaviour out of STOPPED, which
+        # un-freezes and resumes the climb.
+        hearing_stopped = (hearing_enabled and str(getattr(
+            hearing_system.behaviour, "mode", "")).upper() == "STOPPED")
+        freeze_reason = ("stop" if hearing_stopped
+                         else "guide" if follower_waiting else None)
+        if freeze_reason is not None:
+            if not world_frozen:
+                world_frozen = True
+                print("[runtime] world FROZEN"
+                      + (": STOP heard, call to resume" if freeze_reason == "stop"
+                         else ": guide reached, waiting for her to advance"),
+                      flush=True)
+            if server is not None:
+                eye_jpeg = guide_system.take_eye_jpeg()
+                if eye_jpeg is not None:
+                    server.broadcast(eye_jpeg)
+                ear_pcm = hearing_system.take_ear_pcm()
+                if ear_pcm is not None:
+                    server.broadcast(ear_pcm)
+                if latest_state[0] is not None:
+                    frozen_state = dict(latest_state[0])
+                    frozen_state["world_frozen"] = True
+                    frozen_state["world_frozen_reason"] = freeze_reason
+                    frozen_state["guide"] = guide_system.state()
+                    frozen_state["hearing"] = hearing_system.state()
+                    frozen_state["command"] = [0.0, 0.0, 0.0]
+                    server.broadcast(frozen_state)
+            # Rebase the pacing clock every held iteration, exactly as the
+            # pause path does, so resuming does not fire a catch-up burst.
+            wall_start = time.time() - episode.tick / episode.control_hz
+            time.sleep(1.0 / episode.control_hz)
+            continue
+        if world_frozen:
+            world_frozen = False
+            print("[runtime] world RESUMED", flush=True)
+
         row = episode.step(command, wind_velocity_world)
 
         if row["command"].tolist() != last_logged_command:
@@ -906,6 +966,7 @@ def run(arguments) -> str:
                 "autonomous": bool(getattr(episode, "autonomous", False)),
                 "paused": False,
                 "loading": False,
+                "world_frozen": False,
                 # bms + actuator_names + r_int_curve, straight from her plugin.
                 **(episode.bms.state() if episode.bms else {}),
             }

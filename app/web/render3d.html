@@ -164,6 +164,13 @@
   .switchrow[aria-checked="true"] .switch { background: var(--good); border-color: var(--good); }
   .switchrow[aria-checked="true"] .switch::after { transform: translateX(10px); background: #fff; }
 
+  #frozenBanner { display: none; position: absolute; top: 16px; left: 50%;
+    transform: translateX(-50%); padding: 6px 14px; border-radius: 999px;
+    background: var(--card); border: 1px solid var(--border); color: var(--ink-2);
+    font-size: 12.5px; letter-spacing: .02em; z-index: 3; pointer-events: none; }
+  body.world-frozen #frozenBanner { display: block; }
+  body.world-frozen #canvas { filter: brightness(0.82); }
+
   #windDial { width: 78px; height: 78px; display: block; margin: 0 auto 2px;
               cursor: grab; touch-action: none; }
 
@@ -276,6 +283,7 @@
   <div id="loadingCard">loading the mountain…</div>
   <div id="lockOverlay"><div><i id="pausedPill">Paused</i><b id="lockTitle">click to take control</b><span id="lockSubtitle">Esc to release</span></div></div>
   <div id="banner">FELL</div>
+  <div id="frozenBanner">Guide reached · waiting for advance</div>
 </div>
 <aside>
   <div class="topbar">
@@ -485,6 +493,11 @@ function paintHud(frame) {
   paintWindReadout();
   noteWindSpeed(state.windNow.speed);
   if (!frame.paused) noteVisibility(frame.visibility_meters);
+  document.body.classList.toggle('world-frozen', Boolean(frame.world_frozen));
+  if (frame.world_frozen) {
+    $('frozenBanner').textContent = frame.world_frozen_reason === 'stop'
+      ? 'Stopped · call to resume' : 'Guide reached · waiting for advance';
+  }
   paintBatteryCard(frame);
   paintGuideCard(frame);
   paintHearingCard(frame);
