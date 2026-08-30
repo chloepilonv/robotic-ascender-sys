@@ -34,10 +34,10 @@
     #bmsJoints .kv b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; }
   `;
   const INFO = {
-    power: 'P_elec = Σ|τ·q̇|/η + copper I²R + 60 W idle (Jetson, boards, LiDAR, camera). η = 0.70. MATH.md §2. Real: BmsState_ V×I.',
-    soc: 'SOC −= 100·I·dt / (3600 · 9 Ah · f(T_pack)); f shrinks when the pack is cold. MATH.md §3. Real: BmsState_.soc (rt/lf/bmsstate).',
-    temp: 'T_pack += dt/2000 · [I²·R_int − (T_pack − T_amb)/R_th]. R_th = 1.5 K/W × jacket (hardcoded 60 % insulation). MATH.md §4+§6. Real: BmsState_.temperature.',
-    joints: 'τ = actuator_force (real: tau_est), q̇ = actuator_velocity (real: dq), rt/lowstate 500 Hz. The only inputs of the model — everything above is derived. MATH.md §1.',
+    power: 'P = Σ|τ·q̇|/η + copper I²R + 60 W idle — compute draws too (Jetson, boards, LiDAR, camera), not just joint force. MATH.md §2. Real G1: YES — V×I from rt/lf/bmsstate.',
+    temp: 'T_pack += dt/C · [I²·R_int (self-heat) − (T_pack − T_outside)/R_th (cold leak)]. Outside temperature pulls the pack down through the jacket (hardcoded 60 % insulation). MATH.md §4+§6. Real G1: YES — BmsState_.temperature[12 sensors].',
+    soc: 'SOC −= 100·I·dt / (3600 · 9 Ah · f(T_pack)); a cold pack (f < 1) drains faster. MATH.md §3. Real G1: YES — BmsState_.soc, rt/lf/bmsstate.',
+    joints: 'τ = actuator_force, q̇ = actuator_velocity — the only model inputs; everything above is derived. MATH.md §1. Real G1: YES — tau_est / dq in rt/lowstate at 500 Hz (τ is estimated from motor current, no force sensor).',
   };
   const info = k => `<span class="bms-i" title="${INFO[k]}">i</span>`;
   const panel = `
@@ -45,8 +45,8 @@
     <div class="body">
     <div class="row3">
       <div class="bt"><h3>electrical power${info('power')}</h3><div class="big"><span id="bP">—</span><small>W</small></div><div class="sub" id="bPsub">—</div></div>
-      <div class="bt" id="btSoc"><h3>battery life · SOC${info('soc')}</h3><div class="big"><span id="bSoc">—</span><small>%</small></div><div class="sub" id="bTte">—</div></div>
       <div class="bt" id="btT"><h3>battery pack temperature${info('temp')}</h3><div class="big"><span id="bTbat">—</span><small>°C</small></div><div class="sub" id="bTsub">—</div></div>
+      <div class="bt" id="btSoc"><h3>battery life · SOC${info('soc')}</h3><div class="big"><span id="bSoc">—</span><small>%</small></div><div class="sub" id="bTte">—</div></div>
     </div>
     <div id="bmsJointsHead">▸ torque and velocity of joints${info('joints')}</div>
     <div id="bmsJoints" class="bt">
