@@ -360,8 +360,8 @@
         <span>Bearing</span><b id="hearingBearing">—</b>
       </div>
       <div class="shoutrow" id="shoutRow">
-        <button id="shoutPemba">PEMBA</button>
-        <button id="shoutStop">STOP</button>
+        <button id="shoutPemba">PEMBA <span class="keycap">P</span></button>
+        <button id="shoutStop">STOP <span class="keycap">X</span></button>
       </div>
       <div id="shoutNow"></div>
     </div>
@@ -1309,8 +1309,18 @@ document.addEventListener('keydown', event => {
     else stageElement.requestFullscreen?.();
   } else if (key === 'v' && !event.repeat) {
     setViewMode(stage.toggleFirstPerson());
+  } else if (key === 'p' && !event.repeat) {
+    triggerShout('shoutPemba');
+  } else if (key === 'x' && !event.repeat) {
+    triggerShout('shoutStop');
   }
 });
+// The hotkeys go THROUGH the buttons so they obey the same rules: manual
+// mode only (hidden buttons don't fire) and dead while a clip is playing.
+function triggerShout(identifier) {
+  const button = $(identifier);
+  if (button && !button.disabled && button.offsetParent !== null) button.click();
+}
 // THIRD PERSON <-> FIRST PERSON. Nothing is sent: the camera the SERVER steers
 // by is the chase camera either way (stage.cameraAzimuthDegrees), so W/S/A/D,
 // the recorded mp4 and the guide follower all carry on exactly as before.
