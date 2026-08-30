@@ -107,19 +107,18 @@ def load_team_environment(config_overrides=None, slope_degrees=None,
     process, 0.21 s for each additional. Slower on a cold venv (the first run
     also clones mujoco_menagerie).
     """
-    import rl.environment  # noqa: F401  registers G1ClimbAscender
-    from mujoco_playground import registry
+    from rl.environment.climb_env import G1ClimbAscender
 
     overrides = dict(config_overrides or {})
     if slope_degrees is not None:
         overrides["climb_config.slope_deg"] = float(slope_degrees)
     if robot == "bare":
-        return registry.load("G1ClimbAscender", config_overrides=overrides)
+        return G1ClimbAscender(config_overrides=overrides)
     if robot != "pemba":
         raise ValueError(f"unknown robot variant {robot!r}; have bare, pemba")
     from app.harness import robot_variants
     with robot_variants.pemba_task_to_xml():
-        return registry.load("G1ClimbAscender", config_overrides=overrides)
+        return G1ClimbAscender(config_overrides=overrides)
 
 
 def load_team_model(config_overrides=None, slope_degrees=None, robot="bare",

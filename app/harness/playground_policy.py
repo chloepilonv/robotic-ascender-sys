@@ -3,11 +3,11 @@
 Two halves, both ports of team code that stays the source of truth:
 
 1. `PlaygroundObservation` reproduces `G1ClimbAscender._get_obs`'s `"state"`
-   vector (`rl/environment/climb_env.py:419-480`) from a plain `mujoco.MjData`.
+   vector (the joystick `_get_obs` layout) from a plain `mujoco.MjData`.
    Their version runs on `mjx.Data` under JAX; ours reads the same sensors and
    the same slices off the C data struct. The layout, in order:
 
-       index    width  meaning                       source (climb_env.py)
+       index    width  meaning                       source (the joystick env)
        0:3      3      pelvis linear velocity,       get_local_linvel(data,
                        PELVIS frame, m/s               "pelvis")  -> sensor
                                                        `local_linvel_pelvis`
@@ -51,11 +51,11 @@ Two halves, both ports of team code that stays the source of truth:
    log-stds, ignored -- deterministic evaluation).
 
    Output: (29,) raw action. The caller turns it into motor targets with
-   `default_pose + action_scale * action` (climb_env.py:359).
+   `default_pose + action_scale * action` (joystick env: `ctrl = default_pose + scale*action`).
 
 `GaitPhase` advances the clock exactly as their `step` does
-(climb_env.py:388-389): phase starts at [0, pi], gait frequency is drawn
-U(1.25, 1.5) Hz at reset (climb_env.py:317), phase_dt = 2*pi*dt*freq, and the
+(joystick env): phase starts at [0, pi], gait frequency is drawn
+U(1.25, 1.5) Hz at reset (joystick env reset), phase_dt = 2*pi*dt*freq, and the
 increment is wrapped to (-pi, pi] AFTER the observation is built.
 """
 
@@ -77,7 +77,7 @@ class GaitPhase:
         self.phase_radians = PHASE_INITIAL.copy()
 
     def set_frequency(self, gait_frequency_hz: float) -> None:
-        """phase_dt = 2*pi*dt*freq -- climb_env.py:318."""
+        """phase_dt = 2*pi*dt*freq."""
         self.gait_frequency_hz = float(gait_frequency_hz)
         self.phase_step_radians = (
             2.0 * np.pi * self.control_dt_seconds * self.gait_frequency_hz
@@ -87,12 +87,12 @@ class GaitPhase:
         self.phase_radians = PHASE_INITIAL.copy()
 
     def advance(self) -> None:
-        """fmod(phase + phase_dt + pi, 2pi) - pi -- climb_env.py:388-389."""
+        """fmod(phase + phase_dt + pi, 2pi) - pi -- the joystick env:388-389."""
         wrapped = self.phase_radians + self.phase_step_radians + np.pi
         self.phase_radians = np.fmod(wrapped, 2.0 * np.pi) - np.pi
 
     def as_observation(self) -> np.ndarray:
-        """(4,) [cos(p0), cos(p1), sin(p0), sin(p1)] -- climb_env.py:458-460."""
+        """(4,) [cos(p0), cos(p1), sin(p0), sin(p1)] -- the joystick env:458-460."""
         return np.concatenate([np.cos(self.phase_radians), np.sin(self.phase_radians)])
 
 
@@ -128,7 +128,7 @@ class PlaygroundObservation:
         return value + span * self.noise_level * scale
 
     def projected_gravity(self, data) -> np.ndarray:
-        """site_xmat[imu_in_pelvis].T @ [0,0,-1] -- climb_env.py:431.
+        """site_xmat[imu_in_pelvis].T @ [0,0,-1] -- the joystick env:431.
 
         MuJoCo's C `site_xmat` is a flat row-major 9-vector; reshaped to 3x3 it
         is the site's rotation matrix R (columns = site axes in world). The
