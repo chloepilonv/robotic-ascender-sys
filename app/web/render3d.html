@@ -323,7 +323,6 @@
       <span class="keycap" id="turnLeftKey" data-key="a">A</span><span class="keycap" id="turnRightKey" data-key="d">D</span><span id="turnLabel"> turn </span><s> · </s>
       <span class="keycap">R</span> reset <s>·</s>
       <span class="keycap">F</span> fullscreen <s>·</s>
-      <span class="keycap">G</span> graphics <s>·</s>
       <span class="keycap">Esc</span> pause
     </div>
   </div>
@@ -914,11 +913,6 @@ document.addEventListener('keydown', event => {
   } else if (key === 'f' && !event.repeat) {
     if (document.fullscreenElement) document.exitFullscreen();
     else stageElement.requestFullscreen?.();
-  } else if (key === 'g' && !event.repeat) {
-    // The one graphics escape hatch a venue needs: drop the whole post chain if
-    // the machine we end up demoing on cannot hold 60 fps.
-    stage.setPostProcessing(!stage.postProcessing);
-    $('fpsOut').title = 'post-processing ' + (stage.postProcessing ? 'on' : 'off');
   }
 });
 
