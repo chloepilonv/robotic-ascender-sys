@@ -10,10 +10,9 @@ MuJoCo viewer + exported ONNX. One slope, one policy. No curriculum.
 - [x] Train / play / export scripts, CPU smoke test, HF Jobs script
 
 ## Remaining (in order)
-1. [ ] HF token with *Manage Jobs* → launch `Slope20` on `a10g-large`, 3000 it (~3 h, ~$3)
-2. [ ] Check TensorBoard after ~30 min: `ascender_progress` and `uphill_velocity` rising.
-       If flat: set `hand_behind` weight to -0.5 and relaunch (once).
-3. [ ] Download `model_3000.pt` + `policy.onnx`, record a video with `play_mjlab.py --video`
+1. [x] `Slope20` trained on HF (`a10g-large`, 3000 it, ~1 h) → `policies/g1_ascender_slope20.onnx`
+2. [x] Curves rising; verified in mjlab env and sim2sim (climbs, no falls)
+3. [ ] Record the video: `mjpython -m rl.chloe.scripts.sim2sim rl/chloe/policies/g1_ascender_slope20.onnx`
 
 ## Not in scope today
 Slope curriculum (10→40°), gait-quality rewards, storms (30 m/s), bare ice (0.05),

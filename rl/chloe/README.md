@@ -18,8 +18,8 @@ right wrist — walk, push the ascender up, walk, push — and stays up in wind 
    foot friction 0.4–0.9 (snow → crampons), PD gains ±20 %, torso mass ±10 %, CoM ±3 cm,
    action delay 0–2 steps.
 4. **Training on HF Jobs** (`scripts/hf_job.sh`): clone → install → train → export ONNX → upload to
-   `iteratehack/g1-ascender`. First 3000-iteration run (`Slope20`): full-length episodes, uphill
-   speed at target, ascender progressing.
+   `iteratehack/g1-ascender`. Final run (`Slope20`, v3, 3000 it, ~1 h on an A10G): full-length
+   episodes, uphill speed at target, ascender progressing; verified in plain MuJoCo (sim2sim).
 5. **Deployment path**: `scripts/export_onnx.py` (obs → 29 joint targets, 50 Hz) and
    `scripts/sim2sim.py` (runs the ONNX in plain CPU MuJoCo with hand-written obs/PD/ratchet — the
    same loop the Jetson will run).
@@ -72,7 +72,7 @@ Each policy = `.onnx` (deploy / sim2sim, 96 obs → 29 joint targets at 50 Hz) +
 |---|---|---|---|---|
 | `g1_ascender_slope20_SMOKE` | 20 iterations | old | random, falls | plumbing tests only |
 | `g1_ascender_slope20_v1` | 3000 iterations | **old** (rope at the wrist joint, soft attachment) | climbed in its own world; **falls on the fixed rope** | record only — do not demo |
-| `g1_ascender_slope20` (v3) | 3000 iterations | **final** = `assets/robots/mujoco/rope_rail.py` | the demo policy | `sim2sim.py`, deployment |
+| **`g1_ascender_slope20`** (v3) | 3000 iterations | **final** = `assets/robots/mujoco/rope_rail.py` | climbs: ~0.3 m/s uphill, ascender pushed 3–4 m in 10 s, no falls (4/4 envs with wind+ice DR); sim2sim +4.4 m in 12 s, standing | **the demo policy** → `sim2sim.py`, deployment |
 
 **Rule: a policy is only valid with the rope model it was trained on.** The network's inputs (wrist
 position, joint angles) change meaning when the rope/anchor moves, so any change to `rope_rail.py`
