@@ -85,6 +85,57 @@ NON_STOP_LABELS = ("other", "near_miss")
 SAMPLE_RATE_HZ = 16000
 DATA_FORMAT = f"LEI16@{SAMPLE_RATE_HZ}"
 
+# THE DEMO CLIPS -- the five recordings the sidebar's MANUAL mode actually
+# plays (`app/web/sounds/voice/`, ElevenLabs, committed to the repo). They are
+# in the corpus because they are the utterances the demo will be judged on: a
+# threshold tuned on `say` voices that misses the very clip the button plays is
+# a threshold tuned on the wrong thing. "Pemba" is a NAME, so it is an
+# ordinary call -- any human voice that is not `stop` means "come".
+DEMO_VOICE_DIRECTORY = os.path.join(
+    os.path.dirname(os.path.dirname(_HARNESS_DIRECTORY)), "app", "web",
+    "sounds", "voice")
+DEMO_CLIPS = (
+    ("stop_1.mp3", "stop", "stop"),
+    ("pemba_1.mp3", "other", "pemba"),
+    ("pemba_2.mp3", "other", "pemba"),
+    ("pemba_3.mp3", "other", "pemba"),
+    ("pemba_4.mp3", "other", "pemba"),
+)
+
+
+def demo_rows() -> list:
+    """The five sidebar clips as manifest rows. -> [row], possibly empty.
+
+    They carry an ABSOLUTE path (`absolute`) because they live in the repo, not
+    in the generated corpus directory, and they are 44.1 kHz mp3 rather than
+    16 kHz wav -- `read_clip` resamples and mixes to mono, so nothing downstream
+    has to care.
+    """
+    import soundfile
+
+    rows = []
+    for name, label, text in DEMO_CLIPS:
+        path = os.path.join(DEMO_VOICE_DIRECTORY, name)
+        if not os.path.exists(path):
+            continue
+        try:
+            # READ, DO NOT `info`. libsndfile's frame count for an mp3 is an
+            # ESTIMATE from the bitrate and it is wrong: `stop_1.mp3` reports
+            # 1.83 s and decodes to 0.78 s. The length is used in tables, so it
+            # has to be the length that will actually be played.
+            samples, sample_rate = soundfile.read(path, dtype="float32",
+                                                  always_2d=True)
+        except Exception as error:      # pragma: no cover - reporting only
+            print(f"[corpus] cannot read demo clip {name}: {error}", flush=True)
+            continue
+        rows.append({
+            "path": name, "absolute": path, "text": text, "label": label,
+            "voice": "demo", "rate_words_per_minute": 0,
+            "seconds": float(samples.shape[0]) / float(sample_rate),
+            "sample_rate_hz": int(sample_rate),
+        })
+    return rows
+
 
 def slug(text: str) -> str:
     return "".join(character if character.isalnum() else "_"
@@ -150,6 +201,7 @@ def generate(directory=CORPUS_DIRECTORY, voices=DEFAULT_VOICES,
                     "sample_rate_hz": int(info.samplerate),
                 })
 
+    rows.extend(demo_rows())
     manifest = {
         "directory": directory,
         "voices": voices,
@@ -167,6 +219,8 @@ def generate(directory=CORPUS_DIRECTORY, voices=DEFAULT_VOICES,
     # reads it.
     print(f"\n[corpus] {len(rows)} clips in {directory}"
           f"  ({made} generated, {reused} reused, {failed} failed)")
+    print(f"[corpus] plus {len(demo_rows())} DEMO clips from"
+          f" {DEMO_VOICE_DIRECTORY} (the sidebar's MANUAL buttons)")
     print(f"[corpus] {len(voices)} voices {voices}"
           f"  x {len(rates)} rates {list(rates)}"
           f"  x {len(UTTERANCES)} utterances")
@@ -195,6 +249,11 @@ def load_manifest(directory=CORPUS_DIRECTORY) -> dict:
     with open(path) as handle:
         manifest = json.load(handle)
     manifest["directory"] = directory
+    # The demo clips live in the repo, not in the corpus directory, so a
+    # manifest written before they existed still picks them up.
+    known = {row["path"] for row in manifest["clips"]}
+    manifest["clips"].extend(row for row in demo_rows()
+                             if row["path"] not in known)
     return manifest
 
 
@@ -204,7 +263,7 @@ def read_clip(manifest, row):
     import soundfile
 
     samples, sample_rate = soundfile.read(
-        os.path.join(manifest["directory"], row["path"]),
+        row.get("absolute") or os.path.join(manifest["directory"], row["path"]),
         dtype="float32", always_2d=True)
     mono = samples.mean(axis=1).astype(np.float32)
     if int(sample_rate) != SAMPLE_RATE_HZ:

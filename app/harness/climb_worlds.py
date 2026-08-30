@@ -438,9 +438,10 @@ class ClimbSceneEpisode:
         # policy has written `data.ctrl` and BEFORE the `mj_step` that acts on
         # it. That is the only place a supervisory layer can bend one joint's
         # PD target without touching the policy, the observation, or anything
-        # the policy will see next tick. The guide's SEARCH waist-yaw offset is
-        # the only user (`guide.WaistYaw.apply`). Empty by default, so a run
-        # with no hooks is exactly the run that was there before.
+        # the policy will see next tick. The waist-yaw "neck" offset is the
+        # only user (`guide.WaistYaw.apply`), aimed by the ear layer at the
+        # direction a shout came from. Empty by default, so a run with no hooks
+        # is exactly the run that was there before.
         self.control_hooks = []
         self.latest_bms = None
         # Chloe's BMS, always on. Once per CONTROL tick -- her plugin
