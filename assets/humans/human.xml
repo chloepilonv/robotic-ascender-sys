@@ -41,13 +41,15 @@
       <!-- arms -->
       <geom name="human_shoulder_l" class="human" type="sphere" pos="0.02 0.22 1.40" size="0.09" material="jacket" />
       <geom name="human_shoulder_r" class="human" type="sphere" pos="0.02 -0.22 1.40" size="0.09" material="jacket" />
-      <geom name="human_upper_arm_l" class="human" fromto="0.02 0.24 1.40 0.00 0.28 1.12" size="0.075" material="jacket" />
-      <geom name="human_upper_arm_r" class="human" fromto="0.02 -0.24 1.40 0.00 -0.28 1.12" size="0.075" material="jacket" />
-      <!-- arms: on the fixed line -- right hand high on the rope, left lower -->
-      <geom name="human_forearm_l" class="human" fromto="0.00 0.28 1.12 0.26 0.14 1.18" size="0.065" material="jacket" />
-      <geom name="human_forearm_r" class="human" fromto="0.00 -0.28 1.12 0.30 -0.10 1.42" size="0.065" material="jacket" />
-      <geom name="human_hand_l" class="human" type="sphere" pos="0.30 0.12 1.19" size="0.05" material="glove" />
-      <geom name="human_hand_r" class="human" type="sphere" pos="0.34 -0.08 1.46" size="0.05" material="glove" />
+      <!-- arms: the fixed line runs up-slope on the hiker's RIGHT (same side
+           as the robot's ascender hand). Right hand out to the side, gripping
+           the rope at ~1.15 m; left arm swings naturally. -->
+      <geom name="human_upper_arm_l" class="human" fromto="0.02 0.24 1.40 -0.06 0.28 1.12" size="0.075" material="jacket" />
+      <geom name="human_forearm_l" class="human" fromto="-0.06 0.28 1.12 0.06 0.30 0.88" size="0.065" material="jacket" />
+      <geom name="human_hand_l" class="human" type="sphere" pos="0.08 0.30 0.85" size="0.05" material="glove" />
+      <geom name="human_upper_arm_r" class="human" fromto="0.02 -0.24 1.40 0.06 -0.38 1.18" size="0.075" material="jacket" />
+      <geom name="human_forearm_r" class="human" fromto="0.06 -0.38 1.18 0.22 -0.46 1.14" size="0.065" material="jacket" />
+      <geom name="human_hand_r" class="human" type="sphere" pos="0.26 -0.48 1.14" size="0.05" material="glove" />
       <!-- legs: mid-stride, left forward, right trailing -->
       <geom name="human_thigh_l" class="human" fromto="0 0.10 0.92 0.16 0.11 0.50" size="0.09" material="pants" />
       <geom name="human_thigh_r" class="human" fromto="0 -0.10 0.92 -0.14 -0.11 0.52" size="0.09" material="pants" />
