@@ -1,5 +1,29 @@
 """The alpine look: fog, a low sun, snow, shadows. Visual only.
 
+WHO READS THIS NOW (2026-08-30, when the 2-D page and its server-side chase
+render were retired). This module was written to dress the offscreen
+third-person render that fed `app/web/index.html`. That render is gone --
+`app/web/render3d.html` draws the scene itself in three.js -- but the module is
+NOT dead, because the same `MjModel` is what the ROBOT'S EYE CAMERAS render
+through (`guide.StereoEyes`). Everything below is therefore in the loop of a
+MEASUREMENT, not of a picture:
+
+  `apply_alpine_look`  the sun direction and shadow settings, the headlight,
+                       the fog/haze distances and colours, and the snow tint on
+                       the terrain geom. The eyes see all of it, and the guide
+                       is DETECTED by thresholding orange-red in HSV -- so the
+                       lighting is what decides whether the detector fires.
+  `add_skybox`         without a skybox texture `mjRND_SKYBOX` draws BLACK, and
+                       every eye pixel above the horizon would be black.
+  `apply_render_flags`  `StereoEyes` calls it with `shadows=False`; it is what
+                       turns fog, haze and the sky on for the eye render.
+
+Also read by `test_guide.py`, `test_storm.py`, `guide_walk_sheet.py` (which
+makes its own renderer) and `export_scene.py` (which bakes the look into the
+GLB the 3-D page loads). What DID go with the chase render is
+`shadows_affordable` / `SHADOW_MAXIMUM_WIDTH_PIXELS` -- a rule for how wide a
+frame could still afford a shadow pass, with no frame left to apply it to.
+
 NOTHING HERE TOUCHES PHYSICS. Every field written is either in `model.vis`
 (MuJoCo's visualisation block), `model.geom_rgba` / `model.mat_*` (appearance),
 `model.light_*` (illumination), or a render-time flag on `renderer.scene.flags`.
@@ -72,11 +96,11 @@ SKY_TEXTURE_SIZE = 512
 
 SHADOW_TEXTURE_SIZE = 4096
 SHADOW_CLIP = 2.0
-OFFSAMPLES = 8                        # MSAA for offscreen rendering
-
-# Above this width, shadow rendering is dropped unless explicitly forced --
-# measured, see PARITY.md. Below it shadows are free enough to keep.
-SHADOW_MAXIMUM_WIDTH_PIXELS = 1280
+# MSAA for offscreen rendering. `StereoEyes` deliberately overrides this to 0 at
+# context creation -- a block matcher does not want smoothed edges -- and
+# restores it, so this value now only reaches the renderers that ask for it
+# (guide_walk_sheet.py, export_scene.py).
+OFFSAMPLES = 8
 
 
 def apply_alpine_look(model, terrain_size_meters=None, snow=True):
@@ -247,10 +271,3 @@ def apply_render_flags(renderer, shadows=True):
         flags[int(flag)] = 1 if value else 0
         enabled[name] = bool(value)
     return enabled
-
-
-def shadows_affordable(width_pixels, forced=None):
-    """Shadows are kept below the measured width where they stop being free."""
-    if forced is not None:
-        return bool(forced)
-    return int(width_pixels) <= SHADOW_MAXIMUM_WIDTH_PIXELS

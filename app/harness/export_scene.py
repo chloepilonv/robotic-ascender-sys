@@ -3,13 +3,15 @@
     ../.venv_everest/bin/python -m app.harness.export_scene --world lhotse_B
     ../.venv_everest/bin/python -m app.harness.export_scene --all
 
-WHY THIS EXISTS. `app/web/index.html` shows a JPEG per control tick: MuJoCo
-renders on the laptop and the picture is pushed down the socket. That caps the
-look at whatever MuJoCo's fixed-function renderer does and at whatever the
-encoder can carry. `app/web/render3d.html` instead draws the scene in WebGL,
-which needs the GEOMETRY once (this file) and then only the POSES per tick
-(`app/harness/pose_stream.py`). Nothing here touches physics: it reads a
-compiled `MjModel` and writes a file.
+WHY THIS EXISTS. The harness used to push a JPEG per control tick: MuJoCo
+rendered a chase camera on the laptop and the picture went down the socket. That
+capped the look at whatever MuJoCo's fixed-function renderer does and at
+whatever the encoder could carry, for 10-20 ms of a 20 ms control tick.
+`app/web/render3d.html` draws the scene in WebGL instead, which needs the
+GEOMETRY once (this file) and then only the POSES per tick
+(`app/harness/pose_stream.py`) -- and since the 2-D page was retired
+(2026-08-30) that is the ONLY way anything is drawn. Nothing here touches
+physics: it reads a compiled `MjModel` and writes a file.
 
 WHAT COMES OUT
     app/harness/scene_assets/<world>.glb    one node per MuJoCo BODY, named by

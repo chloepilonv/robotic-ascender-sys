@@ -2,9 +2,9 @@
 // is the same whichever world is loaded.
 //
 // `app/web/render3d.html` owns the sidebar and the websocket; it hands this
-// class poses and wind and asks it to draw. The split is deliberate: the page's
-// controls are a straight copy of app/web/index.html's and must stay diffable
-// against it, while none of this exists there at all.
+// class poses and wind and asks it to draw. The split is historical and worth
+// keeping: the page's controls were ported wholesale from the retired 2-D page,
+// while none of this file has any counterpart there.
 import * as THREE from './vendor/three.module.js';
 import { EffectComposer } from './vendor/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from './vendor/addons/postprocessing/RenderPass.js';

@@ -16,11 +16,11 @@ From the repo root, in the `everest` env (the one that runs the trainer/viewer �
 it already has `playground==0.2.0`, `mujoco==3.12.0`, `brax==0.14.2`):
 
     pip install websockets pillow          # the only extras the harness needs
-    # optional, for episode.mp4: brew install ffmpeg / apt install ffmpeg
 
     python -m app.harness.runtime --live --world lhotse_B
 
-then open **http://localhost:8766/app/web/index.html**. Click the view to take
+then open **http://localhost:8766/** (the same page is also at
+`/app/web/render3d.html`). Click the view to take
 the pointer, hold **W** to walk/climb, move the mouse to look around, **R**
 resets, **Esc** pauses. Map selector, twelve **ClimbScene** worlds then four **legacy** ones:
 
@@ -48,12 +48,11 @@ trainer is still on the old `climb_env` — so the state message keeps saying
 `wind_in_training: false` and `terrain_in_training: false`.
 
 Every live session is recorded under `app/harness/episodes/<stamp>_<world>/`
-(frames.npz, hud.json, header.json, episode.mp4) and playable from the page's
-Replay tab.
+(frames.npz, hud.json, header.json) — the numbers, not a video.
 
 Other entry points:
 
-    python -m app.harness.runtime --world lhotse_B --duration 10 --hold-w --no-render  # headless case
+    python -m app.harness.runtime --world lhotse_B --duration 10 --hold-w          # headless case
     python -m app.harness.climb_worlds --world lhotse_B                                  # parity gates + fingerprint
     python -m app.harness.runtime --live --policy path/to/policy.npz                    # a trained policy (mels npz layout)
     python -m app.harness.test_parity                                                   # obs + rollout parity vs the JAX env
@@ -61,19 +60,28 @@ Other entry points:
 `--port` moves the websocket (HTTP is port+1); `--command-speed` sets the W
 forward command (default 0.5 m/s).
 
-`--pose-stream` (ON by default, `--no-pose-stream` to turn it off) adds a second
-binary message beside the JPEG: every body's world pose once per control tick,
-946 bytes, ~47 kB/s. It is what **http://localhost:8766/app/web/render3d.html**
-runs on -- a WebGL third-person view that draws the scene in the browser instead
-of showing a picture of it, so it gets a game camera, soft shadows, a snow/ice
-terrain shader, blown snow and footprints. It needs the world exported once:
+### The page draws the scene; the harness sends numbers
+
+`--pose-stream` (ON by default, `--no-pose-stream` to turn it off) broadcasts
+every body's world pose once per control tick — ~1.1 kB, ~56 kB/s, a measured
+20 us of a 20 ms tick. **That is what the page draws the world from**, so with
+it off you get telemetry and an empty stage. It needs the world exported once:
 
     python -m app.harness.export_scene --world lhotse_B      # or --all
 
 writes `app/harness/scene_assets/<world>.glb` plus a JSON sidecar (gitignored;
-lhotse_B is 18.5 MB). The map selector on that page only offers worlds that have
-been exported. The JPEG stream, `episode.mp4` and `app/web/index.html` are
-unaffected either way -- the pose hook costs a measured 20 us of a 20 ms tick.
+lhotse_B is 18.5 MB). The map selector only offers worlds that have been
+exported.
+
+**RETIRED 2026-08-30 (user's ruling: "we're only gonna do 3D now").** There used
+to be a second page, `app/web/index.html`, fed by an offscreen chase-camera
+render the harness did every control tick and pushed down the socket as a raw
+JPEG — plus an `episode.mp4` muxed from those frames. All of it is deleted: the
+render, the JPEG frame, the browser-viewport negotiation, the video, and the
+footprint stamping into the ground texture (the 3-D page draws its own decals
+from the `foot_steps` events). That render was 10–20 ms of a 20 ms budget. The
+one image still on the wire is `EYE0`, the robot's own left eye — a sensor
+readout, not a view of the world.
 
 
 ## Follow the guide (`app/harness/guide.py`)
@@ -140,7 +148,7 @@ the detection box drawn on it. Episodes record `guide_mode` (0 WAIT, 1 FOLLOW,
 `guide_human_progress_meters`.
 
     python -m app.harness.test_guide     # colour window, stereo, two rollouts, physics parity
-    python -m app.harness.runtime --world flat_0 --duration 20 --hold-w --guide --no-render
+    python -m app.harness.runtime --world flat_0 --duration 20 --hold-w --guide
 
 **Measured, and worth knowing before you demo it.** The colour window keeps
 **97.7%** of her jacket's pixels and **0.0%** of every other material in the
@@ -263,7 +271,7 @@ of detections at 6 m/s, **0%** at 12 and 20, and the mode follows.
 
     python -m app.harness.test_storm      # the tables above + the eye contact sheet
     python -m app.harness.runtime --world flat_0 --duration 10 --hold-w --guide \
-        --storm --wind 20 0 --no-render
+        --storm --wind 20 0
 
 **None of it is physics.** The fog is arithmetic on two rendered arrays and
 nothing writes to the model or to `MjData`. `test_storm` section H is a
@@ -289,18 +297,21 @@ a texture, a material and the terrain geom's `matid`, none of which the solver
 reads. Proven, not asserted: two 6 s same-seed runs with and without
 `--no-snow` come back **bit-identical across all 39 recorded arrays** (PARITY.md).
 
-The same landing detection does three jobs, which is why they cannot disagree:
-it stamps the print, it increments `step_count`, and it puts a `foot_steps`
-event on the websocket -- `[{"foot": "left"|"right", "impact_speed_mps": f}]`,
-empty on almost every tick -- so the page can play one snow crunch per step at a
-volume set by how hard the foot came down. A landing is a foot gaining terrain
-contact after at least two ticks in the air; without that debounce a scuffing
-foot machine-guns. `hud.json` records `step_count`, so a replay counts the same
-steps the live session heard.
+The same landing detection does two jobs, which is why they cannot disagree: it
+increments `step_count`, and it puts a `foot_steps` event on the websocket --
+`[{"foot": "left"|"right", "impact_speed_mps": f}]`, empty on almost every tick
+-- so the page can play one snow crunch per step at a volume set by how hard the
+foot came down, and drop its footprint decal in the same instant. A landing is a
+foot gaining terrain contact after at least two ticks in the air; without that
+debounce a scuffing foot machine-guns. `hud.json` records `step_count`, so a
+recorded episode counts the same steps the live session heard.
 
-Costs, measured: painting 0.04 ms per control tick, the fade 0.002 ms, the GPU
-upload 0.75 ms (6 Hz, a 4.6 MB texture, pushed to both the main and the eye
-contexts). `--no-snow` turns the texture and the prints off; the step events
+Cost: reading the solver's contact list, microseconds a tick. **Until
+2026-08-30 this also STAMPED the print into the ground texture and pushed the
+whole 4.6 MB texture back to every GL context** (0.04 ms to paint, 0.002 ms to
+fade, 0.75 ms per upload at 6 Hz to the main and eye contexts) -- because the
+server-rendered JPEG was the only picture. The 3-D page draws its own decals, so
+all of that is deleted. `--no-snow` still turns the texture off; the step events
 stay, because the sound does not depend on the picture.
 
 ## The ClimbScene worlds

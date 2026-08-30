@@ -10,13 +10,15 @@ Writes, per episode folder:
                command/wind change log, outcome, n_ticks.
   frames.npz   every per-tick array the runtime appended, float32, stacked.
   hud.json     the subset the web player's overlay reads, as plain lists.
-  episode.mp4  the per-tick JPEGs muxed at the control rate (needs ffmpeg;
-               skipped with a printed warning if ffmpeg is missing).
+
+NO VIDEO. Until the 2-D page was retired this also held every per-tick JPEG in
+RAM and muxed an `episode.mp4` out of them with ffmpeg. The chase-camera render
+that produced those JPEGs is gone (`app/web/render3d.html` draws the scene
+itself from the pose stream), so there are no frames to mux, and the ~2 MB/s of
+RAM they cost went with them. The numeric rows are unchanged.
 """
 import json
 import os
-import shutil
-import subprocess
 
 import numpy as np
 
@@ -42,9 +44,9 @@ HUD_FIELD_NAMES = [
     "guide_mode", "guide_distance_meters", "guide_true_distance_meters",
     "guide_human_progress_meters",
     # The running number of foot landings (app/harness/snow.py's touchdown
-    # detector -- the same one that stamps footprints and fires the page's
-    # `foot_steps` sound events, so a replay's step count is the same count the
-    # live session heard).
+    # detector -- the same one that fires the page's `foot_steps` sound and
+    # decal events, so a replay's step count is the same count the live session
+    # heard).
     "step_count",
 ]
 
@@ -59,7 +61,6 @@ class Recorder:
         # readout is a NAMED MAP, not a number, so it cannot ride in
         # frames.npz's stacked float arrays and gets its own list.
         self.bms_rows = []
-        self.jpeg_frames = []
         os.makedirs(output_directory, exist_ok=True)
 
     def append(self, **fields) -> None:
@@ -69,9 +70,6 @@ class Recorder:
     def append_bms(self, value) -> None:
         """One battery reading per control tick (the last of that tick), or None."""
         self.bms_rows.append(value)
-
-    def append_frame(self, jpeg_bytes: bytes) -> None:
-        self.jpeg_frames.append(jpeg_bytes)
 
     def finalize(self, outcome: dict) -> str:
         if not self.rows:
@@ -93,27 +91,9 @@ class Recorder:
         hud["control_hz"] = self.control_hz
         with open(os.path.join(self.output_directory, "hud.json"), "w") as handle:
             json.dump(hud, handle, default=_jsonable)
-        if self.jpeg_frames:
-            self._write_video()
         print(f"[recorder] {self.output_directory}: {self.header['n_ticks']} ticks, "
-              f"{len(self.jpeg_frames)} frames, outcome={outcome}", flush=True)
+              f"outcome={outcome}", flush=True)
         return self.output_directory
-
-    def _write_video(self) -> None:
-        if shutil.which("ffmpeg") is None:
-            print("[recorder] ffmpeg not found: episode.mp4 skipped "
-                  "(frames.npz and hud.json are still complete)", flush=True)
-            return
-        path = os.path.join(self.output_directory, "episode.mp4")
-        process = subprocess.Popen(
-            ["ffmpeg", "-y", "-loglevel", "error", "-f", "image2pipe",
-             "-vcodec", "mjpeg", "-framerate", str(self.control_hz), "-i", "-",
-             "-c:v", "libx264", "-pix_fmt", "yuv420p", path],
-            stdin=subprocess.PIPE)
-        for frame in self.jpeg_frames:
-            process.stdin.write(frame)
-        process.stdin.close()
-        process.wait()
 
 
 def _jsonable(value):

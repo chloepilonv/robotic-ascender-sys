@@ -1,19 +1,20 @@
 // The third-person camera. Everything a walking simulator does and a MuJoCo
 // orbit does not.
 //
-// The runtime's own `ChaseCamera` (app/harness/runtime.py) is a rigid orbit: it
-// sits at an azimuth/elevation around the pelvis and snaps there instantly. That
-// is fine for a recorded mp4 and reads as a tripod when you are driving. This is
-// the game version -- a spring arm that lags, frames the robot off-centre, gets
-// out of the way of the mountain, leans into the slope, looks where the robot is
-// going, and drifts back behind it when you stop steering.
+// The harness used to own a `ChaseCamera` of its own: a rigid orbit that sat at
+// an azimuth/elevation around the pelvis and snapped there instantly. That was
+// fine for a recorded mp4 and read as a tripod when you were driving, and it
+// was deleted with the 2-D page. This is the game version -- a spring arm that
+// lags, frames the robot off-centre, gets out of the way of the mountain, leans
+// into the slope, looks where the robot is going, and drifts back behind it
+// when you stop steering. It is now the only chase camera there is.
 //
 // IT STILL SPEAKS THE SERVER'S LANGUAGE. `azimuthDegrees` / `elevationDegrees`
-// are exactly the two numbers app/web/index.html sends, in exactly MuJoCo's
-// convention (azimuth is where the camera SITS, elevation is negative when it is
-// above looking down), and they go up the socket unchanged. So the robot still
-// steers toward the camera heading, the guide follower still agrees with the
-// picture, and the recorded video still frames what the driver was looking at.
+// are in exactly MuJoCo's convention (azimuth is where the camera SITS,
+// elevation is negative when it is above looking down) and go up the socket
+// unchanged. The harness reads the AZIMUTH -- that is the steering input, so
+// the robot turns toward wherever this camera is looking; it ignores the
+// elevation, having no render of its own left to aim.
 //
 //   offset from the pelvis = distance * (cos(el)cos(az), cos(el)sin(az), -sin(el))
 //

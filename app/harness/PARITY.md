@@ -32,8 +32,8 @@ cd g1-himalayas
 ../.venv_everest/bin/python app/harness/team_env.py        # prints + writes fingerprint.json
 ../.venv_everest/bin/python -m app.harness.test_parity     # (a) and (b) below
 ../.venv_everest/bin/python rl/tests/test_climb_env.py     # their own baseline
-../.venv_everest/bin/python -m app.harness.runtime --world climb_30 --duration 10 --hold-w --keep-going --no-render
-../.venv_everest/bin/python -m app.harness.runtime --live --world free_0   # http://localhost:8766/app/web/index.html
+../.venv_everest/bin/python -m app.harness.runtime --world climb_30 --duration 10 --hold-w --keep-going
+../.venv_everest/bin/python -m app.harness.runtime --live --world free_0   # http://localhost:8766/
 ```
 
 Environment: `/Users/dengjingxi/Documents/code/himalaya_hack/.venv_everest`,
@@ -112,8 +112,9 @@ corrects an earlier "~25 s per world" figure in this file, which was a
 **cold-start artifact**: the first run in a fresh venv also clones
 `mujoco_menagerie` and compiles bytecode. The sim loop is still what blocks
 during a build, so it broadcasts one state carrying `"loading": true` first, and
-`app/web/index.html`'s toast timeout was raised from 8 s to 60 s — headroom for
-a cold start, not a measured wait.
+the page's toast timeout was raised from 8 s to 60 s — headroom for a cold
+start, not a measured wait. (Measured against `app/web/index.html`, which was
+the front end at the time; `app/web/render3d.html` carries the same 60 s.)
 
 ## Test (d) — the four worlds with mels, W held (lin_vel_x 0.5), 10 s
 
@@ -399,11 +400,18 @@ rakes. Measured saturation (pixels > 250) is **0.0%**.
 | alpine, shadows OFF | 9.2 | 109.0 |
 
 Shadows cost **5.7 ms/frame** against a 20 ms control tick, and the alpine look
-is *faster* than stock because fog culls distant geometry. So shadows stay ON
-at every size we render — the "off above 1280 wide" contingency was not needed,
-and `graphics.shadows_affordable` keeps that rule available for a slower
-machine. `--no-shadows` and `--plain-graphics` are the escape hatches.
-**Live at 1920×1080 with shadows: realtime factor 1.00.**
+is *faster* than stock because fog culls distant geometry. So shadows stayed ON
+at every size we rendered — the "off above 1280 wide" contingency was not
+needed. **Live at 1920×1080 with shadows: realtime factor 1.00.**
+
+> **SUPERSEDED 2026-08-30 — the render these numbers measure no longer exists.**
+> The third-person render, `--no-shadows` and `graphics.shadows_affordable` went
+> with the 2-D page; `app/web/render3d.html` draws its own shadows in three.js.
+> The measurements stay because they are why the eye cameras render with
+> `shadows=False`: the 4096² shadow pass costs the same whatever the output
+> size, so it is the most expensive thing in a 320×240 eye render and it buys a
+> block matcher nothing. `--plain-graphics` is still live, and is no longer
+> cosmetic — the eyes render through the same model.
 
 No noise texture on the snow, deliberately: a texture needs a compile-time
 asset for the same reason a skybox does, and the heightfield's own 12 cm

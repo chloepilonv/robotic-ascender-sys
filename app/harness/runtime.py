@@ -1,7 +1,17 @@
 """The interactive walker harness, running the TEAM's climbing environment.
 
   ../.venv_everest/bin/python -m app.harness.runtime --live
-  ../.venv_everest/bin/python -m app.harness.runtime --duration 15 --hold-w --no-render
+  ../.venv_everest/bin/python -m app.harness.runtime --duration 15 --hold-w
+
+THE ONLY FRONT END IS app/web/render3d.html (user's ruling, 2026-08-30). This
+loop SIMULATES and BROADCASTS NUMBERS; it renders no picture of the scene at
+all. What goes out is the `POS0` pose stream (`pose_stream.py`, ~1.1 kB a tick),
+the state JSON, and -- while the guide is on -- the `EYE0` JPEG of the robot's
+own left eye, which is a SENSOR readout and not a view of the world. The
+third-person picture is drawn in the browser in three.js from the poses. What
+was deleted with the 2-D page: the per-tick offscreen chase-camera render, its
+raw-JPEG websocket frame, the browser-viewport resize negotiation and
+`episode.mp4`. That render cost 10-20 ms of a 20 ms control tick.
 
 Two layers, kept strictly apart:
 
@@ -30,7 +40,7 @@ OUR APP LAYER (the demo; none of it exists on their side)
                          state message says so with `wind_in_training: false`.
     friction slider   -> foot geom mu, live. Training pins it at
                          climb_config.foot_friction (0.8).
-    reset / pause / recorder / renderer / websocket.
+    reset / pause / recorder / pose stream / websocket.
 
 Rates. Their model compiles at a 2 ms timestep, so physics is 500 Hz and one
 control tick is 10 substeps at 50 Hz -- the ctrl_dt 0.02 / sim_dt 0.002 pair
@@ -38,7 +48,6 @@ their config declares. Live mode paces itself against the wall clock and prints
 a realtime factor; a `--duration` run goes as fast as it can.
 """
 import argparse
-import io
 import math
 import os
 import sys
@@ -52,9 +61,9 @@ _REPOSITORY_ROOT = os.path.dirname(
 if _REPOSITORY_ROOT not in sys.path:
     sys.path.insert(0, _REPOSITORY_ROOT)
 
-import mujoco  # noqa: E402
-from PIL import Image  # noqa: E402
-
+# `import mujoco` used to live here for `MjvCamera` and `Renderer`; with the
+# chase render gone this file touches no MuJoCo type directly. The modules it
+# imports below still do.
 from app.harness import ratchet as ratchet_module  # noqa: E402
 from app.harness.playground_policy import (  # noqa: E402
     GaitPhase, MelsPolicy, PlaygroundObservation, TerminationCheck,
@@ -73,46 +82,15 @@ sys.path.insert(0, os.path.join(  # human-safety/ is a program, not a package
 from human_gate import (  # noqa: E402
     HumanGate, HumanWorld, VirtualFrustumDetector)
 
-RENDER_WIDTH, RENDER_HEIGHT = 960, 540    # 16:9 -- the page fills the viewport with it
-RENDER_MAXIMUM_WIDTH, RENDER_MAXIMUM_HEIGHT = 1920, 1080   # native-resolution cap (F = fullscreen in the page)
+# THE HARNESS RENDERS NOTHING. The one offscreen renderer left in the process
+# belongs to the robot's eye cameras (`guide.StereoEyes`, 320x240), and it makes
+# and sizes its own. What used to live here -- RENDER_WIDTH/HEIGHT,
+# RENDER_MAXIMUM_*, `clamp_render_size` and `make_renderer` -- served the
+# third-person JPEG the retired 2-D page displayed.
 
-
-def clamp_render_size(viewport) -> tuple:
-    """Browser-reported viewport (css px * devicePixelRatio) -> (width, height) we will render.
-    Even numbers (JPEG/mp4 friendly), capped so a 5K display cannot drag the tick below realtime."""
-    try:
-        width, height = int(viewport["width"]), int(viewport["height"])
-    except (TypeError, KeyError, ValueError):
-        return RENDER_WIDTH, RENDER_HEIGHT
-    if width < 320 or height < 180:
-        return RENDER_WIDTH, RENDER_HEIGHT
-    scale = min(1.0, RENDER_MAXIMUM_WIDTH / width, RENDER_MAXIMUM_HEIGHT / height)
-    return (int(width * scale) // 2) * 2, (int(height * scale) // 2) * 2
-
-
-def make_renderer(model, width: int, height: int, alpine=True, shadows=None):
-    """The offscreen framebuffer is sized from model.vis.global_ at context creation;
-    raise it to the cap once so any requested size up to 1920x1080 fits.
-
-    Shadows measured at 1920x1080 on this machine: 14.9 ms/frame with, 9.2 ms
-    without -- 5.7 ms, against a 20 ms control tick. They stay ON at every size
-    we render, and `--no-shadows` is the escape hatch if a slower machine needs
-    it. (`graphics.shadows_affordable` keeps the width rule for that case.)"""
-    model.vis.global_.offwidth = max(int(model.vis.global_.offwidth), RENDER_MAXIMUM_WIDTH)
-    model.vis.global_.offheight = max(int(model.vis.global_.offheight), RENDER_MAXIMUM_HEIGHT)
-    renderer = mujoco.Renderer(model, height, width)
-    if alpine:
-        flags = graphics_module.apply_render_flags(
-            renderer, shadows=True if shadows is None else shadows)
-        print(f"[graphics] render flags {flags} at {width}x{height}", flush=True)
-    return renderer
-JPEG_QUALITY = 80
-
-# Third-person orbit, matching the browser's defaults so live and recorded
-# views agree.
-CAMERA_DISTANCE_METERS = 3.0
+# The browser's third-person orbit still steers the robot, so its zero has to
+# agree with ours even though nothing here draws it.
 CAMERA_AZIMUTH_DEGREES = 180.0
-CAMERA_ELEVATION_DEGREES = -15.0
 # The protocol declares azimuth 180 to mean "behind the robot, looking uphill".
 # MuJoCo's own azimuth 180 puts the camera UPHILL looking back down at the
 # robot's face, so the browser's number is rotated half a turn before it
@@ -135,11 +113,6 @@ CLIMB_COMMAND_METERS_PER_SECOND = 0.5
 
 FALL_LINGER_SECONDS = 1.0     # timed runs end this long after the fall
 PAUSED_BROADCAST_HZ = 5.0     # heartbeat while the browser has let go
-# A live session has no end, and the recorder holds every JPEG in RAM to mux at
-# the end: at 50 Hz / ~40 kB a frame that is ~2 MB per second, i.e. 7 GB an
-# hour. Cap the VIDEO (the per-tick numeric rows are ~1 kB/s and stay
-# uncapped), and say so on stdout when the cap bites.
-LIVE_MAXIMUM_RECORDED_FRAMES = 6000   # 2 minutes of episode.mp4 at 50 Hz
 GAIT_FREQUENCY_HZ = 1.375     # midpoint of their reset draw U(1.25, 1.5)
 # rl/environment/wind_env.py:28-36 -- the ONLY place wind constants come from.
 # Imported at load time rather than restated; these are the fallback if the
@@ -205,26 +178,6 @@ def root_yaw_radians(quaternion_wxyz) -> float:
     """Yaw about world +z from a w,x,y,z quaternion (MuJoCo's qpos ordering)."""
     w, x, y, z = [float(v) for v in quaternion_wxyz]
     return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
-
-
-class ChaseCamera:
-    """Third-person orbit around the pelvis. Azimuth/elevation from the browser."""
-
-    def __init__(self):
-        self.camera = mujoco.MjvCamera()
-        self.camera.type = mujoco.mjtCamera.mjCAMERA_FREE
-        self.camera.distance = CAMERA_DISTANCE_METERS
-        self.camera.azimuth = CAMERA_AZIMUTH_DEGREES + BROWSER_AZIMUTH_OFFSET_DEGREES
-        self.camera.elevation = CAMERA_ELEVATION_DEGREES
-
-    def aim(self, lookat_world, azimuth_degrees=None, elevation_degrees=None):
-        """azimuth/elevation are the BROWSER's numbers, or None to hold."""
-        self.camera.lookat[:] = lookat_world
-        if azimuth_degrees is not None:
-            self.camera.azimuth = float(azimuth_degrees) + BROWSER_AZIMUTH_OFFSET_DEGREES
-        if elevation_degrees is not None:
-            self.camera.elevation = float(elevation_degrees)
-        return self.camera
 
 
 class HeadingController:
@@ -294,12 +247,6 @@ class HeadingController:
         return np.array([forward, 0.0, yaw_rate])
 
 
-def encode_jpeg(pixels: np.ndarray) -> bytes:
-    buffer = io.BytesIO()
-    Image.fromarray(pixels).save(buffer, "JPEG", quality=JPEG_QUALITY)
-    return buffer.getvalue()
-
-
 def make_header(episode, meta, arguments) -> dict:
     fingerprint_summary = {
         "kind": meta.get("kind", "legacy_climb_env"),
@@ -348,7 +295,7 @@ def make_header(episode, meta, arguments) -> dict:
     }
 
 
-def episode_outcome(episode, realtime_factor: float, frames_rendered: int) -> dict:
+def episode_outcome(episode, realtime_factor: float) -> dict:
     return {
         "fell": episode.fell_at_seconds is not None,
         "fell_at_seconds": episode.fell_at_seconds,
@@ -367,7 +314,6 @@ def episode_outcome(episode, realtime_factor: float, frames_rendered: int) -> di
         "rope_enabled": episode.rope_enabled,
         "slope_degrees": episode.slope_degrees,
         "realtime_factor": realtime_factor,
-        "frames_rendered": frames_rendered,
     }
 
 
@@ -387,7 +333,7 @@ def run(arguments) -> str:
         """Tell the page why the picture is about to freeze.
 
         A world's first selection costs a full G1ClimbAscender.__init__, and the
-        sim loop is what does it, so no frames go out while it runs. Measured
+        sim loop is what does it, so no poses go out while it runs. Measured
         warm that is ~1.6 s for the first world and ~0.2 s for the second
         distinct model -- brief, but a frozen picture with no explanation is
         still worse than a labelled one, and a cold venv is slower. Push one
@@ -399,10 +345,7 @@ def run(arguments) -> str:
         if latest_state[0] is not None:
             server.broadcast(dict(latest_state[0], paused=True, loading=True,
                                   loading_world=name))
-        if latest_jpeg[0] is not None:
-            server.broadcast(latest_jpeg[0])
 
-    latest_jpeg = [None]
     latest_state = [None]
 
     def open_world(name):
@@ -475,8 +418,9 @@ def run(arguments) -> str:
     # gets a pose broadcaster on its physics_step_hooks, and this file keeps one
     # hunk. Arity-agnostic on purpose (`open_world` grew a fourth return value
     # while this was being written); it only ever touches element 0.
-    # Costs tens of microseconds of a 20 ms tick, prints that measurement
-    # itself, and is invisible to app/web/index.html, which reads only JPEGs.
+    # Costs tens of microseconds of a 20 ms tick and prints that measurement
+    # itself. Since the 2-D page was retired this IS the picture: with the pose
+    # stream off, a browser gets telemetry and no scene.
     if arguments.pose_stream and server is not None:
         from app.harness import pose_stream as pose_stream_module
         _open_world_without_poses = open_world
@@ -547,30 +491,23 @@ def run(arguments) -> str:
 
     guide_system, guide_gate = make_guide(scene, model, episode)
 
-    # SNOW AND FOOTPRINTS (app/harness/snow.py). Visual only: the texture is
-    # painted, the heightfield never is. The touchdown detector that stamps the
-    # prints is the SAME one that counts steps and feeds the page's `foot_steps`
-    # events, so a sound, a print and the counter can never disagree about what
-    # a step is -- and it runs even when the snow texture is off, because the
-    # audio does not depend on the picture.
-    def make_snow(current_scene, current_model, current_meta):
-        ground = (snow_module.SnowGround(current_scene, seed=arguments.seed,
-                                         verbose=False)
-                  if current_scene is not None else None)
-        if ground is not None and not ground.available:
-            ground = None
+    # FOOTSTEPS (app/harness/snow.py). The detector reads the solver's own
+    # contacts and reports each landing; that one event counts a step and
+    # becomes a `foot_steps` message, so the crunch the page plays, the decal it
+    # drops and the counter can never disagree about what a step is. The snow
+    # TEXTURE was attached to the spec at world build above; the prints that
+    # used to be stamped into it are the 3-D page's decals now.
+    def make_snow(current_model, current_meta):
         detector = None
         if current_meta.get("foot_geom_ids") is not None and \
                 "terrain_geom_id" in current_meta:
             detector = snow_module.TouchdownDetector(
                 current_model, current_meta["foot_geom_ids"],
                 current_meta["terrain_geom_id"])
-            print(f"[snow] touchdowns from {detector.describe()};"
-                  f" footprints {'ON' if ground is not None else 'OFF'}",
-                  flush=True)
-        return ground, detector
+            print(f"[snow] touchdowns from {detector.describe()}", flush=True)
+        return detector
 
-    snow_ground, touchdowns = make_snow(scene, model, meta)
+    touchdowns = make_snow(model, meta)
     if server is not None:
         server.knobs["guide"] = 1.0 if arguments.guide else 0.0
     print(f"[guide] {'available' if guide_system.available else 'NOT available'}"
@@ -586,16 +523,7 @@ def run(arguments) -> str:
           f" ({', '.join(f'{s:.0f} m/s -> {storm_module.visibility_meters(s):.1f} m' for s in (6, 12, 20))})",
           flush=True)
 
-    renderer = None
-    render_size = (RENDER_WIDTH, RENDER_HEIGHT)   # follows the browser viewport in live mode
-    camera = ChaseCamera()
     heading = HeadingController(arguments.command_speed)
-    rendered_model = None
-    if not arguments.no_render:
-        renderer = make_renderer(model, *render_size,
-                                 alpine=not arguments.plain_graphics,
-                                 shadows=not arguments.no_shadows)
-        rendered_model = model
 
     episodes_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "episodes")
     directories_opened = []
@@ -625,7 +553,6 @@ def run(arguments) -> str:
     last_logged_command = last_logged_wind = None
     wall_start = time.time()
     realtime_factor = 0.0
-    frames_rendered = 0
     applied_friction = meta["foot_friction"]
 
     while True:
@@ -637,7 +564,6 @@ def run(arguments) -> str:
                 and time_seconds >= episode.fell_at_seconds + FALL_LINGER_SECONDS):
             break
 
-        azimuth_degrees = elevation_degrees = None
         guide_enabled = bool(arguments.guide)
         walking = bool(arguments.hold_w)
         backing = False
@@ -649,10 +575,11 @@ def run(arguments) -> str:
             # human: the robot's own command still comes from the follower.
             backing = "s" in keys
             guide_enabled = bool(server.knobs.get("guide", 0.0))
+            # Only the AZIMUTH is read: it is the steering input. Elevation
+            # moves the browser's own camera and the server no longer draws
+            # anything, so the page still sends it and the harness ignores it.
             browser_camera = latest.get("camera") or {}
-            azimuth_degrees = browser_camera.get("azimuth_degrees")
-            elevation_degrees = browser_camera.get("elevation_degrees")
-            heading.set_browser_azimuth(azimuth_degrees)
+            heading.set_browser_azimuth(browser_camera.get("azimuth_degrees"))
             # A = turn left (positive yaw), D = turn right, both down cancel.
             turn = ((MANUAL_YAW_RATE_RADIANS_PER_SECOND if "a" in keys else 0.0)
                     - (MANUAL_YAW_RATE_RADIANS_PER_SECOND if "d" in keys else 0.0))
@@ -661,13 +588,12 @@ def run(arguments) -> str:
                 episode.data.qpos[3:7], walking="w" in keys,
                 manual_yaw_rate=turn if steering else None)
             if server.paused:
-                # Freeze: no physics, no policy, no recorded tick. Keep the last
-                # picture and a heartbeat flowing so the page stays live and
-                # knows why nothing moves. The pacing clock is rebased every
-                # frame, so unpausing resumes at realtime instead of firing a
-                # catch-up burst of ticks for the paused wall seconds.
-                if latest_jpeg[0] is not None:
-                    server.broadcast(latest_jpeg[0])
+                # Freeze: no physics, no policy, no recorded tick. Keep a
+                # heartbeat flowing so the page stays live and knows why nothing
+                # moves -- it goes on drawing the last poses it has. The pacing
+                # clock is rebased every frame, so unpausing resumes at realtime
+                # instead of firing a catch-up burst of ticks for the paused
+                # wall seconds.
                 if latest_state[0] is not None:
                     server.broadcast(dict(latest_state[0], paused=True))
                 wall_start = time.time() - episode.tick / episode.control_hz
@@ -701,8 +627,7 @@ def run(arguments) -> str:
                     # world at its own spawn in a fresh episode folder. Building
                     # a world for the first time blocks this loop (~1.6 s warm)
                     # -- `announce_build` warns the page first.
-                    recorder.finalize(episode_outcome(
-                        episode, realtime_factor, frames_rendered))
+                    recorder.finalize(episode_outcome(episode, realtime_factor))
                     episode, model, meta, scene = open_world(requested)
                     # A new world is a new compiled model, so the eyes' renderer
                     # and every id the guide cached belong to a model that is
@@ -710,17 +635,7 @@ def run(arguments) -> str:
                     # of the new spawn.
                     guide_system.close()
                     guide_system, guide_gate = make_guide(scene, model, episode)
-                    snow_ground, touchdowns = make_snow(scene, model, meta)
-                    if not arguments.no_render and model is not rendered_model:
-                        # The GL context is NOT garbage collected, and it is
-                        # bound to the model it was made for. Two worlds that
-                        # share a model share the renderer; a different model
-                        # needs a new one.
-                        renderer.close()
-                        renderer = make_renderer(model, *render_size,
-                                 alpine=not arguments.plain_graphics,
-                                 shadows=not arguments.no_shadows)
-                        rendered_model = model
+                    touchdowns = make_snow(model, meta)
                     # The friction knob still reads the OLD world; re-sync it or
                     # the next tick paints the previous mu over the new map.
                     applied_friction = meta["foot_friction"]
@@ -729,15 +644,12 @@ def run(arguments) -> str:
                     recorder = Recorder(new_episode_directory(), header,
                                         control_hz=episode.control_hz)
                     last_logged_command = last_logged_wind = None
-                    frames_rendered = 0
                     wall_start = time.time()
                     continue
             if server.reset_requested:
                 server.reset_requested = False
                 episode.reset()
                 guide_system.place(episode.spawn_position_world)
-                if snow_ground is not None:
-                    snow_ground.reset()
                 wall_start = time.time()
                 continue
         else:
@@ -790,23 +702,17 @@ def run(arguments) -> str:
             header["wind"].append({"time_seconds": row["time_seconds"],
                                    "wind_velocity_world_meters_per_second": wind_list})
             last_logged_wind = wind_list
-        # TOUCHDOWNS. Read after the step, from the solver's own contacts:
-        # each landing stamps a print, counts a step, and becomes one
-        # `foot_steps` event on the wire. Painting is ~0.06 ms and only happens
-        # on a landing; the GPU upload is throttled and lives below, next to
-        # the renderers it has to push to.
+        # TOUCHDOWNS. Read after the step, from the solver's own contacts: each
+        # landing counts a step and becomes one `foot_steps` event on the wire,
+        # which the page turns into a crunch and a decal. Reading contacts is
+        # microseconds; the expensive half of this feature -- stamping the print
+        # into the ground texture and re-uploading it to every GL context -- was
+        # deleted with the 2-D page.
         foot_steps = []
         if touchdowns is not None:
             for landing in touchdowns.update(episode.data, 1.0 / episode.control_hz):
                 foot_steps.append({"foot": landing["foot"],
                                    "impact_speed_mps": landing["impact_speed_mps"]})
-                if snow_ground is not None:
-                    snow_ground.paint_footprint(
-                        float(landing["position_world"][0]),
-                        float(landing["position_world"][1]),
-                        landing["yaw_radians"])
-        if snow_ground is not None:
-            snow_ground.decay(row["time_seconds"])
 
         recorder.append(**{k: v for k, v in row.items() if k != "observation"})
         recorder.append(**guide_system.recorded())
@@ -815,52 +721,15 @@ def run(arguments) -> str:
             touchdowns.step_count if touchdowns is not None else 0))
         recorder.append_bms(episode.latest_bms)
 
-        jpeg = None
-        if renderer is not None and server is not None:
-            wanted = clamp_render_size(server.latest_input.get("viewport"))
-            if wanted != render_size:
-                renderer.close()
-                renderer = make_renderer(episode.model, *wanted,
-                                         alpine=not arguments.plain_graphics,
-                                         shadows=not arguments.no_shadows)
-                rendered_model = episode.model
-                render_size = wanted
-                print(f"[runtime] render size -> {wanted[0]}x{wanted[1]}", flush=True)
-        if renderer is not None:
-            renderer.update_scene(episode.data, camera.aim(
-                row["root_position_world"], azimuth_degrees, elevation_degrees))
-            human_world.draw(renderer.scene)
-            jpeg = encode_jpeg(renderer.render())
-            latest_jpeg[0] = jpeg
-            if not arguments.live or frames_rendered < LIVE_MAXIMUM_RECORDED_FRAMES:
-                recorder.append_frame(jpeg)
-                frames_rendered += 1
-                if (arguments.live
-                        and frames_rendered == LIVE_MAXIMUM_RECORDED_FRAMES):
-                    print(f"[recorder] video cap reached"
-                          f" ({LIVE_MAXIMUM_RECORDED_FRAMES} frames ="
-                          f" {LIVE_MAXIMUM_RECORDED_FRAMES / episode.control_hz:.0f} s);"
-                          " numeric rows keep recording, episode.mp4 stops here",
-                          flush=True)
-
-        # One upload per changed texture per context, at most UPLOAD_HZ. Each
-        # renderer holds its own GPU copy, so the eye cameras need it too or the
-        # robot would look at snow with no prints in it.
-        if snow_ground is not None:
-            contexts = [renderer] if renderer is not None else []
-            if guide_system.available and guide_system.eyes.renderer is not None:
-                contexts.append(guide_system.eyes.renderer)
-            snow_ground.upload(contexts, row["time_seconds"])
-
         elapsed = max(time.time() - wall_start, 1e-9)
         realtime_factor = row["time_seconds"] / elapsed
 
         if server is not None:
-            if jpeg is not None:
-                server.broadcast(jpeg)
-            # The left eye, at the vision rate: `EYE0` then a JPEG. The page
-            # tells the two streams apart by the first four bytes -- a main
-            # frame is a raw JPEG and starts 0xFFD8.
+            # The left eye, at the vision rate: the 4 bytes `EYE0` then a JPEG.
+            # This is the ROBOT'S SENSOR, not a view of the scene -- the only
+            # picture the server still encodes, and the page shows it as the
+            # guide card's PiP. Poses are broadcast from the physics hook
+            # (pose_stream.py), which is what the 3-D view is drawn from.
             eye_jpeg = guide_system.take_eye_jpeg()
             if eye_jpeg is not None:
                 server.broadcast(eye_jpeg)
@@ -930,11 +799,9 @@ def run(arguments) -> str:
                   f"/{heading.desired_heading_degrees:6.1f} deg "
                   f" realtime x{realtime_factor:.2f}", flush=True)
 
-    outcome = episode_outcome(episode, realtime_factor, frames_rendered)
+    outcome = episode_outcome(episode, realtime_factor)
     recorder.finalize(outcome)
     guide_system.close()
-    if renderer is not None:
-        renderer.close()
     print("[runtime] SUMMARY " + "  ".join(
         f"{k}={v}" for k, v in outcome.items()), flush=True)
     return recorder.output_directory
@@ -961,23 +828,27 @@ def build_argument_parser() -> argparse.ArgumentParser:
                         help="lin_vel_x commanded while W is held, m/s"
                              " (their training range is [-1, 1])")
     parser.add_argument("--plain-graphics", action="store_true",
-                        help="skip the alpine look (fog/sky/snow/sun). Visual"
-                             " only either way; physics is identical.")
-    parser.add_argument("--no-shadows", action="store_true",
-                        help="render without shadows (saves ~5.7 ms/frame at"
-                             " 1920x1080)")
+                        help="skip the alpine look (fog/sky/snow/sun). NOT"
+                             " cosmetic any more: the robot's eye cameras"
+                             " render through the same model, so this changes"
+                             " what the stereo follower SEES. Physics is"
+                             " identical either way.")
     parser.add_argument("--bms", action="store_true",
                         help="accepted and ignored: the BMS is always on now")
     parser.add_argument("--policy", default=None, help="path to a policy npz")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--randomise-reset-velocity", action="store_true",
                         help="reproduce their reset base-velocity draw U(-0.5, 0.5)")
-    parser.add_argument("--no-render", action="store_true")
+    parser.add_argument("--no-render", action="store_true",
+                        help="accepted and ignored: the harness renders no view"
+                             " of the scene at all now, so there is nothing to"
+                             " turn off. Kept because app/bms_ui/selftest.py"
+                             " passes it.")
     parser.add_argument("--no-snow", action="store_true",
-                        help="skip the procedural snow texture and its"
-                             " footprints. Visual only either way; physics is"
-                             " identical, and PARITY.md has the same-seed diff"
-                             " that says so.")
+                        help="skip the procedural snow texture. Physics is"
+                             " identical either way (PARITY.md has the"
+                             " same-seed diff), but the eye cameras lose the"
+                             " grain their block matcher matches on.")
     parser.add_argument("--guide", action="store_true",
                         help="start with the human guide ON: a guide walks the"
                              " rope route and the robot follows it by stereo"
@@ -1014,8 +885,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pose-stream", dest="pose_stream",
                         action="store_true", default=True,
                         help="broadcast per-body world poses for the WebGL page"
-                             " app/web/render3d.html. ON by default; the JPEG"
-                             " stream is unaffected either way.")
+                             " app/web/render3d.html. ON by default, and now"
+                             " the only thing the page can draw a scene from:"
+                             " with it off a browser gets telemetry and an"
+                             " empty stage.")
     parser.add_argument("--no-pose-stream", dest="pose_stream",
                         action="store_false")
     parser.add_argument("--port", type=int, default=8765)

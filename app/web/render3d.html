@@ -6,20 +6,23 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%2318181b'/%3E%3Cpath d='M3 12.5 8 3.5l5 9' fill='none' stroke='%23fafafa' stroke-width='1.6' stroke-linejoin='round'/%3E%3C/svg%3E">
 <!--
-  THE SAME COCKPIT, A DIFFERENT STAGE.
+  THE COCKPIT. The only front end (user's ruling, 2026-08-30).
 
-  app/web/index.html shows a JPEG per control tick: MuJoCo renders on the laptop
-  and pushes the picture down the socket. This page draws the scene itself in
-  WebGL from a GLB exported once (app/harness/export_scene.py) and a 946-byte
-  pose message per tick (app/harness/pose_stream.py) -- which buys a real game
-  camera, real shadows, real snow, and a look the fixed-function renderer cannot
-  reach.
+  This page draws the scene itself in WebGL from a GLB exported once
+  (app/harness/export_scene.py) and a ~1.1 kB pose message per control tick
+  (app/harness/pose_stream.py) -- which buys a real game camera, real shadows,
+  real snow, and a look MuJoCo's fixed-function renderer cannot reach.
 
-  EVERYTHING ELSE IS DELIBERATELY THE SAME FILE'S CODE. The CSS, the sidebar
-  markup, the telemetry, the wind dial and its sound, the guide card and its eye
-  view, the battery card and the key handling are copied from index.html rather
-  than reinvented, so the two pages stay diffable and a judge who learned one has
-  learned the other. What is new lives in app/web/three/.
+  WHAT THIS REPLACED. app/web/index.html pushed a server-rendered JPEG of a
+  chase camera down the socket, 50 times a second, at 10-20 ms of a 20 ms
+  control tick. Its CSS, sidebar markup, telemetry, wind dial and sound, guide
+  card, battery card and key handling were COPIED here rather than reinvented,
+  which is why so much of this file reads like a port -- it is one. That page
+  and its render are now deleted; nothing on the wire is a picture of the world
+  any more. The one image the server still sends is EYE0, the robot's own left
+  eye, and that is a sensor readout on the guide card.
+
+  What is new lives in app/web/three/.
 -->
 <style>
   /* shadcn-style neutral zinc surface. Colour is reserved for status:
@@ -51,8 +54,8 @@
   body.pointer-locked #canvas { cursor: none; }
   /* the wind-ribbon layer: a transparent canvas over the WebGL view, never in
      the way of a click. The FLAKES are in the 3-D scene now (three/world.js);
-     these long screen-space streaks are the gust language index.html invented
-     and there is no reason to redo them in world space. */
+     these long screen-space streaks are the gust language the old 2-D page
+     invented and there is no reason to redo them in world space. */
   #snow { position: absolute; left: 0; top: 0; display: none; pointer-events: none;
           max-width: none; max-height: none; }
 
@@ -78,12 +81,10 @@
           overflow: auto; display: flex; flex-direction: column; gap: 10px; }
   aside > *, #livePanel > *, .bmsknobs > * { flex: none; }
   .topbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; order: 0; }
-  .segmented { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid var(--border);
-               border-radius: var(--radius); background: var(--card); }
-  .tab { padding: 4px 13px; border-radius: 6px; font-size: 12px; color: var(--ink-2);
-         cursor: pointer; user-select: none; line-height: 1.5; text-decoration: none; display: block; }
-  .tab:hover { color: var(--ink); }
-  .tab.active { background: var(--elevated); color: var(--ink); }
+  /* A `.segmented` 3D | 2D-replay switch used to sit to the left of #status and
+     squeeze it, until the 1P/3P pill made the row wrap. The 2-D page is gone
+     and there is nothing to switch to, so the status row has the whole width
+     and fits on one line again. */
   #status { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--ink-3); }
   #status i { width: 6px; height: 6px; border-radius: 50%; background: var(--bad); flex: none; }
   #status.on i { background: var(--good); }
@@ -232,7 +233,6 @@
 </div>
 <aside>
   <div class="topbar">
-    <div class="segmented"><div class="tab active">3D</div><a class="tab" href="/app/web/index.html">2D · replay</a></div>
     <div id="status"><i></i><span id="statusText">offline</span><span id="realtime"></span><span id="fpsOut"></span><span id="viewMode" title="V">· 3P</span></div>
   </div>
 
@@ -358,11 +358,6 @@ const CAMERA_MESSAGE_INTERVAL_MILLISECONDS = 20;
 const DEFAULT_AZIMUTH_DEGREES = 180;
 const DEFAULT_ELEVATION_DEGREES = -15;
 const WORLD_ARRIVAL_TIMEOUT_MILLISECONDS = 60000;
-// The runtime still renders its own JPEG for episode.mp4 and we do not show it,
-// so ask for a cheap one rather than the stage's real size: a 1920x1080 render
-// costs the sim loop ~15 ms of its 20 ms tick for a picture nobody looks at.
-const RECORDING_VIEWPORT = { width: 960, height: 540 };
-
 const state = {
   socket: null, keys: new Set(), slopeDegrees: null,
   worlds: {}, world: null, pendingWorld: null, loadedWorld: null,
@@ -370,7 +365,7 @@ const state = {
   windNow: null, actuatorNames: null, worldKey: 0,
 };
 
-// ---------- HUD (index.html, verbatim) ----------
+// ---------- HUD (ported verbatim from the retired index.html) ----------
 function paintHud(frame) {
   const climb = Number(frame.rope_travel_meters !== undefined ? frame.rope_travel_meters : (frame.climb_meters || 0));
   const height = Number(frame.height_gained_meters || 0);
@@ -449,7 +444,7 @@ function compassPointName(eastMetersPerSecond, northMetersPerSecond) {
   return COMPASS_POINT_NAMES[(Math.round(((bearing % 360) + 360) % 360 / 22.5) % 16)];
 }
 
-// ---------- BMS (index.html, verbatim) ----------
+// ---------- BMS (ported verbatim from the retired index.html) ----------
 function paintBatteryCard(frame) {
   const bms = frame.bms;
   const card = $('bmsCard');
@@ -515,7 +510,7 @@ function setBatteryRow(rowElementId, valueElementId, text, mutedNote = null) {
   value.appendChild(note);
 }
 
-// ---------- GUIDE (index.html, verbatim) ----------
+// ---------- GUIDE (ported verbatim from the retired index.html) ----------
 const GUIDE_MODE_CLASSES = { FOLLOW: 'follow', WAIT: 'wait', LOST: 'lost', SEARCH: 'search' };
 const GUIDE_MODE_STATUS_WORDS = { FOLLOW: 'following', WAIT: 'waiting', LOST: 'lost',
                                   SEARCH: 'searching' };
@@ -593,7 +588,7 @@ function paintEyeViewVisibility() {
   eyeCanvas.style.display = shown ? 'block' : 'none';
 }
 
-// ---------- WIND RIBBONS (index.html, verbatim; the flakes are in the 3-D scene) ----------
+// ---------- WIND RIBBONS (ported from the retired index.html; the flakes are in the 3-D scene) ----------
 const snowCanvas = $('snow'), snowContext = snowCanvas.getContext('2d');
 const BLIZZARD_METERS_PER_SECOND = 20;
 const WIND_RIBBON_COUNT = 26;
@@ -712,7 +707,7 @@ function syncSnowCanvas() {
 }
 function weatherIsFrozen() { return document.hidden || state.paused; }
 
-// ---------- WIND SOUND (index.html, verbatim) ----------
+// ---------- WIND SOUND (ported verbatim from the retired index.html) ----------
 const WIND_SOUND_SILENT_METERS_PER_SECOND = 1.0;
 const WIND_SOUND_FULL_METERS_PER_SECOND = 20.0;
 const WIND_GAIN_TIME_CONSTANT_SECONDS = 0.15;
@@ -836,9 +831,9 @@ function connect() {
     const bytes = new Uint8Array(event.data);
     if (hasMagic(bytes, POSE_FRAME_MAGIC)) { readPoseFrame(event.data); return; }
     if (hasMagic(bytes, EYE_FRAME_MAGIC)) { paintEyeFrame(event.data.slice(4)); return; }
-    // Anything else is the runtime's own JPEG for episode.mp4. This page draws
-    // the scene itself, so the picture is DROPPED WITHOUT DECODING -- a
-    // createImageBitmap per tick for a frame nobody shows is pure heat.
+    // Nothing else is expected on the wire: the chase-camera JPEG the 2-D page
+    // displayed is gone from the harness. An unknown binary frame is dropped
+    // WITHOUT DECODING rather than guessed at.
   };
 }
 
@@ -864,10 +859,12 @@ function send(payload) { if (state.socket && state.socket.readyState === 1) stat
 let lastCameraSendMilliseconds = 0, cameraSendPending = false;
 function sendInput() {
   lastCameraSendMilliseconds = performance.now(); cameraSendPending = false;
+  // No `viewport`: the harness renders no view of the scene, so there is no
+  // render for the browser to size. The server ignores the field if an older
+  // client still sends it.
   send({ type: 'input', keys: [...state.keys],
          camera: { azimuth_degrees: stage.cameraAzimuthDegrees,
-                   elevation_degrees: stage.cameraElevationDegrees },
-         viewport: RECORDING_VIEWPORT });
+                   elevation_degrees: stage.cameraElevationDegrees } });
 }
 function queueCameraMessage() {
   const now = performance.now();
@@ -878,7 +875,7 @@ function queueCameraMessage() {
              CAMERA_MESSAGE_INTERVAL_MILLISECONDS - (now - lastCameraSendMilliseconds));
 }
 
-// ---------- KEYS, POINTER LOCK (index.html, verbatim in behaviour) ----------
+// ---------- KEYS, POINTER LOCK (same behaviour as the retired index.html) ----------
 const HELD_KEY_KEYCAP_IDS = { w: 'climbKey', s: 'backKey', a: 'turnLeftKey', d: 'turnRightKey' };
 let climbHeldByPointer = false;
 function setHeldKey(name, down) {
@@ -969,7 +966,7 @@ function setViewMode(firstPerson) {
 }
 $('viewMode').addEventListener('click', () => setViewMode(stage.toggleFirstPerson()));
 
-// ---------- KNOBS (index.html, verbatim) ----------
+// ---------- KNOBS (ported verbatim from the retired index.html) ----------
 function paintSliderFill(slider) {
   const minimum = Number(slider.min), maximum = Number(slider.max);
   const share = maximum > minimum ? (Number(slider.value) - minimum) / (maximum - minimum) : 0;
@@ -1053,8 +1050,8 @@ wireBatteryKnob('ambient', 'ambientOut', 't_amb', value => value.toFixed(0) + ' 
 wireBatteryKnob('startSoc', 'startSocOut', 'soc0', value => value.toFixed(0) + '%');
 
 // ---------- MAPS ----------
-// Same contract as index.html, plus one thing that page does not have to do:
-// the GLB for the newly chosen world has to be fetched and swapped in. Only
+// Same contract the 2-D page had, plus one thing it never had to do: the GLB
+// for the newly chosen world has to be fetched and swapped in. Only
 // worlds with an exported scene are offered -- a map with no GLB would draw a
 // black screen, which is a worse answer than not being in the list.
 let worldArrivalTimer = null;

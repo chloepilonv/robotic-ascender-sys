@@ -1,17 +1,20 @@
 """Broadcast every body's world pose once per control tick, as bytes.
 
-The JPEG stream ships a PICTURE of the scene (~40 kB a frame, 2 MB/s at 50 Hz)
-and the browser can only show it. `app/web/render3d.html` draws the scene
-itself, so it needs the geometry once (`app/harness/export_scene.py` writes the
-GLB) and then only where everything IS. That is this file: 32 bodies x 7
-floats, 916 bytes a tick, 46 kB/s -- one fiftieth of the JPEG stream, and it
-buys a camera the server never has to know about.
+THE ONLY THING THE PAGE DRAWS THE WORLD FROM (since the 2-D page was retired,
+2026-08-30). The harness used to ship a PICTURE of the scene -- a server-side
+chase-camera render, ~40 kB a frame, 2 MB/s at 50 Hz, and 10-20 ms of a 20 ms
+control tick -- which the browser could only display. `app/web/render3d.html`
+draws the scene itself, so it needs the geometry once
+(`app/harness/export_scene.py` writes the GLB) and then only where everything
+IS. That is this file: 32 bodies x 7 floats, 916 bytes a tick, 46 kB/s -- one
+fiftieth of what the JPEG stream cost, and it buys a camera the server never has
+to know about.
 
 THE SEAM. `Episode.physics_step_hooks` is a list of `callable(model, data) ->
 dict | None` called after EVERY `mj_step`, i.e. at 500 Hz. A pose per physics
 substep would be ten times more than any display can use, so the hook COUNTS
 and only broadcasts on the last substep of each control tick -- the same instant
-`runtime.run` hands `episode.data` to the renderer, so the poses and the JPEG
+`runtime.run` builds that tick's state message, so the poses and the telemetry
 are the same moment of simulation, not neighbouring ones. The hook returns None
 always, which is what keeps it out of the `latest_bms` channel that seam also
 carries.
@@ -43,9 +46,10 @@ places for the picture to silently disagree with the physics. `data.xpos` is
 the answer MuJoCo already computed and the one its own renderer draws.
 
 STALENESS, stated because it is a real one-substep offset: `mj_step` integrates
-`qpos` last, so `xpos` trails it by 2 ms. `mjv_updateScene` reads the same
-`xpos`, so the JPEG has exactly the same offset -- the two views agree with each
-other, which is what matters here.
+`qpos` last, so `xpos` trails it by 2 ms. The eye cameras read the same `xpos`
+through `mjv_updateScene`, so the picture and the robot's own vision carry
+exactly the same offset -- they agree with each other, which is what matters
+here.
 """
 import struct
 import time
@@ -187,7 +191,8 @@ def attach(episode, server, world_name):
                             episode.substeps)
     except Exception as error:                # pragma: no cover - reporting only
         print(f"[pose] NOT attached: {type(error).__name__}: {error}."
-              " The JPEG stream and app/web/index.html are unaffected.", flush=True)
+              " The telemetry stream is unaffected, but the 3-D page will"
+              " have no scene to draw.", flush=True)
         return None
     episode.physics_step_hooks.append(stream)
     return stream

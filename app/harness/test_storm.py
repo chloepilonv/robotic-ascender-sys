@@ -290,7 +290,10 @@ def follower_response(scene, episode, seconds=6.0,
     for speed in [None] + list(WIND_SPEEDS_MPS):
         storm_vision.update(speed is not None, 0.0 if speed is None else speed)
         follower = guide_module.GuideFollower()
-        modes = {"FOLLOW": 0, "WAIT": 0, "LOST": 0}
+        # Every mode the follower can be in, from ITS OWN authority. This was a
+        # hand-written {"FOLLOW", "WAIT", "LOST"} and went stale the day SEARCH
+        # was added: section H died on `KeyError: 'SEARCH'` before it could run.
+        modes = {name: 0 for name in guide_module.GUIDE_MODE_CODES}
         looks = seen = 0
         for tick in range(ticks):
             measurement = None

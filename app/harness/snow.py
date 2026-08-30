@@ -1,49 +1,57 @@
-"""Snow that looks like snow, and footprints left in it. Visual only.
+"""Snow that looks like snow, and the moment a foot lands in it. Visual only.
 
 NOTHING HERE TOUCHES PHYSICS. Two things are added to the compiled model — a
 texture and a material — and one field is written on the terrain geom
 (`geom_matid`). None of the three is read by the solver: a material is
 appearance, and MuJoCo's contact model knows about `geom_friction`,
 `geom_solref`, `condim` and the contact bitmasks, not about what the surface
-looks like. The footprints are painted into the texture's own pixels and
-re-uploaded to the GPU; the heightfield is never edited, so the ground the robot
-walks on is bit-identical with the prints on or off. `PARITY.md` records the
-same-seed diff that proves it.
+looks like. The heightfield is never edited, so the ground the robot walks on is
+bit-identical with the snow on or off. `PARITY.md` records the same-seed diff
+that proves it.
 
 WHY A TEXTURE AND NOT A COLOUR. `graphics.apply_alpine_look` whitens the terrain
 geom by setting `geom_rgba`, which gives a flat sheet whose only relief is the
 heightfield's own 12 cm roughness. Snow has structure below that: drifts a few
 metres across, wind grain a few centimetres across, and the odd ice crystal
 catching the sun. All three are cheap to generate and none of them can be a
-heightfield, because a heightfield that fine would be a contact nightmare.
+heightfield, because a heightfield that fine would be a contact nightmare. The
+grain earns its keep twice over: it is also the only thing on an otherwise
+featureless white field that the guide's stereo block matcher can match on, so
+this texture is part of the ROBOT'S SENSING, not only of the look.
 
-WHERE THE FOOTPRINTS COME FROM. `TouchdownDetector` watches the foot geoms'
+WHERE THE FOOTSTEPS COME FROM. `TouchdownDetector` watches the foot geoms'
 contacts with the terrain geom and reports the moment a foot lands after being
-airborne. That event does three jobs at once, which is why it lives here rather
-than in three places: it stamps a print into the texture, it counts a step, and
-it goes out on the websocket as a `foot_steps` event with the impact speed so
-the page can play a crunch at the right volume.
+airborne. That event does two jobs at once, which is why it lives here rather
+than in two places: it counts a step, and it goes out on the websocket as a
+`foot_steps` event with the impact speed, so the page can play a crunch at the
+right volume and drop a decal in the right place.
+
+WHAT USED TO BE HERE, and why it is gone (2026-08-30, with the 2-D page). This
+module also STAMPED each print into the texture's own pixels, faded them, and
+pushed the whole texture back to every GL context with `mjr_uploadTexture` —
+which only existed because a server-rendered JPEG was the only picture anyone
+saw. `app/web/render3d.html` draws its own decals from the `foot_steps` events,
+so the stamp, the fade and the upload are deleted. The detector that fires the
+events is untouched, and so is the snow the eye cameras see.
 
 Inputs  : the built `ClimbScene` (its spec, terrain and compiled model), and
           `MjData` after each control tick.
-Outputs : `attach_snow` -> a `SnowGround` or None. `SnowGround.step(...)` ->
-          the list of touchdown events for this tick, each a named map:
-          {"foot": "left"|"right", "impact_speed_mps": float}.
+Outputs : `attach_snow` -> True once the snow texture is on the model, False if
+          it could not be added. `TouchdownDetector.update(data, dt)` -> the
+          landings on this tick, each a named map: {"foot": "left"|"right",
+          "impact_speed_mps": float, "position_world": (3,) metres world frame,
+          "yaw_radians": float}.
 """
 from __future__ import annotations
 
 import math
-import time
 
 import numpy as np
 
 # --------------------------------------------------------------- the texture
-# Texels per metre of terrain. 64 makes a 26 cm footprint about 17 texels long,
-# which is enough for the print to read as a shape rather than a smudge -- and
-# the resolution is not free: `mjr_uploadTexture` replaces the WHOLE texture,
-# so it is the number that sets the per-tick cost. MEASURED at 25 x 15 m: 80/m
-# is a 7.2 MB texture and 6.52 ms to push to the main and eye contexts; 64/m is
-# 4.6 MB and about two thirds of that.
+# Texels per metre of terrain. 64/m over 25 x 15 m is a 4.6 MB texture, which is
+# generated once at world build and never touched again -- it used to be
+# re-uploaded per footprint, and that upload was what made the number expensive.
 TEXELS_PER_METER = 64.0
 # ... but a 120 x 120 m sandbox at 64/m would be 7680 x 7680. The cap is on the
 # TOTAL, and the resolution drops to fit -- the two are traded, never the size.
@@ -63,25 +71,6 @@ SPARKLE_BOOST = 22
 # instead of 3 m drifts, which rendered as storm cloud rather than snowfield.
 DRIFT_METERS = 3.5          # wavelength of the big shading
 DRIFT_OCTAVE_RATIO = 3.0    # the second, finer drift layer
-
-# --------------------------------------------------------------- footprints
-FOOTPRINT_LENGTH_METERS = 0.26
-FOOTPRINT_WIDTH_METERS = 0.12
-# MEASURED, not guessed: at 0.30 toward a (120,132,152) shadow the print was
-# 15% darker than the snow, the drift noise is +/-14 on 233, and the prints were
-# invisible in a rendered frame. 0.55 toward (70,84,110) puts a fresh core 39%
-# below the surrounding snow, which reads at demo distance without looking
-# painted on.
-FOOTPRINT_DARKEN = 0.55     # how far toward the shadow colour a fresh core goes
-FOOTPRINT_SHADOW = (70, 84, 110)
-FOOTPRINT_SOFT_EDGE = 0.35  # fraction of the radius spent fading out
-# At most this many texture uploads a second, per GL context. 6 rather than 10
-# because the upload is the whole cost of this feature and a print that appears
-# 170 ms after the foot lands is not a print anyone notices arriving late.
-UPLOAD_HZ = 6.0
-DECAY_INTERVAL_SECONDS = 3.0
-DECAY_FACTOR = 0.90         # per decay pass; ~30 s to fade out of sight
-MAXIMUM_LIVE_PRINTS = 400   # ring buffer; the oldest is erased outright
 
 # --------------------------------------------------------------- touchdowns
 AIRBORNE_TICKS_BEFORE_A_LANDING_COUNTS = 2   # debounce a scuffing foot
@@ -184,15 +173,15 @@ TERRAIN_GEOM_NAME = "floor"
 def attach_snow(scene, seed: int = 0, verbose: bool = True):
     """Add the snow texture and material to HIS spec and recompile in place.
 
-    Returns a `SnowGround`, or None if the scene has no terrain geom or the
-    recompile moved anything structural. Idempotent: a cached scene re-opened
-    for a second world already has it.
+    Returns True once the snow is on the model, False if the scene has no
+    terrain geom or the recompile moved anything structural. Idempotent: a
+    cached scene re-opened for a second world already has it.
     """
     import mujoco
 
     model = scene.model
     if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_TEXTURE, TEXTURE_NAME) >= 0:
-        return SnowGround(scene, seed=seed, verbose=False)
+        return True
 
     terrain_geom = None
     for geom in scene.spec.geoms:
@@ -202,7 +191,7 @@ def attach_snow(scene, seed: int = 0, verbose: bool = True):
     if terrain_geom is None:
         print(f"[snow] no {TERRAIN_GEOM_NAME!r} geom in this scene; snow off",
               flush=True)
-        return None
+        return False
 
     width, height = texture_size_for(scene.terrain)
     length_x, length_y = scene.terrain.size_xy
@@ -219,9 +208,10 @@ def attach_snow(scene, seed: int = 0, verbose: bool = True):
     material = scene.spec.add_material()
     material.name = MATERIAL_NAME
     material.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = TEXTURE_NAME
-    # ONE repeat across the whole patch, and texuniform off. Both matter for
-    # the footprints, not for the look: it is what makes the map from a world
-    # (x, y) to a texel a single affine step with no wrapping to undo.
+    # ONE repeat across the whole patch, and texuniform off, so world (x, y) ->
+    # texel is a single affine step with no wrapping to undo. That was needed
+    # when prints were stamped into the pixels; it is kept because it is also
+    # what stops the drift pattern tiling visibly across the slope.
     material.texrepeat = [1, 1]
     material.texuniform = False
     material.rgba = [1.0, 1.0, 1.0, 1.0]
@@ -233,7 +223,7 @@ def attach_snow(scene, seed: int = 0, verbose: bool = True):
     if moved:
         print(f"[snow] REFUSED: recompiling moved {moved}. Keeping the original"
               " model; the ground stays plain.", flush=True)
-        return None
+        return False
 
     recompiled.vis.global_.offwidth = model.vis.global_.offwidth
     recompiled.vis.global_.offheight = model.vis.global_.offheight
@@ -241,201 +231,12 @@ def attach_snow(scene, seed: int = 0, verbose: bool = True):
     scene.data = mujoco.MjData(recompiled)
     scene.ascender.bind(recompiled, mujoco)
     scene.reset()
-    ground = SnowGround(scene, seed=seed, verbose=False)
     if verbose:
         print(f"[snow] texture {width}x{height} over {length_x:.0f}x{length_y:.0f} m"
               f" = {width / length_x:.0f} texels/m,"
-              f" {image.nbytes / 1e6:.1f} MB; footprint"
-              f" {FOOTPRINT_LENGTH_METERS * width / length_x:.0f} x"
-              f" {FOOTPRINT_WIDTH_METERS * height / length_y:.0f} texels;"
+              f" {image.nbytes / 1e6:.1f} MB, uploaded once at build;"
               f" all {len(before)} structural fields unchanged", flush=True)
-    return ground
-
-
-class SnowGround:
-    """The live texture: the snow underneath, the prints on top, the uploads.
-
-    Two images are kept. `base` is the snowfield as generated and never
-    changes. `live` is what the GPU has, and is always `base` with the current
-    print alphas composited over it -- so a print can fade without accumulating
-    rounding error, and erasing one is exact rather than approximate.
-
-    A print is a soft ellipse written into an alpha channel (`np.maximum`, so
-    overlapping steps do not stack into black). Fading is one multiply of that
-    alpha every few seconds, followed by a re-composite of only the rectangle
-    the prints actually occupy.
-    """
-
-    def __init__(self, scene, seed: int = 0, verbose: bool = True):
-        import mujoco
-
-        self.terrain = scene.terrain
-        self.model = scene.model
-        self.texture_id = mujoco.mj_name2id(
-            self.model, mujoco.mjtObj.mjOBJ_TEXTURE, TEXTURE_NAME)
-        self.available = self.texture_id >= 0
-        if not self.available:
-            return
-        self.width = int(self.model.tex_width[self.texture_id])
-        self.height = int(self.model.tex_height[self.texture_id])
-        address = int(self.model.tex_adr[self.texture_id])
-        # A VIEW into the model's own texture buffer, shaped like an image. This
-        # is what makes a repaint one vectorised assignment instead of a Python
-        # loop over rows: `tex_data` is contiguous, so the slice is a view and
-        # writing through it writes the model.
-        self.texture_view = self.model.tex_data[
-            address:address + self.width * self.height * 3
-        ].reshape(self.height, self.width, 3)
-        # Regenerated from the seed rather than read back, so re-opening a
-        # cached scene starts from clean snow instead of inheriting the last
-        # episode's footprints.
-        length_x, length_y = self.terrain.size_xy
-        self.base = snow_image(self.width, self.height, length_x, length_y, seed)
-        self.alpha = np.zeros((self.height, self.width), dtype=np.float32)
-        self.texture_view[:] = self.base
-        self.shadow = np.asarray(FOOTPRINT_SHADOW, dtype=np.float32)
-        self.print_boxes = []          # (row0, row1, column0, column1), oldest first
-        self.dirty = False
-        self.last_upload_seconds = -1e9
-        self.last_decay_seconds = 0.0
-        self.upload_milliseconds = 0.0
-        self.paint_milliseconds = 0.0
-        self.step_count = 0
-
-    def reset(self) -> None:
-        """Clean snow again: a new episode should not walk into old prints."""
-        if not self.available:
-            return
-        self.alpha[:] = 0.0
-        self.texture_view[:] = self.base
-        self.print_boxes.clear()
-        self.dirty = True
-
-    # ------------------------------------------------------------- mapping
-    def world_to_texel(self, x_world: float, y_world: float) -> tuple:
-        """World (x, y) -> (row, column) in the texture, or None if off-patch.
-
-        The terrain geom is TILTED about world -y, so world x is not the
-        heightfield's own coordinate: a local grid point (u, v, h) lands at
-        world x = u*cos(s) - h*sin(s). `terrain.surface_z` already inverts that
-        by fixed point, and this is the same three passes, kept here because it
-        needs `u` rather than the height `u` produces.
-        """
-        terrain = self.terrain
-        length_x, length_y = terrain.size_xy
-        slope = terrain.slope_rad
-        cosine, sine = math.cos(slope), math.sin(slope)
-        u = x_world if terrain.baked else x_world / cosine
-        if not terrain.baked:
-            for _ in range(3):
-                u = (x_world + float(terrain._sample(u, y_world)) * sine) / cosine
-        column = (u + length_x / 2) / length_x * (self.width - 1)
-        row = (y_world + length_y / 2) / length_y * (self.height - 1)
-        if not (0 <= column < self.width and 0 <= row < self.height):
-            return None
-        return row, column
-
-    # ---------------------------------------------------------- footprints
-    def paint_footprint(self, x_world: float, y_world: float,
-                        yaw_radians: float) -> bool:
-        started = time.time()
-        placed = self.world_to_texel(x_world, y_world)
-        if placed is None:
-            return False
-        row_centre, column_centre = placed
-        length_x, length_y = self.terrain.size_xy
-        texels_per_meter_x = self.width / length_x
-        texels_per_meter_y = self.height / length_y
-        half_length = 0.5 * FOOTPRINT_LENGTH_METERS
-        half_width = 0.5 * FOOTPRINT_WIDTH_METERS
-        # The stamp's bounding box has to cover the rotated ellipse, so it is
-        # sized by the LONGER semi-axis in both directions.
-        reach_columns = int(math.ceil(half_length * texels_per_meter_x)) + 1
-        reach_rows = int(math.ceil(half_length * texels_per_meter_y)) + 1
-        row0 = max(0, int(row_centre) - reach_rows)
-        row1 = min(self.height, int(row_centre) + reach_rows + 1)
-        column0 = max(0, int(column_centre) - reach_columns)
-        column1 = min(self.width, int(column_centre) + reach_columns + 1)
-        if row1 <= row0 or column1 <= column0:
-            return False
-
-        rows = (np.arange(row0, row1, dtype=np.float32) - row_centre) / texels_per_meter_y
-        columns = (np.arange(column0, column1, dtype=np.float32) - column_centre) / texels_per_meter_x
-        delta_y, delta_x = np.meshgrid(rows, columns, indexing="ij")
-        cosine, sine = math.cos(-yaw_radians), math.sin(-yaw_radians)
-        along = delta_x * cosine - delta_y * sine       # foot's long axis
-        across = delta_x * sine + delta_y * cosine
-        radius = np.sqrt((along / half_length) ** 2 + (across / half_width) ** 2)
-        # 1 inside the core, falling smoothly to 0 at the rim: a hard-edged
-        # stamp reads as a decal, a soft one as a depression.
-        strength = np.clip((1.0 - radius) / FOOTPRINT_SOFT_EDGE, 0.0, 1.0)
-
-        window = self.alpha[row0:row1, column0:column1]
-        np.maximum(window, strength, out=window)
-        self.print_boxes.append((row0, row1, column0, column1))
-        if len(self.print_boxes) > MAXIMUM_LIVE_PRINTS:
-            oldest = self.print_boxes.pop(0)
-            self.alpha[oldest[0]:oldest[1], oldest[2]:oldest[3]] = 0.0
-            self._composite(*oldest)
-        self._composite(row0, row1, column0, column1)
-        self.dirty = True
-        self.paint_milliseconds = (time.time() - started) * 1000.0
-        return True
-
-    def _composite(self, row0, row1, column0, column1) -> None:
-        """live = base blended toward the shadow colour by alpha, in one box.
-
-        Always recomputed FROM `base`, never from what is already on screen: a
-        fade that repeatedly darkened the previous frame would ratchet the
-        rounding one way and the snow would go grey.
-        """
-        base = self.base[row0:row1, column0:column1].astype(np.float32)
-        weight = (self.alpha[row0:row1, column0:column1] * FOOTPRINT_DARKEN)[:, :, None]
-        blended = base * (1.0 - weight) + self.shadow[None, None, :] * weight
-        self.texture_view[row0:row1, column0:column1] = blended.astype(np.uint8)
-
-    def decay(self, time_seconds: float) -> None:
-        """Fade every print a little. Cheap, and only every few seconds."""
-        if not self.print_boxes:
-            return
-        if time_seconds - self.last_decay_seconds < DECAY_INTERVAL_SECONDS:
-            return
-        self.last_decay_seconds = time_seconds
-        row0 = min(box[0] for box in self.print_boxes)
-        row1 = max(box[1] for box in self.print_boxes)
-        column0 = min(box[2] for box in self.print_boxes)
-        column1 = max(box[3] for box in self.print_boxes)
-        self.alpha[row0:row1, column0:column1] *= DECAY_FACTOR
-        self._composite(row0, row1, column0, column1)
-        self.dirty = True
-
-    # -------------------------------------------------------------- upload
-    def upload(self, renderers, time_seconds: float, force=False) -> bool:
-        """Push the changed texture to each renderer's GL context. -> uploaded?
-
-        `mjr_uploadTexture` replaces the whole texture, so this is throttled to
-        UPLOAD_HZ and skipped entirely when nothing was painted. Each renderer
-        has its OWN `MjrContext` with its own GPU copy, so every one that will
-        show the ground needs the call.
-        """
-        import mujoco
-
-        if not self.dirty and not force:
-            return False
-        if not force and time_seconds - self.last_upload_seconds < 1.0 / UPLOAD_HZ:
-            return False
-        started = time.time()
-        for renderer in renderers:
-            context = getattr(renderer, "_mjr_context", None)
-            gl_context = getattr(renderer, "_gl_context", None)
-            if context is None or gl_context is None:
-                continue
-            gl_context.make_current()
-            mujoco.mjr_uploadTexture(self.model, context, self.texture_id)
-        self.upload_milliseconds = (time.time() - started) * 1000.0
-        self.last_upload_seconds = time_seconds
-        self.dirty = False
-        return True
+    return True
 
 
 class TouchdownDetector:

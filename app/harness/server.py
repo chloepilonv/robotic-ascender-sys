@@ -1,19 +1,26 @@
-"""Websocket bridge between the runtime and app/web/index.html (live mode).
+"""Websocket bridge between the runtime and app/web/render3d.html (live mode).
 
 Copied from pemba_bench/bench/server.py and adapted to this repo: the static
 root is the REPOSITORY root (so the page lives at
-http://<host>:<port+1>/app/web/index.html and the episode media at
-/app/harness/episodes/...), the world list is a single generated entry for the
-team environment, and the two directory listings the page used to scrape are
-now explicit JSON endpoints.
+http://<host>:<port+1>/app/web/render3d.html -- and at `/` as well -- and the
+episode data at /app/harness/episodes/...), the world list is a single generated
+entry for the team environment, and the two directory listings the page used to
+scrape are now explicit JSON endpoints.
 
-Out (binary)  : one JPEG per control tick, quality 80 -- the third-person view.
-                PLUS, while the guide is on and at the vision rate (10 Hz), a
-                second binary message: the 4 ASCII bytes `EYE0` followed by a
-                JPEG of the robot's LEFT EYE (320x240, quality 70) with the
-                detection box and "2.4 m . FOLLOW" drawn on it. The two are told
-                apart by the first four bytes: a main frame is a raw JPEG and
-                starts 0xFFD8.
+THE SERVER SENDS NO PICTURE OF THE SCENE (user's ruling, 2026-08-30, when the
+2-D page was retired). It used to push a JPEG of a server-side chase-camera
+render every control tick; the page draws the scene itself in three.js from the
+pose stream, so that render and its frame are gone.
+
+Out (binary)  : `POS0` then every body's world pose, once per control tick --
+                app/harness/pose_stream.py owns the layout, and this is what the
+                3-D view is drawn from.
+                PLUS, while the guide is on and at the vision rate (10 Hz): the
+                4 ASCII bytes `EYE0` followed by a JPEG of the robot's LEFT EYE
+                (320x240, quality 70) with the detection box and
+                "2.4 m . FOLLOW" drawn on it. That one is a SENSOR readout, not
+                a view of the world. The two are told apart by their first four
+                bytes.
 Out (text)    : {"type":"state", "tick":int, "time_seconds":f,
                  "command":[lin_vel_x, lin_vel_y, ang_vel_yaw],
                  "wind_velocity_world_meters_per_second":[f,f],
@@ -44,7 +51,11 @@ In  (text)    : {"type":"input", "keys":["w"],
                     camera is a third-person orbit around the pelvis, MuJoCo's own
                     azimuth/elevation convention, defaults 180 / -15. The camera's
                     viewing direction is ALSO the steering input: the robot turns
-                    to face it, W walks (climbs) that way.
+                    to face it, W walks (climbs) that way. Only the AZIMUTH is
+                    read now -- elevation moves the browser's own camera.
+                    An older client may also send a `viewport` field, which the
+                    server-side render used to size itself from. It is accepted
+                    and ignored; nothing here draws.
                 {"type":"knob", "name":"wind_x"|"wind_y"|"friction"|"guide"|"storm", "value":f}
                     wind_x / wind_y are the world-frame XY WIND VELOCITY in m/s
                     (NOT newtons -- the force is the quadratic drag law from
@@ -87,6 +98,10 @@ EPISODES_DIRECTORY = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "episodes"
 )
 EPISODES_URL_PREFIX = "/app/harness/episodes"
+# The one front end (user's ruling, 2026-08-30). Served at its own path AND at
+# `/`, because "open localhost:8766" should not need a path to be remembered.
+# The long path keeps working: every screenshot, note and bookmark uses it.
+PAGE_PATH = "/app/web/render3d.html"
 
 
 class Server:
@@ -122,7 +137,8 @@ class Server:
         threading.Thread(target=self._serve_files, daemon=True).start()
         self.ready.wait(timeout=10.0)
         print(f"[server] websocket ws://0.0.0.0:{port}"
-              f"   page http://localhost:{port + 1}/app/web/index.html", flush=True)
+              f"   page http://localhost:{port + 1}{PAGE_PATH}"
+              f"  (also at http://localhost:{port + 1}/)", flush=True)
 
     def _run(self):
         # websockets >= 14 dropped the legacy awaitable form of
@@ -190,6 +206,12 @@ class _FileHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?")[0]
+        if path == "/":
+            # Rewritten rather than redirected: one request, and the page's own
+            # relative imports (three/*.js, sky/, sounds/) still resolve from
+            # the repository root either way.
+            self.path = PAGE_PATH
+            return super().do_GET()
         if path == "/api/worlds":
             return self._json({"worlds": self.server_state.worlds})
         if path == "/api/episodes":
