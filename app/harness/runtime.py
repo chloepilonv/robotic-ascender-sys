@@ -64,7 +64,7 @@ from app.harness.playground_policy import (  # noqa: E402
 from app.harness.recorder import Recorder  # noqa: E402
 from app.harness import worlds as worlds_module  # noqa: E402
 
-RENDER_WIDTH, RENDER_HEIGHT = 640, 480
+RENDER_WIDTH, RENDER_HEIGHT = 960, 540    # 16:9 -- the page fills the viewport with it
 JPEG_QUALITY = 80
 
 # Third-person orbit, matching the browser's defaults so live and recorded
