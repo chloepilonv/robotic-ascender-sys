@@ -853,6 +853,22 @@ def run(arguments) -> str:
                     frozen_state["hearing"] = hearing_system.state()
                     frozen_state["command"] = [0.0, 0.0, 0.0]
                     server.broadcast(frozen_state)
+                # THE PAGE'S HIKER MUST KEEP WALKING (user-found bug: the pose
+                # stream is a PHYSICS hook, so freezing physics silenced it and
+                # the viewport froze HER too -- while the eyes, which refresh
+                # kinematics themselves, watched her walk). Refresh the frames
+                # from the just-written mocap, force one POS0 broadcast, and
+                # put the solver's frames back so physics stays bit-identical
+                # -- the eyes' own freeze/refresh/restore trick.
+                for hook in getattr(episode, "physics_step_hooks", []):
+                    if hasattr(hook, "poses") and hasattr(hook, "substep_counter"):
+                        frames = guide_system._freeze(episode.data)
+                        guide_system._mujoco.mj_kinematics(episode.model,
+                                                           episode.data)
+                        hook.substep_counter = hook.substeps - 1
+                        hook(episode.model, episode.data)
+                        guide_system._restore(episode.data, frames)
+                        break
             # THE CLOCK RUNS WHILE THE WORLD IS HELD. The eye render and the
             # ear detectors are both `tick % N` gated, so a freeze that pinned
             # the tick could start on the wrong remainder and then NEVER see
