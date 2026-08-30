@@ -16,6 +16,15 @@ import { OutputPass } from './vendor/addons/postprocessing/OutputPass.js';
 import { World, FOG_COLOUR, FOG_DENSITY_PER_METER,
          SUN_ELEVATION_DEGREES, SUN_AZIMUTH_DEGREES } from './world.js';
 import { ChaseCamera } from './chase_camera.js';
+import { FirstPersonCamera, EYE_MOUNT_IN_TORSO_METERS,
+         NEAR_PLANE_METERS as FIRST_PERSON_NEAR_PLANE_METERS }
+  from './first_person_camera.js';
+
+// How far from the eye the head geom is allowed to be before we decide this
+// model has no head to cull. The real gap is 0.07 m and the runner-up is
+// 0.17 m, so 0.25 m separates them with room to spare and still refuses to
+// blank a random chest plate on some future robot.
+const HEAD_GEOM_SEARCH_RADIUS_METERS = 0.25;
 
 // Z-UP, ONCE, BEFORE ANYTHING IS CONSTRUCTED. Every camera's `lookAt`, every
 // Object3D's default orientation and the whole GLB read this. Setting it here
@@ -83,6 +92,20 @@ export class Stage {
     this._buildSky();
     this.world = new World(this.scene);
     this.chase = new ChaseCamera(this.camera);
+    // BOTH CAMERAS DRIVE THE SAME PerspectiveCamera, and the chase camera keeps
+    // running even while the first-person view is live. That is not waste: its
+    // `azimuthDegrees` is what render3d.html sends up the socket every 20 ms,
+    // and the runtime turns that into the robot's steering heading. Freeze it
+    // and W would walk wherever the boom happened to be pointing when V was
+    // pressed. So the chase updates, its auto-recentre keeps the heading behind
+    // the robot, and the first-person camera then OVERWRITES the position,
+    // orientation and lens for the frame.
+    this.firstPerson = new FirstPersonCamera(this.camera);
+    this.firstPersonEnabled = false;
+    this._thirdPersonNearPlaneMeters = NEAR_PLANE_METERS;
+    // The one geom culled in first person, found once per world load. `undefined`
+    // means "not looked for yet"; `null` means "looked, this model has no head".
+    this._headNode = undefined;
 
     this.composer = null;
     this.gradePass = null;
@@ -99,6 +122,8 @@ export class Stage {
     this._forward = new THREE.Vector3();
     this._quaternion = new THREE.Quaternion();
     this._headingRadians = Math.PI;
+    this._torsoPosition = new THREE.Vector3();
+    this._torsoQuaternion = new THREE.Quaternion();
 
     // Poses arrive at 50 Hz and we draw at the display rate, so every frame
     // interpolates between the last two ticks. Without this the robot moves in
@@ -197,6 +222,9 @@ export class Stage {
   async loadWorld(name) {
     const sidecar = await this.world.load(name);
     this.chase.seeded = false;
+    // A world swap rebuilds every node, so a torso hidden before the swap is
+    // visible again after it unless it is re-hidden here.
+    this._applyFirstPersonVisibility();
     this._posePrevious = this._poseLatest = this._poseBlend = null;
     this.slopeDegrees = sidecar.slope_degrees || 0;
     // Fog scaled to the map: a 25 m patch and a 120 m sandbox want very
@@ -227,10 +255,79 @@ export class Stage {
   setWind(east, north) { this.windEast = east; this.windNorth = north; }
   setPaused(paused) { this.paused = paused; }
 
+  // THE TWO NUMBERS THAT GO UP THE SOCKET. They are the CHASE camera's in both
+  // views, always, because they are the robot's steering command and not a
+  // description of the picture: `runtime.py` adds half a turn to the azimuth
+  // and walks the robot that way. In first person the chase camera has drifted
+  // to behind the robot, so W walks where the robot is facing -- which is what
+  // W does in every first-person game -- and looking around steers nothing.
   get cameraAzimuthDegrees() { return this.chase.azimuthDegrees; }
   get cameraElevationDegrees() { return this.chase.elevationDegrees; }
-  look(movementX, movementY) { this.chase.look(movementX, movementY); }
-  recentreCamera() { this.chase.recentreNow(); }
+  // Where the PICTURE is pointing, in the same convention. The wind ribbons in
+  // render3d.html are drawn in screen space from this and must follow whichever
+  // camera is live, or a storm blows sideways the moment V is pressed.
+  get viewAzimuthDegrees() {
+    return this.firstPersonEnabled
+      ? this.firstPerson.azimuthDegrees() : this.chase.azimuthDegrees;
+  }
+  look(movementX, movementY) {
+    if (this.firstPersonEnabled) this.firstPerson.look(movementX, movementY);
+    else this.chase.look(movementX, movementY);
+  }
+  // R recentres BOTH, whichever is live: coming back to third person after a
+  // reset should not find the head still turned 150 degrees from where it was.
+  recentreCamera() { this.chase.recentreNow(); this.firstPerson.recentreNow(); }
+
+  // ------------------------------------------------------- the view toggle
+  setFirstPerson(enabled) {
+    const wanted = Boolean(enabled);
+    if (wanted === this.firstPersonEnabled) return this.firstPersonEnabled;
+    this.firstPersonEnabled = wanted;
+    this.camera.near = wanted ? FIRST_PERSON_NEAR_PLANE_METERS
+                              : this._thirdPersonNearPlaneMeters;
+    this.camera.updateProjectionMatrix();
+    this._applyFirstPersonVisibility();
+    return this.firstPersonEnabled;
+  }
+
+  toggleFirstPerson() { return this.setFirstPerson(!this.firstPersonEnabled); }
+
+  // The camera sits INSIDE the head, so the head has to go -- and ONLY the head.
+  //
+  // The measurement that says it is needed: raycasting out of the eye in first
+  // person hits the head mesh at 0.05 m to the left of frame at 90 degrees of
+  // yaw and dead centre at 150, so a near plane alone (which only clips the
+  // sliver straight ahead) does not save it. Turning your head must not fill
+  // the screen with the back of your own head.
+  //
+  // WHY NOT HIDE THE WHOLE `torso_link` NODE, which was the first version: a
+  // hidden node casts no shadow, and on this mountain the climber's own shadow
+  // stretched up the slope is most of what the first-person frame contains.
+  // Three.js tests shadow casters against the MAIN camera's layers, so the
+  // usual layer trick cannot buy it back. Culling one geom instead keeps the
+  // chest, the jacket and the logo plates in the shadow map, and seeing your
+  // own chest when you look back over your shoulder is right, not a bug.
+  //
+  // WHICH CHILD IS THE HEAD: the one whose geom origin is NEAREST THE EYE, and
+  // it is not close -- head_link sits 0.07 m from the d435i mount, the next
+  // nearest torso geom 0.17 m. That is the honest test ("the mesh the camera is
+  // inside of"), and it survives an export that renumbers geoms, which a node
+  // name like `torso_link__geom_58` does not.
+  _applyFirstPersonVisibility() {
+    if (!this.world || !this.world.bodies) return;
+    const torsoNode = this.world.bodies[this.world.torsoIndex];
+    if (!torsoNode) return;
+    if (this._headNode === undefined || this._headNode?.parent !== torsoNode) {
+      this._headNode = null;
+      let nearest = Infinity;
+      for (const child of torsoNode.children) {
+        const distance = child.position.distanceTo(EYE_MOUNT_IN_TORSO_METERS);
+        if (distance < nearest) { nearest = distance; this._headNode = child; }
+      }
+      if (nearest > HEAD_GEOM_SEARCH_RADIUS_METERS) this._headNode = null;
+    }
+    if (this._headNode) this._headNode.visible = !this.firstPersonEnabled;
+  }
 
   // Poses are 50 Hz, the display is not: blend the last two ticks by how far
   // through the interval the wall clock is, clamped so a stalled stream freezes
@@ -297,6 +394,18 @@ export class Stage {
     const elapsedSeconds = this.paused ? 0 : wallSeconds;
     this.chase.update(elapsedSeconds, this._pelvis, this._headingRadians,
                       this.world.heightField, this.slopeDegrees || 0);
+    // ...and then, in first person, the eye overwrites what the boom just
+    // wrote. The chase camera's OWN state is untouched, so its azimuth is still
+    // the steering command and V can be pressed back at any time.
+    if (this.firstPersonEnabled) {
+      const torsoNode = this.world.bodies[this.world.torsoIndex];
+      if (torsoNode) {
+        this._torsoPosition.copy(torsoNode.position);
+        this._torsoQuaternion.copy(torsoNode.quaternion);
+      }
+      this.firstPerson.update(elapsedSeconds, this._torsoPosition,
+                              this._torsoQuaternion);
+    }
     this.world.update(elapsedSeconds, this.camera.position, this._pelvis,
                       this.windEast, this.windNorth,
                       this.canvas.clientHeight * this.renderer.getPixelRatio());

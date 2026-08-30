@@ -331,6 +331,10 @@ export class World {
     this.footBodies = [];
     this.lastContacts = null;
     this.pelvisIndex = 1;
+    // The body the eye cameras hang off. The G1 has no head body: `d435i` --
+    // and so the stereo pair guide.py mounts beside it -- is a child of
+    // `torso_link`, which is what the first-person camera rides.
+    this.torsoIndex = -1;
     this.name = null;
     this.worldKey = 0;
     this.triangleCount = 0;
@@ -388,6 +392,7 @@ export class World {
     this.scene.remove(this.root);
     this.root = null;
     this.bodies = [];
+    this.torsoIndex = -1;
     this.terrainMeshes = [];
     this.terrainUniforms = [];
     this.footprints = null;
@@ -421,6 +426,14 @@ export class World {
       this.bodies[body.index] = node;
     }
     this.pelvisIndex = sidecar.pelvis_body ?? 1;
+    // `torso_body` is written by app/harness/export_scene.py. The name fallback
+    // exists because a sidecar exported before that field did would otherwise
+    // silently leave the first-person camera parked at the origin.
+    this.torsoIndex = sidecar.torso_body ?? -1;
+    if (this.torsoIndex < 0) {
+      const named = (sidecar.bodies || []).find(body => body.name === 'torso_link');
+      this.torsoIndex = named ? named.index : -1;
+    }
     this.footBodies = (sidecar.foot_bodies || []).map(foot => foot.index);
     this.lastContacts = null;
 

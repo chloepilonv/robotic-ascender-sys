@@ -87,7 +87,9 @@
   #status { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--ink-3); }
   #status i { width: 6px; height: 6px; border-radius: 50%; background: var(--bad); flex: none; }
   #status.on i { background: var(--good); }
-  #realtime, #fpsOut { color: var(--ink-3); font-variant-numeric: tabular-nums; font-size: 10.5px; }
+  #realtime, #fpsOut, #viewMode { color: var(--ink-3); font-variant-numeric: tabular-nums; font-size: 10.5px; }
+  #viewMode { cursor: pointer; user-select: none; }
+  #viewMode:hover { color: var(--ink-2); }
 
   .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
           padding: 10px; }
@@ -231,7 +233,7 @@
 <aside>
   <div class="topbar">
     <div class="segmented"><div class="tab active">3D</div><a class="tab" href="/app/web/index.html">2D · replay</a></div>
-    <div id="status"><i></i><span id="statusText">offline</span><span id="realtime"></span><span id="fpsOut"></span></div>
+    <div id="status"><i></i><span id="statusText">offline</span><span id="realtime"></span><span id="fpsOut"></span><span id="viewMode" title="V">· 3P</span></div>
   </div>
 
   <div id="livePanel">
@@ -604,7 +606,9 @@ function noteWindVelocity(velocity) {
   stage.setWind(velocity[0], velocity[1]);
 }
 function updateWindScreen(elapsedSeconds) {
-  const azimuthRadians = stage.cameraAzimuthDegrees * Math.PI / 180;
+  // The VIEW's azimuth, not the steering command's: in first person the two are
+  // the same only while the head is straight ahead.
+  const azimuthRadians = stage.viewAzimuthDegrees * Math.PI / 180;
   const forwardX = -Math.cos(azimuthRadians), forwardY = -Math.sin(azimuthRadians);
   const rightX = forwardY, rightY = -forwardX;
   const lateral = windVelocityWorld[0] * rightX + windVelocityWorld[1] * rightY;
@@ -953,8 +957,17 @@ document.addEventListener('keydown', event => {
   } else if (key === 'f' && !event.repeat) {
     if (document.fullscreenElement) document.exitFullscreen();
     else stageElement.requestFullscreen?.();
+  } else if (key === 'v' && !event.repeat) {
+    setViewMode(stage.toggleFirstPerson());
   }
 });
+// THIRD PERSON <-> FIRST PERSON. Nothing is sent: the camera the SERVER steers
+// by is the chase camera either way (stage.cameraAzimuthDegrees), so W/S/A/D,
+// the recorded mp4 and the guide follower all carry on exactly as before.
+function setViewMode(firstPerson) {
+  $('viewMode').textContent = firstPerson ? '· 1P' : '· 3P';
+}
+$('viewMode').addEventListener('click', () => setViewMode(stage.toggleFirstPerson()));
 
 // ---------- KNOBS (index.html, verbatim) ----------
 function paintSliderFill(slider) {
