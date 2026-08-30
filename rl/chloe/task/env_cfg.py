@@ -138,22 +138,22 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
         "asset_cfg": SLIDE_JOINT_CFG,
       },
     ),
-    # Ground: bare ice (~0.05) to crampon-on-neve (~0.9). Fixed per env for the run.
+    # Ground friction, fixed per env for the run.
     "ice_friction": EventTermCfg(
       mode="startup",
       func=dr.geom_friction,
       params={
         "asset_cfg": FEET,
         "operation": "abs",
-        "ranges": (0.05, 0.9),
+        "ranges": (0.4, 0.9),  # v0: packed snow..crampons; widen to 0.2 (ice) once it climbs
         "shared_random": True,
       },
     ),
-    # Wind: 0-30 m/s steady, random horizontal direction, resampled each episode.
+    # Wind: steady, random horizontal direction, resampled each episode.
     "wind": EventTermCfg(
       func=mdp.wind_on_torso,
       mode="reset",
-      params={"speed_range": (0.0, 30.0), "asset_cfg": mdp.TORSO},
+      params={"speed_range": (0.0, 15.0), "asset_cfg": mdp.TORSO},  # v0; storms (30) later
     ),
   }
 
