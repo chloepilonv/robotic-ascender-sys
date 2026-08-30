@@ -63,6 +63,7 @@ from app.harness.playground_policy import (  # noqa: E402
 )
 from app.harness.recorder import Recorder  # noqa: E402
 from app.harness import worlds as worlds_module  # noqa: E402
+from app.harness import climb_worlds as climb_worlds_module  # noqa: E402
 
 RENDER_WIDTH, RENDER_HEIGHT = 960, 540    # 16:9 -- the page fills the viewport with it
 RENDER_MAXIMUM_WIDTH, RENDER_MAXIMUM_HEIGHT = 1920, 1080   # native-resolution cap (F = fullscreen in the page)
@@ -469,6 +470,7 @@ def encode_jpeg(pixels: np.ndarray) -> bytes:
 
 def make_header(episode, meta, arguments) -> dict:
     fingerprint_summary = {
+        "kind": meta.get("kind", "legacy_climb_env"),
         "nq": int(episode.model.nq), "nv": int(episode.model.nv),
         "nu": int(episode.model.nu),
         "timestep_seconds": float(episode.model.opt.timestep),
@@ -477,12 +479,20 @@ def make_header(episode, meta, arguments) -> dict:
         "slide_qpos_address": meta["slide_qpos_address"],
         "foot_friction_at_load": meta["foot_friction"],
     }
+    if meta.get("kind") == "climb_scene":
+        fingerprint_summary.update({
+            "patch": meta["patch"], "robot": meta["robot"],
+            "rope_length_meters": meta["rope_length_meters"],
+            "rope_waypoints": meta["rope_waypoints"],
+            "slope_provenance": meta["slope_provenance"],
+            "adapt_report": meta["adapt_report"],
+        })
     return {
         "backend": "mujoco-c (plain), model from rl.environment.climb_env.G1ClimbAscender",
         "world": episode.world_name,
         "world_label": episode.definition["label"],
         "world_description": episode.definition["description"],
-        "config_overrides": dict(episode.definition["config_overrides"]),
+        "config_overrides": dict(episode.definition.get("config_overrides", {})),
         "rope_enabled": episode.rope_enabled,
         "policy": "mels_g1_joystick.npz",
         "seed": arguments.seed,
@@ -492,11 +502,14 @@ def make_header(episode, meta, arguments) -> dict:
         "joint_names": meta["joint_names"],
         "line_point_world": np.asarray(meta["line_point_world"]).tolist(),
         "slope_axis_world": np.asarray(meta["slope_axis_world"]).tolist(),
+        "patch": meta.get("patch"),
+        "robot": meta.get("robot", "bare"),
         "spawn_position_world": episode.spawn_position_world.tolist(),
         "command_speed_meters_per_second": arguments.command_speed,
         "observation_noise_level": 0.0,
         "training_observation_noise_level": meta["noise_level"],
-        "wind_in_training": False,
+        "wind_in_training": meta.get("wind_in_training", False),
+        "terrain_in_training": meta.get("terrain_in_training", False),
         "model_fingerprint": fingerprint_summary,
         "wind": [], "commands": [],
         "source": "live" if arguments.live else "timed",
@@ -514,6 +527,7 @@ def episode_outcome(episode, realtime_factor: float, frames_rendered: int) -> di
             episode.pelvis_position_world - episode.spawn_position_world)),
         "rope_travel_meters": episode.rope_travel_meters,
         "climb_meters": episode.rope_travel_meters,
+        "arclength_meters": getattr(episode, "arclength_meters", None),
         "height_gained_meters": episode.height_gained_meters,
         "maximum_rope_force_newtons": episode.maximum_rope_force_newtons,
         "hand_line_error_meters": episode.hand_line_error_meters(),
@@ -531,6 +545,7 @@ def run(arguments) -> str:
     print(policy.describe(), flush=True)
     wind_drag = wind_drag_coefficient()
     library = worlds_module.WorldLibrary()
+    climb_library = climb_worlds_module.ClimbSceneLibrary()
 
     server = None
     if arguments.live:
@@ -560,6 +575,40 @@ def run(arguments) -> str:
     latest_state = [None]
 
     def open_world(name):
+        """Either kind of world, behind one interface.
+
+        `climb_scene` worlds are PR #8's merged model -- real terrain, a rope
+        draped over it, the jacketed robot, his physics step and his walking
+        policy. `legacy_climb_env` worlds are the older flat tilted plane and
+        slide joint, kept because the trainer still uses them. Both return an
+        episode with the same interface, so everything below this function is
+        shared.
+        """
+        kind = worlds_module.WORLD_DEFINITIONS[name]["kind"]
+        if kind == "climb_scene":
+            scene, meta, definition = climb_library.load(
+                name, on_build_start=lambda: announce_build(name))
+            episode = climb_worlds_module.ClimbSceneEpisode(
+                scene, meta, definition, name, seed=arguments.seed)
+            model = scene.model
+            print(f"[runtime] world={name} ({definition['label']})"
+                  f"  patch={definition['patch']} robot={definition['robot']}"
+                  f"  slope={episode.slope_degrees:.1f} deg"
+                  f" ({definition['slope_provenance']})"
+                  f"  rope={'ON' if episode.rope_enabled else 'OFF'}"
+                  f"  control {episode.control_hz:.0f} Hz  physics"
+                  f" {1.0 / meta['physics_dt_seconds']:.0f} Hz"
+                  f"  substeps/tick={episode.substeps}", flush=True)
+            print(f"[runtime] spawn pelvis"
+                  f" {episode.spawn_position_world.round(4).tolist()}"
+                  f"  hand-rope distance {episode.hand_line_error_meters():.2e} m"
+                  f"  arc length {episode.arclength_meters:.3f} m of"
+                  f" {meta['rope_length_meters']:.3f}"
+                  f"  lean {meta['lean_degrees']:.1f} deg"
+                  f"  ankle {meta['ankle_degrees']:.1f} deg"
+                  f"  upright {episode.torso_upright:+.3f}", flush=True)
+            return episode, model, meta
+
         model, meta, definition = library.load(
             name, on_build_start=lambda: announce_build(name))
         episode = Episode(model, meta, policy, wind_drag, definition, name,
@@ -801,12 +850,16 @@ def run(arguments) -> str:
                 "command": row["command"].tolist(),
                 "wind_velocity_world_meters_per_second": wind_list,
                 "wind_force_world_newtons": row["wind_force_world_newtons"].tolist(),
-                "wind_in_training": False,
+                "wind_in_training": meta.get("wind_in_training", False),
                 "fell": bool(row["fell"]),
                 "fall_reason": episode.fall_reason,
                 "root_position_world": row["root_position_world"].tolist(),
                 "rope_travel_meters": row["rope_travel_meters"],
                 "climb_meters": row["climb_meters"],
+                "arclength_meters": row.get("arclength_meters"),
+                "rope_length_meters": meta.get("rope_length_meters"),
+                "world_kind": meta.get("kind", "legacy_climb_env"),
+                "terrain_in_training": meta.get("terrain_in_training", False),
                 "hand_height_on_line_meters": row["hand_height_on_line_meters"],
                 "hand_line_error_meters": row["hand_line_error_meters"],
                 "height_gained_meters": row["height_gained_meters"],

@@ -1,8 +1,14 @@
-# app/harness — the interactive walker on the team climb env
+# app/harness — the interactive climber, in the browser
 
-Runs `rl.environment.climb_env.G1ClimbAscender` in plain MuJoCo at 50 Hz on a
-laptop and streams it to the browser. Nothing physical is re-implemented: the
-harness loads the env's compiled model (see `PARITY.md`, `fingerprint.json`).
+Runs the team's **merged climb scene** (`rl/environment/climb_scene.py`) in
+plain MuJoCo at 50 Hz on a laptop and streams it to the browser: the Lhotse
+Face heightfield, a rope draped over it, the jacketed G1 with the ascender on
+the line. Nothing physical is re-implemented — `build_scene` builds it,
+`ClimbScene.step(wind)` is the physics step, and `walk_policy.WalkController`
+is the policy. See `PARITY.md` and `fingerprint_lhotse_B.json`.
+
+The older flat-plane env (`rl.environment.climb_env.G1ClimbAscender`) is still
+reachable as the four `legacy_*` worlds, because the trainer still uses it.
 
 ## Run it on localhost
 
@@ -12,16 +18,26 @@ it already has `playground==0.2.0`, `mujoco==3.12.0`, `brax==0.14.2`):
     pip install websockets pillow          # the only extras the harness needs
     # optional, for episode.mp4: brew install ffmpeg / apt install ffmpeg
 
-    python -m app.harness.runtime --live --world free_0
+    python -m app.harness.runtime --live --world lhotse_B
 
 then open **http://localhost:8766/app/web/index.html**. Click the view to take
 the pointer, hold **W** to walk/climb, move the mouse to look around, **R**
-resets, **Esc** pauses. Map selector: `free_0`, `climb_0`, `free_30`,
-`climb_5/8/10/12/30` (slope × rope on/off) plus four **Pemba G1** worlds
-(`climb_30_pemba`, `climb_12_pemba`, `climb_8_pemba`, `free_0_pemba`) that fly
-the real demo robot — jacket, snow boots, ascender instead of the right hand.
-All twelve are built from the team env. Wind dial is in m/s using `wind_env`'s
-drag law (the climb env is trained without wind).
+resets, **Esc** pauses. Map selector, twelve **ClimbScene** worlds then four **legacy** ones:
+
+| world | what |
+|---|---|
+| `lhotse_B` | the default — measured Lhotse patch B, 38.6°, jacketed robot, roped |
+| `lhotse_A` / `C` / `D` | the other measured patches, 33.7–36.2° |
+| `flat_0` | B's roughness with the macro slope removed — the walking reference |
+| `slope_25/30/35/45/50` | patch B with a synthetic slope override (curriculum) |
+| `lhotse_B_free` | patch B with the grip equality off |
+| `lhotse_B_playground` | patch B with the bare Playground G1, for comparison |
+| the four `legacy_*` | the old flat tilted plane + slide joint, which the trainer still uses |
+
+Wind dial is in m/s and goes through **his** `WindParams` into
+`ClimbScene.step`. Neither the wind nor this terrain is in training yet — the
+trainer is still on the old `climb_env` — so the state message keeps saying
+`wind_in_training: false` and `terrain_in_training: false`.
 
 Every live session is recorded under `app/harness/episodes/<stamp>_<world>/`
 (frames.npz, hud.json, header.json, episode.mp4) and playable from the page's
@@ -29,7 +45,8 @@ Replay tab.
 
 Other entry points:
 
-    python -m app.harness.runtime --world climb_30 --duration 10 --hold-w --no-render   # headless case
+    python -m app.harness.runtime --world lhotse_B --duration 10 --hold-w --no-render  # headless case
+    python -m app.harness.climb_worlds --world lhotse_B                                  # parity gates + fingerprint
     python -m app.harness.runtime --live --policy path/to/policy.npz                    # a trained policy (mels npz layout)
     python -m app.harness.test_parity                                                   # obs + rollout parity vs the JAX env
 
@@ -37,7 +54,34 @@ Other entry points:
 forward command (default 0.5 m/s).
 
 
-## The Pemba G1 (the real demo robot)
+## The ClimbScene worlds
+
+`app/harness/climb_worlds.py` calls `climb_scene.build_scene(...)` and drives
+what comes back. The physics step is his (`ClimbScene.step(wind)` = one
+`mj_step` + the carrier projection + the arc-length ratchet); the 103-dim
+observation and the walking policy are his (`walk_policy.WalkController`).
+Ours is the command, the wind vector, the friction knob, the telemetry and the
+bookkeeping.
+
+Two gates run before a world is trusted, both printed:
+
+    python -m app.harness.climb_worlds --world lhotse_B
+
+*joint parity* — the scene's 29 actuated joints against Playground's, in order
+(a mismatch means the policy's actions drive the wrong joints) — and
+*observation parity* — our builder against his `observe()` at the same state.
+Measured **0.000e+00**: bit-identical.
+
+`app/harness/provision_assets.py` puts the gitignored trees the scene needs on
+disk (`.reference/`, the jacketed robot's stock link STLs, `~/mujoco_menagerie`)
+by copying from the installed `mujoco_playground`, because all of the repo's own
+fetch paths fail here. It runs automatically; PARITY.md says what is broken.
+
+## The Pemba G1 (the real demo robot, legacy env only)
+
+**Superseded by the ClimbScene worlds**, which build the jacketed robot by
+default through the team's own `robot.resolve`/`adapt`. Kept because it is the
+only way to put that robot in the *legacy* env.
 
 `app/harness/robot_variants.py` generates a Playground-compatible scene that
 wraps `assets/robots/mujoco/g1_unitree_ascender.xml`, then points the ONE line
@@ -69,7 +113,7 @@ The last non-None dict any hook returns during a control tick becomes
 
 `--bms` wires `app/bms/sim/mujoco_monitor.SimMonitor` in for you:
 
-    python -m app.harness.runtime --live --world free_0 --bms
+    python -m app.harness.runtime --live --world lhotse_B --bms
 
 It builds `Environment(altitude_m=<world's altitude_meters, default 6907>,
 wind_kmh=3.6 × wind dial)` and keeps `wind_kmh` live as the dial moves. Your

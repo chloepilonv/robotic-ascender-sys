@@ -147,6 +147,199 @@ What the four rows say together, which no single run could:
   the catch). The ascender does exactly its job; what is missing is a policy
   that can stand on a 30° slope.
 
+## ClimbScene worlds — the merged scene (PR #8)
+
+Twelve of the sixteen worlds now run `rl/environment/climb_scene.py`: the
+Lhotse Face heightfield, a rope polyline draped over it, a bead-on-a-wire
+carrier, the jacketed G1. `app/harness/climb_worlds.py` calls `build_scene`
+and drives what comes back. **It builds nothing.**
+
+### What is his, and what is ours
+
+| piece | source of truth | how we consume it |
+|---|---|---|
+| the whole model | `climb_scene.build_scene(...)` | **called**. Terrain, rope, carrier, grip equality, slope-fitted spawn all come back compiled |
+| the physics step | `ClimbScene.step(wind)` | **called**, 10× per 50 Hz control tick. It is one `mj_step` + the carrier projection + the arc-length ratchet, with wind drag written into `xfrc_applied` first |
+| the 103-d observation | `walk_policy.WalkController.observe()` | **called**. His is the contract now; ours is measured against it (below) and used only for the legacy worlds |
+| the policy + gait clock + `last_act` | `walk_policy.WalkController.substep()` | **called**. It writes `data.ctrl` and evaluates the net once per decimation |
+| wind | `climb_scene.WindParams` | **constructed** from the dial (m/s + heading) and handed to `step()` |
+| friction | `FrictionParams.from_scalar` at build; live knob writes `geom_friction` | see the note on contact pairs below |
+| the robot | `robot.resolve` / `robot.adapt` | selected by name (`himalaya` / `playground`), never by a path we typed |
+| command clamp | `walk_policy.CMD_LIMITS` | **imported**, not restated |
+| climb metric | `RopeCarrier.progress` (his ratchet state) | arc length along the rope since spawn |
+
+### `policy_compat` — what it actually does
+
+`robot.adapt(spec, policy_compat=True)` is on by default and is **not
+cosmetic**. The jacketed robot ships stock menagerie dynamics; Playground
+retuned them for RL and the mels policy learned against *that* plant. Measured
+on the built model, `adapt_report` reports:
+
+```
+added   : site right_palm, sensor local_linvel_pelvis, sensor gyro_pelvis,
+          keyframe knees_bent
+retuned : foot contact: 4 spheres -> playground box
+          actuator kp/kv, dof damping/armature/frictionloss
+```
+
+Concretely it rewrites actuator kp (500 uniform → 75/20/2 per joint), kv, dof
+damping, armature and frictionloss, and swaps the four 5 mm foot spheres for
+Playground's single contact box. Our compiled scene reads back
+**`actuator kp min/max 2/75`**.
+
+**This is the fix for the kp=500 problem the previous report raised as ASK P1.**
+That ask is resolved upstream: the plant mismatch is handled by an explicit,
+documented, default-on shim, and `--stock-plant` keeps the robot exactly as the
+project specifies it (his measurement: the walking policy then falls at ~1.8 s).
+
+### Gates — both run, both printed
+
+    python -m app.harness.climb_worlds --world lhotse_B
+
+**Joint parity.** The scene's 29 actuated joints against Playground's own
+model, in order. Result: **29 vs 29, identical order.** Re-run here rather than
+inherited, because the merged scene is a different build path.
+
+**Observation parity.** Our `PlaygroundObservation` against his `observe()` at
+the same state, reset and perturbed:
+
+```
+obs parity (reset state):     max |ours - his| 0.000e+00   his norm 3.5787
+obs parity (perturbed state): max |ours - his| 0.000e+00   his norm 3.5618
+observation parity worst 0.000e+00  PASS
+```
+
+**Bit-identical.** One input has to be handed over rather than derived, and it
+is load-bearing: `default_pose`. His is pinned to `robot.KNEES_BENT_QPOS`; ours
+reads the compiled keyframe. On a slope `build_scene` *leans the base and
+re-pitches the ankles* so the soles lie flat, so the scene's keyframe is no
+longer the pose the policy's action deltas are about. Reading it — which is
+correct for the flat legacy env — would silently move the policy's operating
+point with the terrain. His is right; ours takes his value.
+
+**His own acceptance suite:** `python -m rl.scripts.climb_scene --check` →
+**ALL CHECKS PASSED** (13 checks).
+
+### What the scene does not have, and what we do instead
+
+| absent | what we do |
+|---|---|
+| `upvector_torso` sensor (`adapt` adds only `local_linvel_pelvis`, `gyro_pelvis`) | read the same quantity off `site_xmat[imu_in_torso]` column z — that IS what a `framezaxis` sensor on that site reports |
+| the seven `..._found` contact sensors | **our fall test is narrower than the training env's**: upright < 0 or non-finite state, with no foot/shin self-collision term. Stated here because a "did not fall" on a ClimbScene world is a weaker claim than on a legacy one |
+| a rope-off switch in `build_scene` | the free world deactivates the `ascender_grip` equality through `data.eq_active`, re-applied after every reset (`mj_resetDataKeyframe` restores it from the model) |
+
+### mels on the merged scene, W held (`lin_vel_x` 0.5), 10 s
+
+| world | robot | rope | slope | fell | at | arc climbed | height | max rope | hand-off-rope | pelvis displ |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `flat_0` | himalaya | on | 0.4° | **no** | — | **+1.855 m** | −0.076 m | 137 N | 0.0003 m | 1.803 m |
+| `lhotse_B` | himalaya | on | 38.6° | **no** | — | +0.002 m | −0.741 m | 309 N | 0.0023 m | 0.768 m |
+| `lhotse_B_playground` | playground | on | 38.6° | **no** | — | +0.002 m | −0.796 m | 580 N | 0.0038 m | 0.828 m |
+| `lhotse_B_free` | himalaya | **off** | 38.6° | **yes** | 3.14 s | 0.000 m | **−276.4 m** | 0 N | 272 m | 276.6 m |
+
+What the four rows say together:
+
+* **On the flat the ascender tracks a walking robot.** `flat_0` walks and the
+  carrier climbs 1.855 m of arc, hand 0.3 mm off the rope throughout.
+* **On the real face the policy cannot climb, and the rope catches it.**
+  `lhotse_B` slips to −0.74 m and hangs at ~300 N; it never tips past upright,
+  and the hand stays 2 mm off the line. This reproduces his own documented
+  baseline ("slips, then hangs from the rope, dz −0.83 m").
+* **The jacketed robot and the Playground robot behave the same** on the same
+  scene — −0.741 m vs −0.796 m, arc 0.0020 vs 0.0023 m. That is
+  `policy_compat` working: his "103-dim observation bit-identical between the
+  two robots" claim holds dynamically, not just statically.
+* **Without the rope it is a 276 m slide.** `lhotse_B_free` tips at 3.14 s and
+  ends a quarter-kilometre down the face. The rope is the entire difference
+  between "hangs, −0.74 m" and "gone".
+
+**Caveat, his and worth repeating:** the command is *body-frame* forward
+velocity and yaw drifts freely, so world-frame pelvis displacement is not a
+tracking measure. Read the arc-length column, not the displacement column.
+
+### Fingerprints
+
+`fingerprint_lhotse_B.json`, `fingerprint_lhotse_B_playground.json`. Highlights
+for B:
+
+```
+model     nq 39  nv 38  nu 29   (7 base + 29 robot + 3 carrier slides)
+          nbody 32  neq 1  nsensor 7  nhfield 1   dt 0.002  mass 34.4411 kg
+terrain   patch B, 38.60 deg (REAL, Copernicus GLO-30)
+          hfield 12.5 x 7.5 x 0.698 m, 300 x 500 grid, friction 0.9
+rope      29.476 m, 9 waypoints, rise 18.409 m over run 23.002 m
+          => mean slope 38.67 deg (matches the terrain to 0.07 deg)
+ascender  carrier 1.0 kg, ratchet on, arc at spawn 6.368 m
+          grip CONNECT solref [0.004, 1.0] solimp [0.95, 0.99, 0.001, 0.5, 2.0]
+spawn     lean 12.4 deg, ankle -47.0 deg, hand-rope distance 5.6e-17 m
+control   action_scale 0.5, ctrl_dt 0.02 x 10 substeps, kp 2..75
+```
+
+The three carrier slide joints are appended AFTER the robot's, so the robot's
+joints are `qpos[7:36]` / `qvel[6:35]` — **bounded slices only**. An open-ended
+`qpos[7:]` picks the carrier up as three phantom joints. Ours are bounded and
+the obs parity result proves it.
+
+### Contact pairs — the trap that does NOT apply here
+
+His doc records that `climb_env.py`'s `foot_friction` knob is inert, because
+the G1 XML declares `<pair name="left_foot_floor" friction="0.6 0.6"/>` and an
+explicit pair overrides both geoms' friction. **The merged scene compiles with
+`npair 0`** — verified on the built model, not assumed — so the live friction
+knob writing `geom_friction` on the foot and terrain geoms does take effect
+here. The legacy worlds still have the bug, upstream.
+
+### Gaps this raised
+
+**C1 — neither fetch path for the scene's assets works on a clean machine.**
+`rl/tools/fetch_reference_model.py` dies with
+`URLError: [SSL: CERTIFICATE_VERIFY_FAILED]`, and it writes to `rl/.reference`
+(`__file__.parent.parent`) while `robot.py` reads `<repo>/.reference` — so even
+a successful fetch lands in the wrong directory. Separately,
+`assets/robots/mujoco/build.py --fetch` still dies with
+`ModuleNotFoundError: No module named 'pxr'`. `app/harness/provision_assets.py`
+sidesteps all three by copying from the `mujoco_playground` already installed in
+the venv (same pinned menagerie commit, no network). **ASK:** fix the
+`parent.parent` path, and either vendor the reference or make the fetch
+tolerate a proxy.
+
+**C2 — the trainer is still on the old env.** His doc's "Not yet done:
+training" — `rl/environment/{climb_env,wind_env}.py` still use the flat tilted
+plane and the slide joint. So **wind and this terrain are demo-only**, and the
+state message keeps `wind_in_training: false` and adds
+`terrain_in_training: false`. The four `legacy_*` worlds exist precisely
+because that is still the thing being trained.
+
+**C3 — no self-collision termination on the merged scene.** See the table
+above; our fall test is narrower than the training env's. If `adapt` gained
+Playground's seven `..._found` contact sensors the two would match.
+
+**C4 — `B_slope*` slopes are synthetic overrides.** `--list` says so and the
+world list carries `slope_provenance`, but it is worth repeating where the
+numbers get quoted: `slope_45` is *not* the Lhotse Face at 45°. Only
+`lhotse_A/B/C/D` have measured slopes, and even there everything finer than
+~30 m is synthetic (one patch covers 0.447 of a DEM cell).
+
+### Asks from earlier reports that PR #8 RESOLVED
+
+* **P1 — actuator gains (was the blocker).** Resolved by `policy_compat`.
+* **P2 — point `climb_env` at the jacketed MJCF.** Superseded: `climb_scene`
+  takes `robot_scene=` directly and defaults to the jacketed robot, so no
+  monkeypatch is needed for the new path. (Our `robot_variants.py` monkeypatch
+  survives for the legacy env only.)
+* **P3 — the robot needs Playground's names.** Resolved by `robot.adapt`,
+  which adds `right_palm`, the two sensors and the `knees_bent` keyframe.
+* **P4 — `knees_bent` was Playground's, not the robot's.** Resolved: `adapt`
+  installs it, and `build_scene` re-poses it per slope while `walk_policy`
+  keeps the policy's `default_pose` pinned to the training value.
+* **P6 — `build.py --fetch` broken.** Still broken; now tracked as C1.
+
+Still open from earlier: **G6** (brax → npz export for trained checkpoints),
+**G10** (obs layout will change if rope terms are added — his doc says the same:
+"keep the observation at 103 dims"), **G14** (`njmax` sizing, MJX only),
+**P5** (MJX CCD warning on mesh/cylinder pairs — now more relevant, since the
+merged scene has a rope cylinder *and* mesh collision geoms).
+
 ## Pemba robot variant — the real demo robot on the rope
 
 The four `*_pemba` worlds fly the robot the team actually built

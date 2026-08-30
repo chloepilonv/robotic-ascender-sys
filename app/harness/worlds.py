@@ -50,64 +50,36 @@ _HARNESS_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 # name -> the world. `config_overrides` goes straight to their env; `rope` is
 # the MjData-level grip flag.
 WORLD_DEFINITIONS = {
-    "climb_30": {
-        "label": "Climb 30° · rope",
+    "legacy_climb_30": {
+        "label": "LEGACY climb_env · 30° · rope",
         "slope_degrees": 30.0,
         "rope": True,
         "config_overrides": {"climb_config.slope_deg": 30.0},
-        "description": "The training task: 30 degree slope, right palm on the"
-                       " fixed line through the ascender.",
+        "description": "The OLD mechanism: rl/environment/climb_env.py's flat"
+                       " tilted plane and straight-cylinder slide joint. Kept"
+                       " because the trainer still uses it.",
     },
-    "climb_5": {
-        "label": "Climb 5° · rope",
-        "slope_degrees": 5.0,
-        "rope": True,
-        "config_overrides": {"climb_config.slope_deg": 5.0},
-        "description": "5 degree slope with the fixed line: the gentle end of the ladder.",
-    },
-    "climb_8": {
-        "label": "Climb 8° · rope",
-        "slope_degrees": 8.0,
-        "rope": True,
-        "config_overrides": {"climb_config.slope_deg": 8.0},
-        "description": "8 degree slope with the fixed line: the gentle end of the ladder.",
-    },
-    "climb_10": {
-        "label": "Climb 10° · rope",
-        "slope_degrees": 10.0,
-        "rope": True,
-        "config_overrides": {"climb_config.slope_deg": 10.0},
-        "description": "10 degree slope with the fixed line: the gentle end of the ladder.",
-    },
-    "climb_12": {
-        "label": "Climb 12° · rope",
-        "slope_degrees": 12.0,
-        "rope": True,
-        "config_overrides": {"climb_config.slope_deg": 12.0},
-        "description": "12 degree slope with the fixed line: the gentle end of the ladder.",
-    },
-    "free_30": {
-        "label": "Free walk 30° · no rope",
+    "legacy_free_30": {
+        "label": "LEGACY climb_env · 30° · no rope",
         "slope_degrees": 30.0,
         "rope": False,
         "config_overrides": {"climb_config.slope_deg": 30.0},
-        "description": "Same model and same slope, grip equality DEACTIVATED."
-                       " Isolates how much of the behaviour is the slope.",
+        "description": "Old mechanism, grip equality deactivated.",
     },
-    "free_0": {
-        "label": "Free walk 0° · no rope",
+    "legacy_free_0": {
+        "label": "LEGACY climb_env · 0° · no rope",
         "slope_degrees": 0.0,
         "rope": False,
         "config_overrides": {"climb_config.slope_deg": 0.0},
-        "description": "Flat ground, no rope: the stock mels walking baseline.",
+        "description": "Old mechanism, flat, no rope: the original walking"
+                       " baseline.",
     },
-    "climb_0": {
-        "label": "Climb 0° · rope",
+    "legacy_climb_0": {
+        "label": "LEGACY climb_env · 0° · rope",
         "slope_degrees": 0.0,
         "rope": True,
         "config_overrides": {"climb_config.slope_deg": 0.0},
-        "description": "Flat ground with the grip on: what the fixed line alone"
-                       " costs a walker, with the slope taken out.",
+        "description": "Old mechanism, flat, grip on.",
     },
 }
 
@@ -118,22 +90,25 @@ WORLD_DEFINITIONS = {
 # surgery, same everything else.
 for _name, _definition in list(WORLD_DEFINITIONS.items()):
     _definition["robot"] = "bare"
+    _definition["kind"] = "legacy_climb_env"
 
-PEMBA_WORLD_SOURCES = ("climb_30", "climb_12", "climb_8", "free_0")
-for _source in PEMBA_WORLD_SOURCES:
-    _base = WORLD_DEFINITIONS[_source]
-    WORLD_DEFINITIONS[f"{_source}_pemba"] = {
-        "label": f"{_base['label']} · Pemba G1",
-        "slope_degrees": _base["slope_degrees"],
-        "rope": _base["rope"],
-        "config_overrides": dict(_base["config_overrides"]),
-        "robot": "pemba",
-        "description": (f"{_base['description']} Flown on the REAL demo robot"
-                        " (jacket, snow boots, ascender instead of the right"
-                        " hand) rather than the stock Playground G1."),
-    }
+# The `*_pemba` robot-variant worlds are GONE, and deliberately: PR #8's
+# `climb_scene` builds the jacketed demo robot by DEFAULT, through the team's
+# own `robot.resolve`/`adapt`, so a separate variant of the old env would now
+# be a second way of saying the same thing -- and the worse one, since it
+# cannot drape a rope over terrain. `app/harness/robot_variants.py` stays for
+# the legacy env only.
 
-DEFAULT_WORLD_NAME = "climb_30"
+# The merged ClimbScene worlds go FIRST in the selector; the legacy four sit
+# at the bottom. Import here rather than the other way round so `climb_worlds`
+# stays free of this module.
+from app.harness.climb_worlds import (  # noqa: E402
+    CLIMB_WORLD_DEFINITIONS, DEFAULT_CLIMB_WORLD,
+)
+
+WORLD_DEFINITIONS = {**CLIMB_WORLD_DEFINITIONS, **WORLD_DEFINITIONS}
+
+DEFAULT_WORLD_NAME = DEFAULT_CLIMB_WORLD
 
 
 def world_names():
@@ -148,6 +123,8 @@ def describe_worlds():
         "slope_degrees": definition["slope_degrees"],
         "rope": definition["rope"],
         "robot": definition["robot"],
+        "kind": definition["kind"],
+        "slope_provenance": definition.get("slope_provenance"),
         "description": definition["description"],
     } for name, definition in WORLD_DEFINITIONS.items()]
 
