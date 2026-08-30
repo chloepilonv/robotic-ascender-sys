@@ -111,6 +111,28 @@ WORLD_DEFINITIONS = {
     },
 }
 
+# Every world above runs the stock Playground G1. The demo robot -- jacket,
+# snow boots, ascender end-effector in place of the right hand -- is a second
+# ROBOT VARIANT of the same worlds, built by pointing their `_build_model` at a
+# different starting scene (app/harness/robot_variants.py). Same env class, same
+# surgery, same everything else.
+for _name, _definition in list(WORLD_DEFINITIONS.items()):
+    _definition["robot"] = "bare"
+
+PEMBA_WORLD_SOURCES = ("climb_30", "climb_12", "climb_8", "free_0")
+for _source in PEMBA_WORLD_SOURCES:
+    _base = WORLD_DEFINITIONS[_source]
+    WORLD_DEFINITIONS[f"{_source}_pemba"] = {
+        "label": f"{_base['label']} · Pemba G1",
+        "slope_degrees": _base["slope_degrees"],
+        "rope": _base["rope"],
+        "config_overrides": dict(_base["config_overrides"]),
+        "robot": "pemba",
+        "description": (f"{_base['description']} Flown on the REAL demo robot"
+                        " (jacket, snow boots, ascender instead of the right"
+                        " hand) rather than the stock Playground G1."),
+    }
+
 DEFAULT_WORLD_NAME = "climb_30"
 
 
@@ -125,14 +147,23 @@ def describe_worlds():
         "label": definition["label"],
         "slope_degrees": definition["slope_degrees"],
         "rope": definition["rope"],
+        "robot": definition["robot"],
         "description": definition["description"],
     } for name, definition in WORLD_DEFINITIONS.items()]
 
 
-def _cache_key(config_overrides):
-    """The FULL override set, frozen. Never a subset -- see the module docstring."""
-    return tuple(sorted((str(k), float(v) if isinstance(v, (int, float)) else v)
-                        for k, v in config_overrides.items()))
+def _cache_key(definition):
+    """The ROBOT plus the FULL override set, frozen.
+
+    The robot belongs in the key as much as the overrides do: `climb_30` and
+    `climb_30_pemba` pass identical `config_overrides` and are different
+    models. A key that omitted it would hand the jacketed world the bare
+    robot's model and nothing would complain.
+    """
+    overrides = definition["config_overrides"]
+    return (definition["robot"],) + tuple(sorted(
+        (str(k), float(v) if isinstance(v, (int, float)) else v)
+        for k, v in overrides.items()))
 
 
 class WorldLibrary:
@@ -144,8 +175,7 @@ class WorldLibrary:
         self.write_fingerprint = write_fingerprint
 
     def is_cached(self, name) -> bool:
-        definition = WORLD_DEFINITIONS[name]
-        return _cache_key(definition["config_overrides"]) in self._models_by_key
+        return _cache_key(WORLD_DEFINITIONS[name]) in self._models_by_key
 
     def load(self, name, on_build_start=None):
         """(model, meta, definition). Builds on first use (~1.6 s), then cached.
@@ -156,23 +186,25 @@ class WorldLibrary:
         if name not in WORLD_DEFINITIONS:
             raise KeyError(f"unknown world {name!r}; have {world_names()}")
         definition = WORLD_DEFINITIONS[name]
-        key = _cache_key(definition["config_overrides"])
+        key = _cache_key(definition)
         if key not in self._models_by_key:
             if on_build_start is not None:
                 on_build_start()
             build_started = time.time()
-            print(f"[worlds] building {name} (overrides"
-                  f" {definition['config_overrides']}) -- cached after", flush=True)
-            # Each model gets its OWN fingerprint file: with one shared path
-            # the last build would overwrite the evidence for the others.
-            fingerprint_path = os.path.join(
-                _HARNESS_DIRECTORY,
-                f"fingerprint_slope_{definition['slope_degrees']:.0f}.json")
+            print(f"[worlds] building {name} (robot {definition['robot']},"
+                  f" overrides {definition['config_overrides']}) -- cached after",
+                  flush=True)
             model, meta = team_env.load_team_model(
                 config_overrides=dict(definition["config_overrides"]),
+                robot=definition["robot"],
                 print_fingerprint=self.print_fingerprint,
                 write_fingerprint=self.write_fingerprint,
-                fingerprint_path=fingerprint_path,
+                # Each model gets its OWN fingerprint file: with one shared
+                # path the last build would overwrite the evidence for the
+                # others. The 30-degree jacketed model is the headline one, so
+                # it takes the plain `fingerprint_pemba.json` name.
+                fingerprint_path=os.path.join(
+                    _HARNESS_DIRECTORY, fingerprint_filename(definition)),
             )
             self._models_by_key[key] = (model, meta)
             print(f"[worlds] built {name} in {time.time() - build_started:.2f} s",
@@ -184,10 +216,18 @@ class WorldLibrary:
         return model, meta, definition
 
     def _siblings(self, name):
-        key = _cache_key(WORLD_DEFINITIONS[name]["config_overrides"])
+        key = _cache_key(WORLD_DEFINITIONS[name])
         return [other for other in WORLD_DEFINITIONS
-                if other != name
-                and _cache_key(WORLD_DEFINITIONS[other]["config_overrides"]) == key]
+                if other != name and _cache_key(WORLD_DEFINITIONS[other]) == key]
+
+
+def fingerprint_filename(definition) -> str:
+    """Which fingerprint file this world's model writes."""
+    slope = definition["slope_degrees"]
+    if definition["robot"] != "pemba":
+        return f"fingerprint_slope_{slope:.0f}.json"
+    return ("fingerprint_pemba.json" if slope == 30.0
+            else f"fingerprint_pemba_slope_{slope:.0f}.json")
 
 
 def ascender_geom_ids(model, meta):

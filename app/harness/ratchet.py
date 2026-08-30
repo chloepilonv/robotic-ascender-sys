@@ -65,17 +65,31 @@ class AscenderRatchet:
         return float(data.qvel[self.slide_dof_address])
 
 
-def step_with_ratchet(mujoco_module, model, data, ratchet, substeps: int) -> None:
+def step_with_ratchet(mujoco_module, model, data, ratchet, substeps: int,
+                      physics_step_hooks=()) -> list:
     """One control step: `substeps` x (mj_step + ratchet). Their `_step_physics`.
 
     `data.ctrl` must already hold the motor targets; it is NOT written here
     (their scan re-sets the same ctrl every substep, which is equivalent).
     No `mj_forward` afterwards -- see the module docstring on staleness.
+
+    `physics_step_hooks` are `callable(model, data) -> dict | None`, called
+    after EVERY substep (i.e. at the physics rate, `model.opt.timestep`) once
+    the ratchet has finished with the state. That rate is the point: a
+    battery/thermal model integrates per physics step, not per control tick.
+    Returns the list of non-None dicts the hooks produced this control step,
+    in call order.
     """
+    results = []
     for _ in range(substeps):
         ratchet.before_substep(data)
         mujoco_module.mj_step(model, data)
         ratchet.after_substep(data)
+        for hook in physics_step_hooks:
+            value = hook(model, data)
+            if value is not None:
+                results.append(value)
+    return results
 
 
 def hand_height_on_line_meters(data, palm_site_id, line_point_world,

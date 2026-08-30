@@ -97,6 +97,9 @@ PAUSED_BROADCAST_HZ = 5.0     # heartbeat while the browser has let go
 # uncapped), and say so on stdout when the cap bites.
 LIVE_MAXIMUM_RECORDED_FRAMES = 6000   # 2 minutes of episode.mp4 at 50 Hz
 GAIT_FREQUENCY_HZ = 1.375     # midpoint of their reset draw U(1.25, 1.5)
+# Everest South Col, the altitude the battery model is asked about unless a
+# world declares its own `altitude_meters`.
+DEFAULT_ALTITUDE_METERS = 6907.0
 
 # rl/environment/wind_env.py:28-36 -- the ONLY place wind constants come from.
 # Imported at load time rather than restated; these are the fallback if the
@@ -173,6 +176,15 @@ class Episode:
         self.global_linvel_torso_slice = slice(
             *meta["sensor_addresses"]["torso_global_linvel"])
         self.slope_degrees = meta["slope_degrees"]
+        # THE PHYSICS-STEP SEAM (Chloe: your BMS plugs in here).
+        # Each hook is `callable(model, data) -> dict | None`, called after
+        # EVERY mj_step -- i.e. at model.opt.timestep, the rate a battery or
+        # thermal model integrates at, not the 50 Hz control rate. The last
+        # non-None dict any hook returns during a control tick becomes
+        # `latest_bms`, which is broadcast as state["bms"] and recorded as one
+        # hud.json entry per tick. Append to this list; nothing else to touch.
+        self.physics_step_hooks = []
+        self.latest_bms = None
         self.wind_velocity_world = np.zeros(2)
         self.wind_force_world_newtons = np.zeros(3)
         # Two worlds can SHARE an MjModel (climb_30/free_30, climb_0/free_0), and
@@ -307,8 +319,11 @@ class Episode:
         self.data.ctrl[:] = self.default_pose + self.action_scale * action
         self.apply_wind(wind_velocity_world)
 
-        ratchet_module.step_with_ratchet(
-            mujoco, self.model, self.data, self.ratchet, self.substeps)
+        readings = ratchet_module.step_with_ratchet(
+            mujoco, self.model, self.data, self.ratchet, self.substeps,
+            self.physics_step_hooks)
+        if readings:
+            self.latest_bms = readings[-1]
 
         self.gait_phase.advance()
         self.last_action = action
@@ -542,7 +557,47 @@ def run(arguments) -> str:
               flush=True)
         return episode, model, meta
 
+    def attach_battery_monitor(episode, meta):
+        """Best-effort: register Chloe's SimMonitor as a physics-step hook.
+
+        Deliberately forgiving. `app/bms/sim/mujoco_monitor.py` does its own
+        `sys.path` surgery at import time and neither `app/bms/` nor
+        `app/bms/sim/` has an `__init__.py`, so this import can break in ways
+        that are not our business to fix -- we say so clearly and carry on
+        without a battery readout rather than taking the demo down with us.
+        We never edit app/bms.
+        """
+        if not arguments.bms:
+            return
+        try:
+            from app.bms.sim.mujoco_monitor import SimMonitor
+            from app.bms.sim.battery_model import Environment
+        except Exception as error:
+            print(f"[bms] NOT attached: importing app.bms.sim failed"
+                  f" ({type(error).__name__}: {error}). The harness runs"
+                  " normally without it; nothing in app/bms was changed.",
+                  flush=True)
+            return
+        try:
+            altitude = float(episode.definition.get(
+                "altitude_meters", DEFAULT_ALTITUDE_METERS))
+            environment = Environment(altitude_m=altitude, wind_kmh=0.0)
+            monitor = SimMonitor(episode.model, env=environment)
+            # Her step() takes (data) and integrates at model.opt.timestep;
+            # our hook contract is (model, data), so adapt rather than ask her
+            # to change a signature.
+            episode.physics_step_hooks.append(
+                lambda model, data, monitor=monitor: monitor.step(data))
+            episode.battery_environment = environment
+            print(f"[bms] attached: SimMonitor at altitude {altitude:.0f} m,"
+                  f" integrating every {episode.model.opt.timestep * 1000:.0f} ms"
+                  f" ({1.0 / episode.model.opt.timestep:.0f} Hz)", flush=True)
+        except Exception as error:
+            print(f"[bms] NOT attached: constructing SimMonitor failed"
+                  f" ({type(error).__name__}: {error})", flush=True)
+
     episode, model, meta = open_world(arguments.world)
+    attach_battery_monitor(episode, meta)
     print(f"[runtime] observation noise OFF (training level {meta['noise_level']});"
           f" wind NOT in training; friction knob starts at"
           f" {meta['foot_friction']}", flush=True)
@@ -617,6 +672,12 @@ def run(arguments) -> str:
                 continue
             wind_velocity_world[:] = [server.knobs.get("wind_x", 0.0),
                                       server.knobs.get("wind_y", 0.0)]
+            # The battery model's wind chill is live: the dial is m/s, hers is
+            # km/h.
+            environment = getattr(episode, "battery_environment", None)
+            if environment is not None:
+                environment.wind_kmh = 3.6 * float(
+                    np.linalg.norm(wind_velocity_world))
             friction = float(server.knobs.get("friction", applied_friction))
             if abs(friction - applied_friction) > 1e-9:
                 episode.set_foot_friction(friction)
@@ -634,6 +695,7 @@ def run(arguments) -> str:
                     recorder.finalize(episode_outcome(
                         episode, realtime_factor, frames_rendered))
                     episode, model, meta = open_world(requested)
+                    attach_battery_monitor(episode, meta)
                     if not arguments.no_render and model is not rendered_model:
                         # The GL context is NOT garbage collected, and it is
                         # bound to the model it was made for. Two worlds that
@@ -677,6 +739,7 @@ def run(arguments) -> str:
                                    "wind_velocity_world_meters_per_second": wind_list})
             last_logged_wind = wind_list
         recorder.append(**{k: v for k, v in row.items() if k != "observation"})
+        recorder.append_bms(episode.latest_bms)
 
         jpeg = None
         if renderer is not None:
@@ -718,6 +781,8 @@ def run(arguments) -> str:
                 "height_gained_meters": row["height_gained_meters"],
                 "rope_force_newtons": row["rope_force_newtons"],
                 "slope_degrees": episode.slope_degrees,
+                "robot": meta.get("robot", "bare"),
+                "bms": episode.latest_bms,
                 "realtime_factor": realtime_factor,
                 "heading_degrees": heading.desired_heading_degrees,
                 "world": episode.world_name,
@@ -772,6 +837,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
                         default=CLIMB_COMMAND_METERS_PER_SECOND,
                         help="lin_vel_x commanded while W is held, m/s"
                              " (their training range is [-1, 1])")
+    parser.add_argument("--bms", action="store_true",
+                        help="attach app/bms/sim SimMonitor as a physics-step"
+                             " hook (best-effort; logs and continues if the"
+                             " import fails)")
     parser.add_argument("--policy", default=None, help="path to a policy npz")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--randomise-reset-velocity", action="store_true",

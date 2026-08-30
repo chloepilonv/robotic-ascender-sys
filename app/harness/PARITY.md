@@ -147,6 +147,165 @@ What the four rows say together, which no single run could:
   the catch). The ascender does exactly its job; what is missing is a policy
   that can stand on a 30° slope.
 
+## Pemba robot variant — the real demo robot on the rope
+
+The four `*_pemba` worlds fly the robot the team actually built
+(`assets/robots/mujoco/g1_unitree_ascender.xml`: jacket, snow boots, ascender
+end-effector in place of the right hand) through the same
+`G1ClimbAscender` env, the same surgery, the same everything else.
+
+### How it is built
+
+`app/harness/robot_variants.py` generates a Playground-compatible scene wrapping
+the real robot, then redirects the one line their builder uses to pick a
+starting scene — `consts.task_to_xml`, called at climb_env.py:136 and :231 and
+joystick.py:121 — at that file for the duration of one constructor. Their
+`_build_model` then tilts the floor, adds the rope and carrier, connects the
+palm and sets foot friction, exactly as it does for the stock robot. **Nothing
+under `assets/robots/mujoco/` is edited.** Generated files carry absolute mesh
+paths, so they are machine-specific and gitignored under
+`app/harness/generated/`.
+
+The generated scene adds only what their code looks up **by name** and would
+crash without. Every addition is a NAME on something that already exists, or a
+sensor — never new collision geometry, because that would change the physics:
+
+| what | how |
+|---|---|
+| `floor` plane geom, `groundplane` material, visual block | copied from Playground's `scene_mjx_feetonly_flat_terrain.xml` |
+| keyframe `knees_bent` | Playground's qpos/ctrl **verbatim** — legal only because joint parity passes (below) |
+| site `right_palm` | the hand is gone; placed at the ascender's own bounding-box centre, where the rope runs through the device |
+| site `left_palm` | left arm untouched, so Playground's exact position (0.08, 0, 0) |
+| geoms `left_foot`/`right_foot` | **named** one of the four existing collision spheres per foot |
+| geoms `left/right_shin`, `left/right_thigh`, `left/right_hand_collision` | **named** the existing collision mesh on each link. On the right arm that is the **ascender**, which is what is out there now |
+| 22 state sensors | Playground's, verbatim — they only reference sites the robot already has |
+| 7 `..._found` contact sensors | re-aimed at **bodies** instead of Playground's geom names. More faithful, not less: `body1="left_ankle_roll_link"` covers all four foot spheres, where a geom name would cover one |
+| mesh paths | the robot points at `../g1/_menagerie/...` (a 34 MB gitignored fetch that needs `usd-core`); the identical menagerie STLs already ship inside `mujoco_playground`, so we point there and skip the fetch — the same rewrite their own `_rewrite_mesh_paths` does (climb_env.py:83-95) |
+
+### Joint parity — the gate the whole variant rests on
+
+`verify_joint_parity()` runs before anything else and **raises** if it fails,
+because copying Playground's `knees_bent` and feeding the policy's 29 actions to
+these actuators is only meaningful if the joint lists match name-for-name in
+order. Result: **29 vs 29, identical names, identical order.** The ascender does
+**not** replace any wrist joint — all three right wrist joints are present; the
+ascender is a geom mounted on `right_wrist_yaw_link`.
+
+### The measured diff (bare Playground G1 -> Pemba G1)
+
+```
+total mass        33.4411 kg -> 33.5411 kg   (+0.1000 kg)
+bodies   33 -> 33     geoms 74 -> 92     sites 7 -> 8
+joints   31 -> 31     actuators 29 -> 29     sensors 29 -> 34
+
+per-body mass changes: 1 of 33 bodies
+  right_wrist_yaw_link        0.2546 kg -> 0.3546 kg     (the ascender)
+
+feet   bare : 1 named box  0.09 x 0.03 x 0.008, condim 3, mu 0.8
+       pemba: 4 spheres per foot, r 0.005, condim 3, mu 0.8 (one named per foot)
+
+joints    identical order: True
+actuators identical order: True
+actuator kp   bare 2-75 per joint      pemba 500 for all 29      IDENTICAL: False
+
+grip   bare  palm/line at [0.14357, -0.2268, 0.66346]
+       pemba palm/line at [0.13970, -0.22663, 0.66425]
+       the line moves 4.0 mm
+```
+
+Jacket, boots and logos are visual-only exactly as their README says: they add
+18 geoms and **zero** mass. The only mass change in the whole robot is the
+ascender's +0.1 kg on the wrist. The grip point moves 4.0 mm, so the rope sits
+essentially where it did.
+
+Full tables: `fingerprint_pemba.json` (30°) and `fingerprint_pemba_slope_0.json`
+against `fingerprint_slope_30.json` / `fingerprint_slope_0.json`.
+
+### Does the observation still work, and does mels still fly it?
+
+Observation is **still 103-d** and finite; `default_pose`, `action_scale`,
+ctrl_dt and the substep count are identical; the mels npz loads and produces a
+finite 29-vector. So the policy runs. It just runs badly:
+
+| run (mels, W held = lin_vel_x 0.5, 10 s) | fell? | fell at | pelvis displ | rope travel | max grip |
+|---|---|---|---|---|---|
+| `free_0` (bare) | **no** | — | **4.320 m** | — | — |
+| `free_0_pemba` (as built) | **yes** | 2.16 s | 0.729 m | — | — |
+| `free_0_pemba` + Playground gains *(diagnostic)* | **no** | — | **2.732 m** | — | — |
+| `climb_30` (bare) | yes | 0.66 s | 0.765 m | +0.187 m | 1162 N |
+| `climb_30_pemba` (as built) | yes | 1.54 s | 0.636 m | +0.167 m | 333 N |
+| `climb_30_pemba` + Playground gains *(diagnostic)* | yes | 0.50 s | 0.656 m | +0.124 m | 378 N |
+
+**The gear is not what stops it walking — the actuator gains are.** With the
+robot exactly as built it falls on flat ground at 2.16 s. Copy Playground's
+per-joint gains onto the same robot, change nothing else, and it walks the full
+10 s for 2.73 m. (0.273 m/s against the bare robot's 0.432 m/s at the same
+command: still degraded by the jacket-era inertia and the four-sphere feet, but
+walking.) That diagnostic is `build_pemba_scene(playground_gains=True)`; it
+writes its own scene file and is **not** the team's robot.
+
+On the rope the ascender does its job on the real robot too: `climb_30_pemba`
+holds the palm **0.09 mm** off the line, travel is monotone, and the grip peaks
+at 333 N instead of the bare robot's 1162 N — it is caught earlier and more
+gently.
+
+### What was looked at, not just measured
+
+A frame of `climb_30_pemba` was rendered and inspected: purple jacket with the
+Everest Robotics chest logo, yellow snow boots, the brown rope cylinder running
+up the 30° slope, and the **orange ascender sitting on the rope** with the
+carrier sphere at its centre — right arm ending at the ascender, left hand
+still a hand. The rope renders on every climb world, as before.
+
+### ASKS — what the team must do to make this official
+
+**P1 — decide the actuator gains (the blocker).**
+`assets/robots/mujoco/g1_unitree_ascender.xml:8` sets
+`<position kp="500" dampratio="1" inheritrange="1"/>` for all 29 joints.
+Playground's G1 uses per-joint gains from 2 (ankle roll, wrist roll) to 75
+(hips, knees, waist, shoulders), and every policy trained in `rl/` is trained
+against those. At kp 500 the ankle roll is **250x** stiffer than the policy
+expects. The measurement above isolates this as the cause of the walking
+failure. Either bring the MJCF's gains to Playground's, or train on 500 and
+accept that the mels baseline will never look good on this robot — but it has
+to be a decision, not an accident.
+
+**P2 — point `climb_env` at this MJCF for real.** The clean version of what
+this module does by monkeypatch: give `climb_env.default_config()` a
+`robot_xml` key (default `None` = Playground's scene) and have `_build_model`
+use `MjSpec.from_file(cfg.robot_xml or consts.task_to_xml(self._task))`. Then
+`registry.load("G1ClimbAscender", config_overrides={"robot_xml": ...})` is all
+anyone needs and this file's generation step is the team's, not ours. Whoever
+does it inherits the checklist in the table above — those names are load-bearing.
+
+**P3 — the robot needs Playground's names, or Playground needs the robot's.**
+Every row in that table exists because the two disagree on naming. The
+cheapest fix is on the robot side: name the collision geoms
+(`left_shin`, `right_thigh`, ...), add `left_palm`/`right_palm` sites, and
+name one foot geom per foot. That is ~10 attributes in `build.py` and it makes
+the robot drop into Playground with no wrapper at all.
+
+**P4 — `knees_bent` is Playground's, not the robot's.** The robot ships one
+keyframe, `stand` (`g1_unitree_ascender.xml:338`), at pelvis z 0.79. We inject
+Playground's `knees_bent` (z 0.755). It is the right pose for the task — the
+palm lands on the rope at waist height — but if the team ever re-tunes the
+demo pose, it must be added to the MJCF as `knees_bent` or this variant keeps
+using Playground's.
+
+**P5 — MJX warns on the mesh collision pairs.** Loading the pemba scene under
+MJX prints: *"MULTICCD is enabled, but the scene contains CCD pairs without
+multicontact support: [('CYLINDER','CYLINDER'), ('CYLINDER','MESH')]. At most 1
+contact will be generated for these pairs."* The harness runs the plain MuJoCo
+C engine and is unaffected, but **training** on this robot runs MJX — worth
+checking before a long run, since the ascender and the rope are exactly those
+mesh/cylinder pairs.
+
+**P6 — `build.py --fetch` is broken without `usd-core`.** It imports
+`../g1/build_g1_usd.py`, which imports `pxr`, so the documented step 1 dies with
+`ModuleNotFoundError: No module named 'pxr'` on a plain install. The harness
+sidesteps it (the same STLs ship inside `mujoco_playground`), but the README's
+two-step instructions do not work as written.
+
 ## Test (a) — observation parity, verbatim numbers
 
 Both sides run with `noise_config.level = 0.0` (comparing determinism, not
