@@ -20,6 +20,11 @@ Writes `app/bms/sim/log.jsonl`, one line per sim second → point the app at tha
         mujoco.mj_step(model, data)
         row = mon.step(data)          # None except once per `period` (1 s); row is the dict that was logged
 
+## 1-hour Himalaya scenario (no MuJoCo, runs in seconds)
+    python app/bms/sim/scenario_1h.py
+5300 m, −24 °C, 40 min climb + 20 min idle: the jacketed pack finishes at 14 % SOC and +17 °C;
+the no-jacket control trips the BMS cut-off at 60 min with 13 % stranded in the cold cells.
+
 ## What MuJoCo gives directly vs what is modelled
 | Read from `mjData` | Modelled (`battery_model.py`) |
 |---|---|
