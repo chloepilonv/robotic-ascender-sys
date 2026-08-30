@@ -57,8 +57,11 @@
             font-size: 11.5px; font-weight: 600; letter-spacing: .07em; }
 
   /* ---------- sidebar: every control and every number ---------- */
-  aside { border-left: 1px solid var(--border); background: var(--bg); padding: 14px;
-          overflow: auto; display: flex; flex-direction: column; gap: 12px; }
+  aside { border-left: 1px solid var(--border); background: var(--bg); padding: 12px;
+          overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+  /* a column flex child shrinks below its content by default, which silently SQUASHED
+     the cards instead of scrolling the sidebar; every section keeps its natural height */
+  aside > *, #livePanel > *, #replayPanel > *, .bmsknobs > * { flex: none; }
   .topbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; order: 0; }
   .segmented { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid var(--border);
                border-radius: var(--radius); background: var(--card); }
@@ -72,10 +75,10 @@
   #realtime { color: var(--ink-3); font-variant-numeric: tabular-nums; font-size: 10.5px; }
 
   .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
-          padding: 12px; }
+          padding: 10px; }
   h2 { font-size: 10.5px; font-weight: 500; text-transform: uppercase; letter-spacing: .1em;
-       color: var(--ink-3); margin: 0 0 8px; }
-  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+       color: var(--ink-3); margin: 0 0 7px; }
+  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
   .head h2 { margin: 0; }
   .head output { font-size: 12px; color: var(--ink); font-variant-numeric: tabular-nums; }
   .note { font-size: 11px; color: var(--ink-3); margin-top: 7px; }
@@ -104,16 +107,16 @@
   input[type=range]::-moz-range-thumb { width: 13px; height: 13px; border-radius: 50%;
     background: var(--ink); border: none; }
 
-  #windDial { width: 132px; height: 132px; display: block; margin: 2px auto 6px;
+  #windDial { width: 78px; height: 78px; display: block; margin: 0 auto 2px;
               cursor: grab; touch-action: none; }
 
   /* ---------- telemetry (the former bottom HUD) ---------- */
   #telemetry { order: 2; }
-  .hero { display: flex; align-items: baseline; gap: 6px; margin: -1px 0 10px; }
+  .hero { display: flex; align-items: baseline; gap: 6px; margin: -1px 0 8px; }
   .hero b { font-size: 30px; font-weight: 600; letter-spacing: -.02em; line-height: 1;
             font-variant-numeric: tabular-nums; }
   .hero span { font-size: 12px; color: var(--ink-3); }
-  .kv { display: grid; grid-template-columns: 1fr auto; gap: 7px 10px; align-items: baseline;
+  .kv { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; align-items: baseline;
         font-size: 12px; color: var(--ink-2); }
   .kv b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; }
   .kv b em { font-style: normal; color: var(--ink-3); font-weight: 400; margin-left: 3px; }
@@ -132,19 +135,33 @@
   #bmsCard.cutoff { border-color: rgba(239,68,68,.5); }
   #bmsSoc { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .bmsbar { grid-column: auto; margin: 1px 0 0; }
-  .bmsrows { display: grid; gap: 6px; margin-top: 10px; font-size: 11.5px; color: var(--ink-2); }
+  .socline { display: flex; align-items: baseline; gap: 7px; }
+  #bmsRuntime { font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .bmsrows { display: grid; gap: 5px; margin-top: 8px; font-size: 11.5px; color: var(--ink-2); }
   .bmsrows span { display: flex; justify-content: space-between; gap: 10px; white-space: nowrap; }
   .bmsrows b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; }
+  .bmsrows b em { font-style: normal; color: var(--ink-3); font-weight: 400; margin-left: 5px; }
   .bmsrows b.hot { color: var(--warn); }
   .bmsrows b.critical { color: var(--bad); }
-  #bmsHot { display: none; margin-top: 8px; font-size: 11px; color: var(--ink-3); }
+  /* two across: the sidebar has to hold map + wind + friction + telemetry + battery
+     + reset + keys inside 900 px, and these two knobs are the cheapest pair to pack */
+  .bmsknobs { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);
+              display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .bmsknobs .head { margin-bottom: 4px; }
   #bmsCutoffPill { display: none; margin-top: 10px; padding: 2px 10px; border-radius: 999px;
                    background: rgba(239,68,68,.14); border: 1px solid rgba(239,68,68,.4);
                    color: var(--bad); font-style: normal; font-weight: 600;
                    font-size: 10.5px; letter-spacing: .08em; }
 
   /* ---------- footer: reset + the whole key legend, one row ---------- */
-  #liveFooter { order: 4; margin-top: auto; display: flex; flex-direction: column; gap: 10px; }
+  /* Reset and the key legend must stay reachable however tall the sidebar gets (the
+     battery card alone can push it past a laptop viewport), so the footer sticks to the
+     bottom of the scrollport and the sections above it scroll under it. */
+  #liveFooter { order: 4; margin-top: auto; position: sticky; bottom: -12px; z-index: 1;
+                background: var(--bg); padding: 8px 0 12px; display: flex;
+                flex-direction: column; gap: 9px; }
+  #liveFooter::before { content: ""; position: absolute; left: 0; right: 0; top: -10px;
+                        height: 10px; background: linear-gradient(transparent, var(--bg)); }
   .keys { display: flex; align-items: center; gap: 3px; flex-wrap: wrap;
           font-size: 10.5px; color: var(--ink-3); }
   .keycap { display: inline-flex; align-items: center; justify-content: center; min-width: 18px;
@@ -155,7 +172,7 @@
   #climbKey.down { background: var(--ink); color: var(--bg); border-color: var(--ink); }
   .keys s { text-decoration: none; color: #3f3f46; }
 
-  #replayPanel, #livePanel { display: none; order: 1; flex-direction: column; gap: 12px; }
+  #replayPanel, #livePanel { display: none; order: 1; flex-direction: column; gap: 10px; }
   body.live #livePanel, body.replay #replayPanel { display: flex; }
   body.replay #liveFooter { display: none; }
   #episodeInfo { font-size: 11px; color: var(--ink-3); margin-top: 9px; line-height: 1.6;
@@ -186,11 +203,11 @@
     <section class="card">
       <div class="head"><h2>Wind</h2><output id="windOut">0.0 m/s</output></div>
       <svg id="windDial" viewBox="-70 -70 140 140">
-        <circle r="55" fill="none" stroke="var(--border)" stroke-width="1.5"/>
-        <text x="0" y="-60" text-anchor="middle" font-size="9" fill="var(--ink-3)">N</text>
-        <text x="63" y="3" text-anchor="middle" font-size="9" fill="var(--ink-3)">E</text>
-        <line id="windDialArrow" x1="0" y1="0" x2="0" y2="0" stroke="var(--ink-2)" stroke-width="2.5" stroke-linecap="round"/>
-        <circle id="windDot" cx="55" cy="0" r="7" fill="var(--ink)"/>
+        <circle r="55" fill="none" stroke="var(--border)" stroke-width="3"/>
+        <text x="0" y="-60" text-anchor="middle" font-size="15" fill="var(--ink-3)">N</text>
+        <text x="64" y="5" text-anchor="middle" font-size="15" fill="var(--ink-3)">E</text>
+        <line id="windDialArrow" x1="0" y1="0" x2="0" y2="0" stroke="var(--ink-2)" stroke-width="5" stroke-linecap="round"/>
+        <circle id="windDot" cx="55" cy="0" r="11" fill="var(--ink)"/>
       </svg>
       <input type="range" id="windStrength" min="0" max="25" step="0.5" value="0">
     </section>
@@ -224,21 +241,34 @@
   </section>
 
   <section class="card" id="bmsCard">
-    <div class="head"><h2>Battery</h2><output id="bmsSoc">—</output></div>
+    <div class="head"><h2>Battery</h2>
+      <span class="socline"><span id="bmsRuntime">—</span><output id="bmsSoc">—</output></span></div>
     <div class="bar bmsbar"><i id="bmsSocBar"></i></div>
     <div class="bmsrows">
+      <span id="bmsPackRow">Pack<b id="bmsPack">—</b></span>
       <span id="bmsPowerRow">Power<b id="bmsPower">—</b></span>
+      <span id="bmsTempRow">Pack temp<b id="bmsTemp">—</b></span>
       <span id="bmsWindingRow">Winding<b id="bmsWinding">—</b></span>
-      <span id="bmsAmbientRow">Ambient<b id="bmsAmbient">—</b></span>
     </div>
-    <div id="bmsHot"></div>
     <i id="bmsCutoffPill">Cutoff</i>
+    <!-- battery knobs live inside the card so they hide with it when no pack is reporting -->
+    <div class="bmsknobs">
+      <div>
+        <div class="head"><h2>Ambient</h2><output id="ambientOut">15 °C</output></div>
+        <input type="range" id="ambient" min="-40" max="30" step="1" value="15">
+      </div>
+      <div>
+        <div class="head"><h2>Start SOC</h2><output id="startSocOut">100%</output></div>
+        <input type="range" id="startSoc" min="5" max="100" step="5" value="100">
+      </div>
+    </div>
   </section>
 
   <div id="liveFooter">
     <button id="resetBtn">Reset climber</button>
     <div class="keys">
       <span class="keycap" id="climbKey" data-key="w">W</span> climb <s>·</s>
+      <span class="keycap" id="turnLeftKey" data-key="a">A</span><span class="keycap" id="turnRightKey" data-key="d">D</span> turn <s>·</s>
       <span class="keycap">R</span> reset <s>·</s>
       <span class="keycap">F</span> fullscreen <s>·</s>
       <span class="keycap">Esc</span> pause
@@ -261,6 +291,7 @@ const state = {
   mode: 'live', socket: null, keys: new Set(), hud: null, slopeDegrees: null,
   camera: { azimuth_degrees: DEFAULT_AZIMUTH_DEGREES, elevation_degrees: DEFAULT_ELEVATION_DEGREES },
   worlds: {}, world: null, pendingWorld: null, paused: true, pauseIntent: true, loading: false,
+  actuatorNames: null,
 };
 
 // ---------- HUD ----------
@@ -320,11 +351,15 @@ function compassPointName(eastMetersPerSecond, northMetersPerSecond) {
 }
 
 // ---------- BMS (optional data) ----------
-// Purely opt-in: a state frame without a `bms` object hides the card outright, so a
-// runtime that knows nothing about batteries is unchanged.
+// Purely opt-in: a state frame without a `bms` object hides the card outright (knobs
+// and all), so a runtime that knows nothing about batteries is unchanged. The live
+// shape comes from app/bms_ui/bridge.py BmsPlugin.state(); replay rebuilds a subset of
+// it from hud.json's flat per-tick bms_* arrays.
 function paintBatteryCard(frame) {
   const bms = frame.bms;
   const card = $('bmsCard');
+  // the joint names ride alongside the bms block, once per live message; keep the last set
+  if (Array.isArray(frame.actuator_names)) state.actuatorNames = frame.actuator_names;
   if (!bms || typeof bms !== 'object' || Array.isArray(bms)) { card.style.display = 'none'; return; }
   card.style.display = 'block';
   const stateOfCharge = Number(bms.soc_pct);
@@ -336,30 +371,65 @@ function paintBatteryCard(frame) {
     : stateOfCharge <= 15 ? 'var(--bad)'
     : stateOfCharge <= 35 ? 'var(--warn)'
     : 'var(--good)';
-  const power = Number(bms.power_W);
-  setBatteryRow('bmsPowerRow', 'bmsPower', Number.isFinite(power) ? power.toFixed(0) + ' W' : null);
+  // time_to_empty_min is null when the draw is so low the pack never empties
+  $('bmsRuntime').textContent = formatTimeToEmpty(bms.time_to_empty_min);
+
+  const packVolts = Number(bms.pack_V), packAmps = Number(bms.current_A);
+  setBatteryRow('bmsPackRow', 'bmsPack',
+    joinKnown([Number.isFinite(packVolts) ? packVolts.toFixed(1) + ' V' : null,
+               Number.isFinite(packAmps) ? packAmps.toFixed(1) + ' A' : null]));
+
+  const power = Number(bms.power_W), mechanicalPower = Number(bms.mech_power_W);
+  setBatteryRow('bmsPowerRow', 'bmsPower',
+    Number.isFinite(power) ? power.toFixed(0) + ' W' : null,
+    Number.isFinite(mechanicalPower) ? 'mech ' + mechanicalPower.toFixed(0) + ' W' : null);
+
+  const packTemperature = Number(bms.t_bat_C);
+  // t_amb_C is the live bridge's name; hud.json does not record ambient at all
+  const ambientTemperature = Number(bms.t_amb_C !== undefined ? bms.t_amb_C : bms.T_amb_C);
+  setBatteryRow('bmsTempRow', 'bmsTemp',
+    joinKnown([Number.isFinite(packTemperature) ? packTemperature.toFixed(0) + ' °C' : null,
+               Number.isFinite(ambientTemperature) ? 'amb ' + ambientTemperature.toFixed(0) + ' °C' : null]));
+
   const winding = Number(bms.max_temp_winding_C);
-  setBatteryRow('bmsWindingRow', 'bmsWinding', Number.isFinite(winding) ? winding.toFixed(0) + ' °C' : null);
+  setBatteryRow('bmsWindingRow', 'bmsWinding',
+    Number.isFinite(winding) ? winding.toFixed(0) + ' °C' : null,
+    hotJointName(bms.hot_joint));
   const windingValue = $('bmsWinding');
   windingValue.classList.toggle('hot', Number.isFinite(winding) && winding >= 70 && winding < 90);
   windingValue.classList.toggle('critical', Number.isFinite(winding) && winding >= 90);
-  const hotJoint = $('bmsHot');
-  hotJoint.textContent = bms.hot_joint ? 'hottest · ' + bms.hot_joint : '';
-  hotJoint.style.display = bms.hot_joint ? 'block' : 'none';
-  const ambient = Number(bms.T_amb_C), windChill = Number(bms.T_wind_chill_C);
-  const ambientText = [Number.isFinite(ambient) ? ambient.toFixed(0) + ' °C' : null,
-                       Number.isFinite(windChill) ? 'chill ' + windChill.toFixed(0) + ' °C' : null]
-                      .filter(Boolean).join(' · ');
-  setBatteryRow('bmsAmbientRow', 'bmsAmbient', ambientText || null);
+
   // the flag may ride on the bms object or beside it; accept either
   const cutoff = Boolean(bms.bms_cutoff !== undefined ? bms.bms_cutoff
                        : bms.cutoff !== undefined ? bms.cutoff : frame.bms_cutoff);
   $('bmsCutoffPill').style.display = cutoff ? 'inline-block' : 'none';
   card.classList.toggle('cutoff', cutoff);
 }
-function setBatteryRow(rowElementId, valueElementId, text) {
+function joinKnown(parts) { const kept = parts.filter(Boolean); return kept.length ? kept.join(' · ') : null; }
+function formatTimeToEmpty(minutes) {
+  const value = Number(minutes);
+  if (minutes === null || minutes === undefined || !Number.isFinite(value)) return '—';
+  return value < 120 ? Math.round(value) + ' min' : (value / 60).toFixed(1) + ' h';
+}
+// `hot_joint` is an INDEX into the top-level actuator_names[]; a runtime that sends the
+// name outright is accepted too.
+function hotJointName(hotJoint) {
+  if (typeof hotJoint === 'string') return hotJoint || null;
+  if (!Number.isInteger(hotJoint)) return null;
+  const names = state.actuatorNames;
+  return (names && names[hotJoint]) || 'actuator_' + hotJoint;
+}
+// `text` is the number; `mutedNote` is the greyed tail after it (mech watts, joint name).
+// A null `text` hides the whole row, which is how a sparse frame drops rows it has no data for.
+function setBatteryRow(rowElementId, valueElementId, text, mutedNote = null) {
   $(rowElementId).style.display = text === null ? 'none' : 'flex';
-  if (text !== null) $(valueElementId).textContent = text;
+  if (text === null) return;
+  const value = $(valueElementId);
+  value.textContent = text;
+  if (!mutedNote) return;
+  const note = document.createElement('em');
+  note.textContent = mutedNote;
+  value.appendChild(note);
 }
 
 // ---------- SNOW + WIND OVERLAY ----------
@@ -648,17 +718,39 @@ document.addEventListener('keydown', event => {
   if (document.fullscreenElement) document.exitFullscreen(); else stage.requestFullscreen?.();
 });
 
-// the single climb key: W held = climb, released = hang
+// The held keys: W climbs the line, A/D turn the robot. All three ride the SAME
+// `input` message's `keys` list, present while held, and all three are dropped the
+// moment the pointer is released -- never leave the robot climbing or turning.
+const HELD_KEY_KEYCAP_IDS = { w: 'climbKey', a: 'turnLeftKey', d: 'turnRightKey' };
 let climbHeldByPointer = false;
-function setClimbing(down) {
-  if (down === state.keys.has('w')) return;
-  if (down) state.keys.add('w'); else state.keys.delete('w');
-  $('climbKey').classList.toggle('down', down);
+function setHeldKey(name, down) {
+  if (down === state.keys.has(name)) return;
+  if (down) state.keys.add(name); else state.keys.delete(name);
+  $(HELD_KEY_KEYCAP_IDS[name]).classList.toggle('down', down);
   sendInput();
 }
-document.addEventListener('keydown', event => { if (event.key.toLowerCase() === 'w' && !event.repeat) setClimbing(true); });
-document.addEventListener('keyup', event => { if (event.key.toLowerCase() === 'w') { climbHeldByPointer = false; setClimbing(false); } });
-window.addEventListener('blur', () => { climbHeldByPointer = false; setClimbing(false); });
+function setClimbing(down) { setHeldKey('w', down); }
+// one message for the lot, however many were down
+function clearHeldKeys() {
+  let changed = false;
+  for (const name of Object.keys(HELD_KEY_KEYCAP_IDS)) {
+    if (state.keys.delete(name)) changed = true;
+    $(HELD_KEY_KEYCAP_IDS[name]).classList.remove('down');
+  }
+  climbHeldByPointer = false;
+  if (changed) sendInput();
+}
+document.addEventListener('keydown', event => {
+  const name = event.key.toLowerCase();
+  if (HELD_KEY_KEYCAP_IDS[name] && !event.repeat) setHeldKey(name, true);
+});
+document.addEventListener('keyup', event => {
+  const name = event.key.toLowerCase();
+  if (!HELD_KEY_KEYCAP_IDS[name]) return;
+  if (name === 'w') climbHeldByPointer = false;
+  setHeldKey(name, false);
+});
+window.addEventListener('blur', clearHeldKeys);
 $('climbKey').addEventListener('pointerdown', event => { event.preventDefault(); climbHeldByPointer = true; setClimbing(true); });
 document.addEventListener('pointerup', () => { if (climbHeldByPointer) { climbHeldByPointer = false; setClimbing(false); } });
 
@@ -666,6 +758,11 @@ document.addEventListener('pointerup', () => { if (climbHeldByPointer) { climbHe
 // movement looks around until Esc (or a click outside) releases it. The robot turns to
 // face the camera heading, so azimuth is also the walking direction.
 const AZIMUTH_DEGREES_PER_PIXEL = 0.15, ELEVATION_DEGREES_PER_PIXEL = 0.12;
+// MuJoCo elevation is negative when the camera sits ABOVE the robot looking down, so
+// -70 is the high/steep view and +8 is just above ground level. The floor is deliberately
+// only a few degrees below level: the steepest terrain is ~40 deg, and letting the camera
+// drop under the slope would put the climber behind the mountain.
+const ELEVATION_MINIMUM_DEGREES = -70, ELEVATION_MAXIMUM_DEGREES = 8;
 function queueCameraMessage() {
   const now = performance.now();
   if (now - lastCameraSendMilliseconds >= CAMERA_MESSAGE_INTERVAL_MILLISECONDS) { sendInput(); return; }
@@ -708,14 +805,17 @@ $('stage').addEventListener('click', () => {
 document.addEventListener('pointerlockchange', () => {
   paintLockState();
   // letting go of the pointer also lets go of the rope: never leave the robot climbing
-  if (!pointerIsLocked()) { setClimbing(false); sendInput(); }
+  if (!pointerIsLocked()) { clearHeldKeys(); sendInput(); }
   setPaused(!pointerIsLocked());
 });
 document.addEventListener('mousemove', event => {
   if (!pointerIsLocked()) return;
   const azimuth = state.camera.azimuth_degrees + event.movementX * AZIMUTH_DEGREES_PER_PIXEL;
   state.camera.azimuth_degrees = ((azimuth % 360) + 360) % 360;
-  // horizontal orbit only (user's call): elevation stays at its default; vertical mouse motion is ignored
+  // mouse up raises the camera, i.e. drives elevation more negative, then clamps
+  const elevation = state.camera.elevation_degrees - event.movementY * ELEVATION_DEGREES_PER_PIXEL;
+  state.camera.elevation_degrees = Math.max(ELEVATION_MINIMUM_DEGREES,
+                                            Math.min(ELEVATION_MAXIMUM_DEGREES, elevation));
   queueCameraMessage();
 });
 // R is the panic key: respawn the climber AND put the camera back behind it,
@@ -762,6 +862,21 @@ dial.addEventListener('pointermove', e => { if (dragging) { wind.angle = dialAng
 dial.addEventListener('pointerup', () => dragging = false);
 $('windStrength').addEventListener('input', e => { paintSliderFill(e.target); wind.strength = Number(e.target.value); sendWind(); });
 $('resetBtn').onclick = () => send({ type: 'reset' });
+
+// Battery knobs. Both are sent on `change` (pointer released), not on every `input`
+// tick: soc0 rebuilds the pack from scratch and t_amb cold-soaks it, so streaming
+// intermediate values would restart the battery dozens of times per drag.
+function wireBatteryKnob(sliderId, outputId, knobName, format) {
+  const slider = $(sliderId), output = $(outputId);
+  paintSliderFill(slider);
+  slider.addEventListener('input', () => {
+    paintSliderFill(slider);
+    output.textContent = format(Number(slider.value));
+  });
+  slider.addEventListener('change', () => send({ type: 'knob', name: knobName, value: Number(slider.value) }));
+}
+wireBatteryKnob('ambient', 'ambientOut', 't_amb', value => value.toFixed(0) + ' °C');
+wireBatteryKnob('startSoc', 'startSocOut', 'soc0', value => value.toFixed(0) + '%');
 
 // ---------- MAPS ----------
 // The map list is discovered from the file server: every folder under /worlds/ that
@@ -867,12 +982,27 @@ video.addEventListener('timeupdate', () => {
     rope_travel_meters: at('rope_travel_meters', 0),
     height_gained_meters: at('height_gained_meters', 0),
     rope_force_newtons: at('rope_force_newtons', 0),
-    // optional, exactly as live: a recording without a `bms` array simply has no card
-    bms: at('bms', undefined),
+    // optional, exactly as live. hud.json records FLAT per-tick bms_* scalars
+    // (app/bms_ui/bridge.py HUD_FIELDS), so rebuild the subset the card can show;
+    // an older recording that stored whole `bms` objects still works.
+    bms: batteryFromReplayArrays(at) || at('bms', undefined),
     bms_cutoff: at('bms_cutoff', undefined),
     fell,
   });
 });
+// hud.json has no ambient, winding, joint or time-to-empty: those rows simply hide.
+function batteryFromReplayArrays(at) {
+  const stateOfCharge = at('bms_soc_pct', undefined);
+  if (stateOfCharge === undefined) return null;
+  return {
+    soc_pct: stateOfCharge,
+    pack_V: at('bms_pack_V', undefined),
+    current_A: at('bms_current_A', undefined),
+    power_W: at('bms_power_W', undefined),
+    mech_power_W: at('bms_mech_power_W', undefined),
+    t_bat_C: at('bms_t_bat_C', undefined),
+  };
+}
 $('refreshBtn').onclick = listEpisodes;
 
 // ---------- MODES ----------
@@ -883,7 +1013,7 @@ document.querySelectorAll('.tab').forEach(tab => tab.onclick = () => {
   canvas.style.display = state.mode === 'live' ? 'block' : 'none';
   video.style.display = state.mode === 'replay' ? 'block' : 'none';
   if (state.mode === 'replay') {
-    setClimbing(false); state.slopeDegrees = null;
+    clearHeldKeys(); state.slopeDegrees = null;
     if (pointerIsLocked() && document.exitPointerLock) document.exitPointerLock();
     listEpisodes();
   } else video.pause();
