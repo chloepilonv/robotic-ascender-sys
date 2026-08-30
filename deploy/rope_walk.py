@@ -39,7 +39,7 @@ from pathlib import Path
 ROPE_Z = 0.60          # rope height above ground (user spec); override with --rope-z
 ROPE_Y = -0.30         # rope lateral offset from body centre (right side = -y)
 # measured in MuJoCo from assets/robots/mujoco/g1_unitree.xml (pelvis z=0.79, standing):
-SHOULDER_Z = 1.085     # right_shoulder_pitch_link z
+SHOULDER_Z = 1.05      # right_shoulder_pitch_link z (1.085 in 'stand', ~1.05 in the walking 'knees_bent' pose)
 SHOULDER_Y = -0.100    # right_shoulder_pitch_link y
 UPPER_ARM = 0.19       # shoulder -> elbow
 FOREARM = 0.24         # elbow -> palm (wrist_yaw link is 0.20, +0.04 to the palm)
@@ -186,82 +186,105 @@ class G1:
 
 
 class Sim:
-    """MuJoCo stand-in. Same interface as G1. Legs/waist/left arm are held at the 'stand'
-    keyframe by the MJCF position actuators; the pelvis is welded to a mocap anchor that we
-    drag forward to fake walking (the real loco controller is not simulable). Right arm gets
-    weight*target + (1-weight)*keyframe, mirroring what arm_sdk's weight does on the robot."""
+    """MuJoCo stand-in with a REAL gait. Same interface as G1.
+
+    Legs/waist/left arm are driven by the mels G1 joystick walking policy
+    (rl/environment/walk_policy.py, pure NumPy) standing in for Unitree's onboard loco
+    controller. The right arm gets weight*target + (1-weight)*policy_target, mirroring what
+    arm_sdk's weight does on the robot. The G1 MJCF is patched by rl.environment.robot.adapt()
+    (sensors, knees_bent keyframe, RL-tuned gains) so the policy sees the plant it trained on."""
     DT = 0.002
+    HEADING_KP = 2.0                      # yaw-rate command = -KP * yaw, keeps the walk straight
+    POS_KP = 1.5                          # the policy never stands still; hold a goal x,y like StopMove does
 
     def __init__(self, viewer: bool, video: str | None):
-        import mujoco
-        self.mj = mujoco
-        here = Path(__file__).parent / "sim" / "scene.xml"
-        self.m = mujoco.MjModel.from_xml_path(str(here))
-        self.m.geom("rope").pos[:] = [2.0, ROPE_Y, ROPE_Z]         # move rope to --rope-z
+        import mujoco, mujoco.viewer, numpy as np
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from rl.environment import robot as robot_mod
+        from rl.environment.walk_policy import WalkController
+        self.mj, self.np = mujoco, np
+
+        spec = mujoco.MjSpec.from_file(robot_mod.HIMALAYA_ROBOT_BARE)
+        robot_mod.adapt(spec)
+        spec.worldbody.add_geom(name="floor", type=mujoco.mjtGeom.mjGEOM_PLANE, size=[0, 0, 0.05],
+                                rgba=[0.35, 0.4, 0.45, 1])
+        spec.worldbody.add_geom(name="rope", type=mujoco.mjtGeom.mjGEOM_CAPSULE, size=[0.008, 0, 0],
+                                fromto=[-1, ROPE_Y, ROPE_Z, 6, ROPE_Y, ROPE_Z], rgba=[0.9, 0.2, 0.1, 1],
+                                contype=0, conaffinity=0)
+        spec.visual.global_.offwidth, spec.visual.global_.offheight = 1280, 720
+        self.m = spec.compile(); self.m.opt.timestep = self.DT
         self.d = mujoco.MjData(self.m)
-        mujoco.mj_resetDataKeyframe(self.m, self.d, self.m.key("stand").id)
-        self.key_ctrl = self.m.key("stand").ctrl.copy()
-        self.ctrl = self.key_ctrl.copy()
-        self.d.mocap_pos[0] = self.d.qpos[:3]
-        self.weight, self.vx = 0.0, 0.0
-        self.wrist = self.m.body("right_wrist_yaw_link").id
-        self.t = 0.0
-        self.log = []                                              # (t, phase, hand xyz)
-        self.phase = "init"
-        self.viewer = mujoco.viewer.launch_passive(self.m, self.d) if viewer else None
-        self.frames, self.renderer = [], None
-        if video:
-            self.renderer = mujoco.Renderer(self.m, 720, 1280)
-            self.video = video
+        mujoco.mj_resetDataKeyframe(self.m, self.d, self.m.key("knees_bent").id)
+        self.walk = WalkController(self.m, command=(0.0, 0.0, 0.0))
         mujoco.mj_forward(self.m, self.d)
 
-    def hand_xyz(self):
-        import numpy as np
-        R = self.d.xmat[self.wrist].reshape(3, 3)
-        return self.d.xpos[self.wrist] + R @ np.array([HAND_OFFSET, 0, 0])
+        self.weight, self.target = 0.0, None
+        self.vx, self.goal = 0.0, self.d.qpos[:2].copy()
+        self.palm = self.m.site("right_palm").id
+        self.t, self.phase, self.log = 0.0, "init", []
+        self.viewer = mujoco.viewer.launch_passive(self.m, self.d) if viewer else None
+        self.frames, self.renderer, self.video = [], None, video
+        if video:
+            self.renderer = mujoco.Renderer(self.m, 720, 1280)
+            self.cam = mujoco.MjvCamera(); self.cam.azimuth, self.cam.elevation, self.cam.distance = 150, -15, 3.0
 
-    def start(self): print("sim: standing (welded pelvis)")
+    def hand_xyz(self): return self.d.site_xpos[self.palm]
+
+    def _yaw(self):
+        w, x, y, z = self.d.qpos[3:7]
+        return math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+
+    def start(self): print("sim: walking policy up (knees_bent)")
     def set_arm_weight(self, w): self.weight = max(0.0, min(1.0, w))
-    def send_arm(self, pose: ArmPose):
-        for j, q in pose.q.items():
-            self.ctrl[j] = self.weight * q + (1 - self.weight) * self.key_ctrl[j]
+    def send_arm(self, pose: ArmPose): self.target = pose
     def move(self, vx): self.vx = vx
     def stop_move(self): self.vx = 0.0
-    def tilt_ok(self): return True
-    def current_arm(self): return ArmPose({j: float(self.d.ctrl[j]) for j in RIGHT_ARM})
+    def tilt_ok(self):
+        w, x, y, z = self.d.qpos[3:7]
+        roll = math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
+        pitch = math.asin(max(-1.0, min(1.0, 2 * (w * y - z * x))))
+        return abs(roll) < TILT_ABORT_RAD and abs(pitch) < TILT_ABORT_RAD
+    def current_arm(self): return ArmPose({j: float(self.d.qpos[7 + j]) for j in RIGHT_ARM})
 
     def sleep(self, s):
-        n = max(1, int(round(s / self.DT)))
-        for _ in range(n):
-            self.d.mocap_pos[0][0] += self.vx * self.DT
-            self.d.ctrl[:] = self.ctrl
-            self.mj.mj_step(self.m, self.d)
-            self.t += self.DT
-        self.log.append((self.t, self.phase, self.hand_xyz().copy()))
+        t_wall = time.time()
+        for _ in range(max(1, int(round(s / self.DT)))):
+            self.goal[0] += self.vx * self.DT                # goal advances only while "walking"
+            err = self.goal - self.d.qpos[:2]
+            self.walk.command[0] = max(-1.0, min(1.0, self.vx + self.POS_KP * err[0]))
+            self.walk.command[1] = max(-0.5, min(0.5, self.POS_KP * err[1]))
+            self.walk.command[2] = max(-0.5, min(0.5, -self.HEADING_KP * self._yaw()))
+            self.walk.substep(self.d)                       # writes d.ctrl for all 29 joints
+            if self.target is not None:                     # arm_sdk-style override, right arm only
+                for j, q in self.target.q.items():
+                    self.d.ctrl[j] = self.weight * q + (1 - self.weight) * self.d.ctrl[j]
+            self.mj.mj_step(self.m, self.d); self.t += self.DT
+        self.log.append((self.t, self.phase, self.hand_xyz().copy(), self.d.qpos[:3].copy()))
         if self.viewer is not None:
-            self.viewer.sync(); time.sleep(s)
+            self.viewer.sync(); time.sleep(max(0.0, s - (time.time() - t_wall)))
         if self.renderer is not None and int(self.t * 30) > len(self.frames):
-            self.renderer.update_scene(self.d, camera=-1)
+            self.cam.lookat[:] = self.d.qpos[:3] + [0.2, -0.2, 0.0]
+            self.renderer.update_scene(self.d, camera=self.cam)
             self.frames.append(self.renderer.render().copy())
 
     def finish(self):
-        import numpy as np
+        np = self.np
         if self.renderer is not None:
             import imageio
             imageio.mimwrite(self.video, self.frames, fps=30)
             print(f"sim: wrote {self.video} ({len(self.frames)} frames)")
-        print("\nsim report (hand = palm, world frame):")
-        print(f"  {'phase':<8}{'hand z-rope z [m]':>20}{'hand x drift [m]':>18}{'hand y-rope y [m]':>20}")
+        print("\nsim report (hand = right_palm site, world frame):")
+        print(f"  {'phase':<8}{'pelvis x [m]':>13}{'hand z-rope z':>15}{'hand x drift':>14}{'hand y-rope y':>15}")
         phases = []
-        for t, ph, xyz in self.log:
-            if not phases or phases[-1][0] != ph: phases.append((ph, []))
-            phases[-1][1].append(xyz)
-        for ph, pts in phases:
-            a = np.array(pts)
-            print(f"  {ph:<8}{a[-1,2]-ROPE_Z:>+20.3f}{a[:,0].max()-a[:,0].min():>18.3f}{a[-1,1]-ROPE_Y:>+20.3f}")
-        print("  (walk phases: x drift should be ~0 while the arm tracks, then grow when the hand slides)")
+        for t, ph, xyz, pel in self.log:
+            if not phases or phases[-1][0] != ph: phases.append((ph, [], []))
+            phases[-1][1].append(xyz); phases[-1][2].append(pel)
+        for ph, pts, pels in phases:
+            a, b = np.array(pts), np.array(pels)
+            print(f"  {ph:<8}{b[-1,0]:>13.2f}{a[-1,2]-ROPE_Z:>+15.3f}{a[:,0].max()-a[:,0].min():>14.3f}{a[-1,1]-ROPE_Y:>+15.3f}")
+        print("  (WALK: pelvis x should advance; hand x drift ~0 while tracking, then grows as it slides)")
         if self.viewer is not None:
-            print("sim: close the viewer window to exit"); 
+            print("sim: close the viewer window to exit")
             while self.viewer.is_running(): time.sleep(0.1)
 
 

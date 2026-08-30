@@ -8,7 +8,8 @@ description: Turn a unitree_sdk2py script written for the real G1 into something
 Goal: run the SAME sequencing/IK code against a simulated robot, so the only thing left to
 trust on the real G1 is the transport (DDS) and the parts sim cannot model.
 
-Worked example: `deploy/rope_walk.py` (`--dry-run` / `--sim` / real) + `deploy/sim/scene.xml`.
+Worked example: `deploy/rope_walk.py` (`--dry-run` / `--sim` / real). Everything lives in that
+one file: the scene is built in code with `mujoco.MjSpec`, the gait is the mels walking policy.
 
 ## 1. Split the script into "brain" and "body"
 
@@ -17,12 +18,12 @@ with ~8 methods; write one per target and pick it on the CLI:
 
 | method          | real (`G1`)                                   | sim (`Sim`)                                  |
 |-----------------|-----------------------------------------------|----------------------------------------------|
-| `start()`       | `LocoClient.Start()`                          | weld pelvis, load `stand` keyframe           |
+| `start()`       | `LocoClient.Start()`                          | load `knees_bent` keyframe, walking policy on |
 | `send_arm(pose)`| write `LowCmd_` on `rt/arm_sdk` + CRC         | set `d.ctrl[j]` (position actuators)         |
 | `set_arm_weight`| `motor_cmd[29].q = w`                         | `ctrl = w*target + (1-w)*keyframe`           |
-| `move(vx)`      | `LocoClient.Move(vx,0,0)`                     | drag mocap anchor `x += vx*dt`               |
-| `stop_move()`   | `LocoClient.StopMove()`                       | `vx = 0`                                     |
-| `tilt_ok()`     | `lowstate.imu_state.rpy`                      | pelvis `xquat` -> rpy (or `True` if welded)  |
+| `move(vx)`      | `LocoClient.Move(vx,0,0)`                     | policy command vx (+ goal x advances)        |
+| `stop_move()`   | `LocoClient.StopMove()`                       | `vx = 0`, position hold on goal x,y          |
+| `tilt_ok()`     | `lowstate.imu_state.rpy`                      | pelvis quaternion `qpos[3:7]` -> roll/pitch  |
 | `current_arm()` | `lowstate.motor_state[j].q`                   | `d.qpos[qposadr[j]]` or last `ctrl`          |
 | `sleep(s)`      | `time.sleep(s)`                               | `mj_step` for `s/dt` steps, then log/render  |
 
@@ -36,7 +37,7 @@ SDK gives for free (IMU, joint q), the body exposes it as a plain float/dict.
 | motor index 0..28 (`rt/lowcmd`, `rt/lowstate`) | actuator index 0..28 in `g1_unitree.xml` — **same order** (verified) |
 | `LowCmd_.motor_cmd[j].q/kp/kd`              | `<position kp=...>` actuator, `d.ctrl[j] = q`                   |
 | `rt/arm_sdk` weight (motor 29)              | linear blend between your target and the keyframe ctrl          |
-| `LocoClient` (balance + gait, onboard)      | NOT simulable. Weld pelvis to a mocap body, drag it forward. Or plug your own RL walk policy (mjlab worktree) |
+| `LocoClient` (balance + gait, onboard)      | a walking policy: `rl/environment/walk_policy.WalkController` (mels G1 joystick MLP, NumPy) on the model patched by `rl/environment/robot.adapt()`. It never stands still → add an outer x,y goal hold + yaw hold to imitate `StopMove` |
 | `rt/lowstate.imu_state.rpy`                 | `d.xquat[pelvis]` or the `imu_in_pelvis` site                   |
 | `rt/lowstate.motor_state[j].q`              | `d.qpos[m.jnt_qposadr[joint_id]]` (skip the 7 free-joint dofs!)  |
 | `CRC()`                                     | nothing                                                         |
@@ -54,17 +55,26 @@ d.xpos[m.body("right_shoulder_pitch_link").id]   # -> shoulder height/offset (1.
 # sign of a joint: set qpos for that joint only, mj_forward, watch where the wrist goes
 ```
 
-Findings for the G1 that broke the first draft of `rope_walk.py`:
+Findings for the G1 that broke the first drafts of `rope_walk.py`:
+- a mocap-dragged robot "flies"; it must actually walk (policy) or the test is meaningless
 - shoulder z is 1.085 m, not ~0.95 → a 0.60 m rope is 0.10 m out of reach with a vertical arm
 - elbow `q=0` is already bent 90° (forearm horizontal); `q≈+π/2` is a straight arm
 - shoulder pitch `<0` = forward, right shoulder roll `<0` = outward
 
-## 4. Build the scene
+## 4. Build the scene in code (MjSpec)
 
-`deploy/sim/scene.xml`: `<include>` the robot MJCF, set `meshdir` so its relative mesh
-paths still resolve, add the environment object (rope capsule), a mocap `anchor` body and
-`<equality><weld body1="anchor" body2="pelvis"/>`. Give `<visual><global offwidth offheight>`
-so headless rendering works.
+```python
+spec = mujoco.MjSpec.from_file(robot_mod.HIMALAYA_ROBOT_BARE)
+robot_mod.adapt(spec)                 # sensors, knees_bent keyframe, RL gains, right_palm site
+spec.worldbody.add_geom(name="floor", type=mjGEOM_PLANE, ...)
+spec.worldbody.add_geom(name="rope", type=mjGEOM_CAPSULE, fromto=[...], contype=0, conaffinity=0)
+spec.visual.global_.offwidth = 1280   # needed for headless video
+m = spec.compile()
+```
+No separate XML: the rope height comes from the same constant the real script uses.
+
+Arm override on top of the policy (this IS what arm_sdk's weight does on the robot):
+`d.ctrl[j] = w*target + (1-w)*policy_ctrl[j]` for the right-arm joints only, every substep.
 
 ## 5. Make the sim tell you numbers, not just pictures
 
@@ -76,7 +86,7 @@ Render `--video out.mp4` (offscreen `mujoco.Renderer` + `imageio`) to sanity-che
 
 ## 6. What sim will NOT catch — check these on the robot with the e-stop in hand
 
-1. Onboard loco controller behaviour (gait, how it reacts to an arm pushing on a rope).
+1. Onboard loco controller ≠ the mels policy (different gait, real StopMove, different reaction to an arm pushing on a rope).
 2. DDS plumbing: `--iface`, topic names, CRC, `arm_sdk` weight actually taking over.
 3. Rope contact forces / friction on the palm.
 4. Real motor kp/kd (sim uses the MJCF `kp=500`; real uses your `KP_ARM`).
