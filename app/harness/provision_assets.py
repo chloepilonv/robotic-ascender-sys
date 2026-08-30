@@ -64,9 +64,34 @@ def ensure_playground_reference(verbose=True) -> str:
             shutil.copy2(os.path.join(root, filename),
                          os.path.join(destination, filename))
             copied += 1
+    # The copied XMLs reach menagerie meshes via a 5-up relative path
+    # (`../../../../../mujoco_menagerie/...`) that only resolves when the
+    # repo sits deep enough. Rewrite them to the ABSOLUTE vendored
+    # menagerie path -- the same commit mujoco_playground vendors, so the
+    # STLs are byte-identical wherever the repo is checked out.
+    menagerie_root = os.path.dirname(
+        os.path.dirname(_menagerie_asset_directory()))
+    rewritten = 0
+    for dirpath, _, filenames in os.walk(REFERENCE_DIRECTORY):
+        for filename in filenames:
+            if not filename.endswith(".xml"):
+                continue
+            xml_path = os.path.join(dirpath, filename)
+            with open(xml_path, encoding="utf-8") as f:
+                text = f.read()
+            if "mujoco_menagerie/" not in text:
+                continue
+            import re
+            text = re.sub(
+                r"(?:\.\./)+mujoco_menagerie/", menagerie_root + "/", text
+            )
+            with open(xml_path, "w", encoding="utf-8") as f:
+                f.write(text)
+            rewritten += 1
     if verbose:
         print(f"[assets] .reference/ provisioned from the installed"
-              f" mujoco_playground ({copied} files) -- the repo's own fetch"
+              f" mujoco_playground ({copied} files), mesh paths ->"
+              f" {menagerie_root} -- the repo's own fetch"
               " tool cannot reach GitHub from here", flush=True)
     return REFERENCE_DIRECTORY
 
