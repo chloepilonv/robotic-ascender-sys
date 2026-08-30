@@ -108,6 +108,8 @@
     background: var(--ink); border: none; }
 
   .windtools { display: flex; align-items: center; gap: 7px; }
+  .windswitches { display: flex; align-items: center; justify-content: space-between;
+                  gap: 10px; margin-top: 8px; }
   .iconbtn { width: 22px; height: 20px; padding: 0; display: inline-flex; align-items: center;
              justify-content: center; border: 1px solid var(--border); border-radius: 5px;
              background: var(--bg); color: var(--ink-2); cursor: pointer; flex: none; }
@@ -159,7 +161,10 @@
           font-weight: 600; font-size: 10px; letter-spacing: .1em;
           background: var(--elevated); border: 1px solid var(--border); color: var(--ink-2); }
   .pill.follow { background: rgba(34,197,94,.14); border-color: rgba(34,197,94,.4); color: var(--good); }
-  .pill.wait { background: rgba(245,158,11,.14); border-color: rgba(245,158,11,.35); color: var(--warn); }
+  .pill.wait, .pill.search { background: rgba(245,158,11,.14); border-color: rgba(245,158,11,.35);
+                             color: var(--warn); }
+  .pill em { font-style: normal; font-weight: 500; letter-spacing: .04em; opacity: .72;
+             margin-left: 6px; text-transform: lowercase; }
   .pill.lost { background: rgba(239,68,68,.14); border-color: rgba(239,68,68,.4); color: var(--bad); }
   #guideReadout .kv { margin-top: 9px; }
   /* the eye view: 4:3, full card width, and gone whenever it would be stale */
@@ -249,7 +254,6 @@
               <path class="cross" d="M10 6.2l3.6 3.6M13.6 6.2L10 9.8"/>
             </svg>
           </button>
-          <button class="switchrow" id="naturalSwitch" role="switch" aria-checked="false">natural<i class="switch"></i></button>
         </span>
         <output id="windOut">0.0 m/s</output></div>
       <svg id="windDial" viewBox="-70 -70 140 140">
@@ -260,6 +264,10 @@
         <circle id="windDot" cx="55" cy="0" r="11" fill="var(--ink)"/>
       </svg>
       <input type="range" id="windStrength" min="0" max="25" step="0.5" value="0">
+      <div class="windswitches">
+        <button class="switchrow" id="naturalSwitch" role="switch" aria-checked="false">natural<i class="switch"></i></button>
+        <button class="switchrow" id="stormSwitch" role="switch" aria-checked="false">storm<i class="switch"></i></button>
+      </div>
     </section>
 
     <section class="card">
@@ -331,7 +339,7 @@
   <div id="liveFooter">
     <button id="resetBtn">Reset climber</button>
     <div class="keys">
-      <span class="keycap" id="climbKey" data-key="w">W</span><span id="climbLabel"> climb </span><s id="keySeparator"> · </s>
+      <span class="keycap" id="climbKey" data-key="w">W</span><span class="keycap" id="backKey" data-key="s" style="display:none">S</span><span id="climbLabel"> climb </span><s id="keySeparator"> · </s>
       <span class="keycap" id="turnLeftKey" data-key="a">A</span><span class="keycap" id="turnRightKey" data-key="d">D</span><span id="turnLabel"> turn </span><s> · </s>
       <span class="keycap">R</span> reset <s>·</s>
       <span class="keycap">F</span> fullscreen <s>·</s>
@@ -382,6 +390,7 @@ function paintHud(frame) {
                     east: windVelocity[0], north: windVelocity[1] };
   paintWindReadout();
   noteWindSpeed(state.windNow.speed);
+  noteStorm(frame.storm);
   paintBatteryCard(frame);
   paintGuideCard(frame);
   playFootStepEvents(frame);
@@ -397,7 +406,8 @@ function paintHud(frame) {
     : climbing ? 'climbing' : 'holding';
   motion.classList.toggle('climbing',
     !fell && !state.paused && (followerWord ? guideState.mode === 'FOLLOW' : climbing));
-  motion.classList.toggle('waiting', !fell && !state.paused && guideState.mode === 'WAIT' && Boolean(followerWord));
+  motion.classList.toggle('waiting', !fell && !state.paused && Boolean(followerWord)
+    && (guideState.mode === 'WAIT' || guideState.mode === 'SEARCH'));
   motion.classList.toggle('fell', fell || (!state.paused && Boolean(followerWord) && guideState.mode === 'LOST'));
   if (frame.slope_degrees !== undefined && frame.slope_degrees !== null) state.slopeDegrees = frame.slope_degrees;
   const banner = $('banner');
@@ -690,8 +700,9 @@ function playFootStepsFromCount(stepCount) {
 // The switch is an INTENT, like the pause button: clicking it sends the knob, and the
 // displayed state prefers the runtime's own `guide.enabled` echo, so a runtime that
 // refuses (no humans in this world, say) is visible rather than silently disagreed with.
-const GUIDE_MODE_CLASSES = { FOLLOW: 'follow', WAIT: 'wait', LOST: 'lost' };
-const GUIDE_MODE_STATUS_WORDS = { FOLLOW: 'following', WAIT: 'waiting', LOST: 'lost' };
+const GUIDE_MODE_CLASSES = { FOLLOW: 'follow', WAIT: 'wait', LOST: 'lost', SEARCH: 'search' };
+const GUIDE_MODE_STATUS_WORDS = { FOLLOW: 'following', WAIT: 'waiting', LOST: 'lost',
+                                  SEARCH: 'searching' };
 const EYE_FRAME_STALE_MILLISECONDS = 2000;
 const guideState = { on: false, mode: null, lastEyeFrameMilliseconds: 0 };
 const eyeCanvas = $('eyeView'), eyeContext = eyeCanvas.getContext('2d');
@@ -705,9 +716,10 @@ function finiteOrNull(value) {
 function paintGuideSwitch() {
   $('guideSwitch').setAttribute('aria-checked', String(guideState.on));
   // the keys drive the guide instead of the robot while it is on
-  $('climbLabel').textContent = guideState.on ? '' : ' climb ';
-  $('keySeparator').style.display = guideState.on ? 'none' : '';
-  $('turnLabel').textContent = guideState.on ? ' move the guide ' : ' turn ';
+  // S only means anything with the guide on -- it walks the human BACKWARDS -- so the
+  // keycap appears with the guide and A/D keep turning the robot either way
+  $('backKey').style.display = guideState.on ? '' : 'none';
+  $('climbLabel').textContent = guideState.on ? ' move the guide ' : ' climb ';
   paintEyeViewVisibility();
 }
 $('guideSwitch').addEventListener('click', () => {
@@ -739,6 +751,12 @@ paintGuideCard({});
   const pill = $('guideMode');
   pill.textContent = mode || '—';
   pill.className = 'pill ' + (GUIDE_MODE_CLASSES[mode] || '');
+  // SEARCH also says WHAT it is doing -- sweep / acquire / realign -- muted beside the mode
+  if (mode === 'SEARCH' && typeof guide.search_phase === 'string' && guide.search_phase) {
+    const phase = document.createElement('em');
+    phase.textContent = guide.search_phase;
+    pill.appendChild(phase);
+  }
   // the stereo reading, and beside it the sim's own answer -- a LABELLED CHEAT, which is
   // why it is muted and named: it is not something a real robot could measure
   const distance = finiteOrNull(guide.distance_meters);
@@ -828,9 +846,11 @@ function makeWindRibbon() {
 const snowFlakes = Array.from({ length: SNOW_FLAKE_MAXIMUM }, makeSnowFlake);
 const windRibbons = Array.from({ length: WIND_RIBBON_COUNT }, makeWindRibbon);
 
-const SNOW_ENABLED = false;                     // user's call 2026-08-29: no snow particles (wind ribbons + HUD stay)
+// Flakes exist only while the storm is switched on; with it off this is exactly the
+// look the page has had all along -- wind ribbons over the picture and nothing else.
+const VEIL_MAXIMUM_ALPHA = 0.35;                // whiteout ceiling, reached at 25 m/s
 function activeFlakeCount() {
-  if (!SNOW_ENABLED) return 0;
+  if (!stormState.on) return 0;
   const share = Math.max(0, Math.min(1, windScreen.speed / BLIZZARD_METERS_PER_SECOND));
   return Math.round(SNOW_FLAKE_CALM_COUNT + (SNOW_FLAKE_MAXIMUM - SNOW_FLAKE_CALM_COUNT) * share);
 }
@@ -880,6 +900,22 @@ function updateSnow(elapsedSeconds, widthPixels, heightPixels) {
     else if (flake.x < -0.05) flake.x = 1.02;
     else if (flake.x > 1.05) flake.x = -0.02;
   }
+}
+// The visibility veil. Snow between you and the mountain is a white haze that is
+// THICKEST in the distance, so the alpha peaks in the middle of the view and falls off
+// towards the edges, where the nearest ground is.
+function drawVisibilityVeil(widthPixels, heightPixels) {
+  if (!stormState.on) return;
+  const alpha = Math.min(VEIL_MAXIMUM_ALPHA,
+    windScreen.speed / BLIZZARD_METERS_PER_SECOND * VEIL_MAXIMUM_ALPHA * 1.25);
+  if (alpha < 0.003) return;
+  const gradient = snowContext.createRadialGradient(
+    widthPixels * 0.5, heightPixels * 0.44, 0,
+    widthPixels * 0.5, heightPixels * 0.44, Math.hypot(widthPixels, heightPixels) * 0.62);
+  gradient.addColorStop(0, 'rgba(233,238,244,' + alpha.toFixed(3) + ')');
+  gradient.addColorStop(1, 'rgba(233,238,244,' + (alpha * 0.22).toFixed(3) + ')');
+  snowContext.fillStyle = gradient;
+  snowContext.fillRect(0, 0, widthPixels, heightPixels);
 }
 function drawSnow(widthPixels, heightPixels) {
   const pixelScale = heightPixels / REFERENCE_HEIGHT_PIXELS;
@@ -1005,6 +1041,7 @@ function animateWeather(nowMilliseconds) {
   updateWindRibbons(elapsedSeconds, width, height);
   updateSnow(elapsedSeconds, width, height);
   snowContext.clearRect(0, 0, width, height);
+  drawVisibilityVeil(width, height);
   drawWindRibbons(width, height);
   drawSnow(width, height);
 }
@@ -1018,6 +1055,8 @@ const WIND_SOUND_SILENT_METERS_PER_SECOND = 1.0;    // below this, nothing
 const WIND_SOUND_FULL_METERS_PER_SECOND = 20.0;     // at this, howling
 const WIND_GAIN_TIME_CONSTANT_SECONDS = 0.15;       // gusts swell; they never click
 const WIND_SOUND_UPDATE_INTERVAL_MILLISECONDS = 60; // the stream is 50 Hz; the ear is not
+const STORM_GAIN_MULTIPLIER = 1.25;                 // +25% while the storm blows
+const STORM_LOW_PASS_MULTIPLIER = 0.8;              // and a duller top end
 const windSound = { context: null, master: null, bandPass: null, lowPass: null,
                     muted: false, speed: 0 };
 
@@ -1088,11 +1127,14 @@ function updateWindSound() {
   // the sound follows the sim: a frozen mountain is a silent one
   const silent = windSound.muted || weatherIsFrozen() || share <= 0;
   const now = context.currentTime;
-  const gain = silent ? 0 : Math.min(0.85, 0.9 * Math.pow(share, 1.5));
+  // a storm is the same wind heard through falling snow: louder, and duller on top
+  const stormGain = stormState.on ? STORM_GAIN_MULTIPLIER : 1;
+  const stormTone = stormState.on ? STORM_LOW_PASS_MULTIPLIER : 1;
+  const gain = silent ? 0 : Math.min(0.95, 0.9 * Math.pow(share, 1.5) * stormGain);
   windSound.master.gain.setTargetAtTime(gain, now, WIND_GAIN_TIME_CONSTANT_SECONDS);
   windSound.bandPass.frequency.setTargetAtTime(300 + 1100 * share, now, 0.25);
   windSound.bandPass.Q.setTargetAtTime(0.7 + 2.3 * share, now, 0.25);
-  windSound.lowPass.frequency.setTargetAtTime(700 + 5200 * share, now, 0.25);
+  windSound.lowPass.frequency.setTargetAtTime((700 + 5200 * share) * stormTone, now, 0.25);
 }
 let lastWindSoundMilliseconds = 0;
 function noteWindSpeed(speedMetersPerSecond) {
@@ -1185,7 +1227,7 @@ document.addEventListener('keydown', event => {
 // The held keys: W climbs the line, A/D turn the robot. All three ride the SAME
 // `input` message's `keys` list, present while held, and all three are dropped the
 // moment the pointer is released -- never leave the robot climbing or turning.
-const HELD_KEY_KEYCAP_IDS = { w: 'climbKey', a: 'turnLeftKey', d: 'turnRightKey' };
+const HELD_KEY_KEYCAP_IDS = { w: 'climbKey', s: 'backKey', a: 'turnLeftKey', d: 'turnRightKey' };
 let climbHeldByPointer = false;
 function setHeldKey(name, down) {
   if (down === state.keys.has(name)) return;
@@ -1338,6 +1380,27 @@ function paintWindReadout() {
     : wind.strength.toFixed(1) + ' m/s · '
       + compassPointName(wind.strength * Math.cos(wind.angle), wind.strength * Math.sin(wind.angle));
 }
+// The snow storm. Like the guide switch this is an INTENT: the click sends the knob and
+// the runtime's own `storm` echo is what the switch then displays.
+const stormState = { on: false };
+function paintStormSwitch() {
+  $('stormSwitch').setAttribute('aria-checked', String(stormState.on));
+}
+$('stormSwitch').addEventListener('click', () => {
+  stormState.on = !stormState.on;
+  paintStormSwitch();
+  send({ type: 'knob', name: 'storm', value: stormState.on ? 1 : 0 });
+  updateWindSound();               // the air thickens the moment it is switched on
+});
+// the runtime (or a recording) says whether the storm is really blowing
+function noteStorm(value) {
+  if (value === undefined || value === null) return;
+  const on = Boolean(value);
+  if (on === stormState.on) return;
+  stormState.on = on;
+  paintStormSwitch();
+  updateWindSound();
+}
 $('naturalSwitch').addEventListener('click', () => {
   naturalWind.on = !naturalWind.on;
   $('naturalSwitch').setAttribute('aria-checked', String(naturalWind.on));
@@ -1472,6 +1535,7 @@ video.addEventListener('timeupdate', () => {
     wind_velocity_world_meters_per_second: at('wind_velocity_world_meters_per_second', [0, 0]),
     wind_force_world_newtons: at('wind_force_world_newtons', undefined),
     wind_speed_mps: at('wind_speed_mps', undefined),
+    storm: at('storm', undefined),
     wind_heading_degrees: at('wind_heading_degrees', undefined),
     rope_travel_meters: at('rope_travel_meters', 0),
     height_gained_meters: at('height_gained_meters', 0),

@@ -364,6 +364,9 @@ export class World {
     this.fill = new THREE.AmbientLight(0xa8bcd8, 0.14);
     scene.add(this.fill);
 
+    // Off by default: the snow only falls while the page's storm switch is on. Set from
+    // the page rather than passed through update(), so Stage's call signature is untouched.
+    this.stormEnabled = false;
     this.snow = makeSnow();
     scene.add(this.snow);
 
@@ -595,19 +598,27 @@ export class World {
       .addScaledVector(this.sunVector, -SUN_DISTANCE_METERS);
     this.sun.target.updateMatrixWorld();
 
+    this.snow.visible = this.stormEnabled;
     const uniforms = this.snow.material.uniforms;
     uniforms.uTime.value += elapsedSeconds;
     uniforms.uCentre.value.copy(cameraPosition);
     // A flake's diameter in pixels is flakeSize * uPixels / distance. The first
     // build used 0.42 * frame height, which drew 90-pixel beach balls at 5 m;
     // 0.019 puts a mid-sized flake at about 4 px at 5 m, which is snow.
-    uniforms.uPixels.value = pixelHeight * 0.030;
     const speed = Math.hypot(windEast, windNorth);
+    // Storm strength IS the wind speed: a breeze is a drift, 20 m/s is a whiteout. The
+    // flakes get more numerous, bigger and more opaque together, because all three are
+    // what "thicker air" looks like.
+    const stormShare = Math.min(1, speed / 20);
+    uniforms.uPixels.value = pixelHeight * 0.030 * (1 + 0.45 * stormShare);
+    this.snow.geometry.setDrawRange(0,
+      Math.round(SNOW_PARTICLE_COUNT * (0.18 + 0.82 * stormShare)));
     // Below a breeze there is nothing in the air; a blizzard fills it. The
     // horizontal drift is the WORLD wind vector, so orbiting the robot swings
     // the snow around exactly as the ribbons over the JPEG do.
     uniforms.uWind.value.set(windEast, windNorth, 0);
-    uniforms.uOpacity.value = Math.min(0.9, 0.12 + speed * 0.062);
+    uniforms.uOpacity.value = this.stormEnabled
+      ? Math.min(0.92, 0.12 + speed * 0.062) : 0;
   }
 }
 
