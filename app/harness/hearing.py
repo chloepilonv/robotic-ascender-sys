@@ -1354,8 +1354,15 @@ class HearingBehaviour:
             return self._command
 
         if not self.called:
+            # NOBODY HAS CALLED YET (or the last call ended at her heels). With
+            # ears ON BY DEFAULT (user ruling 2026-08-30) this state must not
+            # stomp the follower: the guide command passes through untouched,
+            # so vision and the W gate drive exactly as if hearing were off.
+            # Zeroing here -- fine when hearing was opt-in -- stopped the robot
+            # dead at boot and dropped it on slopes (user-found regression).
             self.mode = "IDLE"
-            self._command = np.zeros(3)
+            self._command = (np.asarray(guide_command, dtype=float).copy()
+                             if guide_command is not None else np.zeros(3))
             return self._command
 
         if self.eyes_have_her(follower):
