@@ -42,8 +42,8 @@ And two worlds that are **not the walking policy at all**:
 
 | world | what |
 |---|---|
-| `chloe_20` | Chloe's mjlab rope-ascender network on her own plant, 20° |
-| `chloe_25` | the same, 25° |
+| `chloe_v1_20` | Chloe's mjlab rope-ascender network on her own plant, 20° |
+| `chloe_v1_25` | the same, 25° |
 
 See "Chloe's ascender policy" below — different plant, different brain,
 different controls.
@@ -503,7 +503,7 @@ disk (`.reference/`, the jacketed robot's stock link STLs, `~/mujoco_menagerie`)
 by copying from the installed `mujoco_playground`, because all of the repo's own
 fetch paths fail here. It runs automatically; PARITY.md says what is broken.
 
-## Chloe's ascender policy (`chloe_20`, `chloe_25`)
+## Chloe's ascender policy (`chloe_v1_20`, `chloe_v1_25`)
 
 Everything above this line is the WALKING policy on the Lhotse terrain. These
 two worlds are neither: they run **Chloe's mjlab-trained rope-ascender
@@ -511,15 +511,15 @@ network** on **her own plant**, and they are the only worlds in the harness
 where the robot is not steered by a person.
 
     pip install onnxruntime                      # the one extra these need
-    python -m app.harness.export_scene --worlds chloe_20 chloe_25
-    python -m app.harness.runtime --live --world chloe_20
+    python -m app.harness.export_scene --worlds chloe_v1_20 chloe_v1_25
+    python -m app.harness.runtime --live --world chloe_v1_20
 
 then open **http://localhost:8766/** and hold **W**.
 
 ### How to run it, and what each entry point is for
 
-    python -m app.harness.runtime --live --world chloe_20        # the page
-    python -m app.harness.runtime --world chloe_20 --duration 15 --hold-w
+    python -m app.harness.runtime --live --world chloe_v1_20        # the page
+    python -m app.harness.runtime --world chloe_v1_20 --duration 15 --hold-w
     python -m app.harness.chloe_worlds --slope 20 --seconds 15   # no server at all
     python -m app.harness.chloe_worlds --equivalence --slope 20  # both frames
     python -m app.harness.chloe_worlds --matrix                  # slope x wind, and stop/go
@@ -531,7 +531,7 @@ then open **http://localhost:8766/** and hold **W**.
 
 ### The controls, and what they honestly do
 
-| key | on every other world | on `chloe_20` / `chloe_25` |
+| key | on every other world | on `chloe_v1_20` / `chloe_v1_25` |
 |---|---|---|
 | **W** | commands `lin_vel_x` 0.5 m/s | **gates the network**: held = it runs, released = held pose |
 | **A** / **D** | turn in place | **nothing** (the keycaps are hidden, the legend says "she steers herself") |

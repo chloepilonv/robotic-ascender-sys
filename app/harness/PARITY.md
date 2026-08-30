@@ -1481,10 +1481,10 @@ exists once contact does.
 
 ---
 
-## Chloe's ascender worlds (`chloe_20`, `chloe_25`) — a SECOND plant, on purpose
+## Chloe's ascender worlds (`chloe_v1_20`, `chloe_v1_25`) — a SECOND plant, on purpose
 
 Every parity claim above this line is about ONE plant: `climb_scene.build_scene`
-with the walking policy on it. `chloe_20` / `chloe_25` are a second plant and a
+with the walking policy on it. `chloe_v1_20` / `chloe_v1_25` are a second plant and a
 second brain, built in `app/harness/chloe_worlds.py` around
 `assets/robots/mujoco/rope_rail.py` and driven by
 `rl/chloe/policies/g1_ascender_slope20_v3_2026-08-30_04-35-59.onnx`. They exist
@@ -1509,7 +1509,7 @@ network was trained in, and what the new worlds do about it.
 | D8 | the ascender mechanism | a mocap bead projected onto a draped polyline every substep, arc-length ratchet | a real 1-DoF prismatic `rope_carriage`, mjEQ_WELD to the wrist, ratchet = the joint's moving lower limit | **sidestepped** — `rope_rail.py`, the shared file |
 | D9 | rope shape | a 9-waypoint polyline draped over the terrain, weaving ±0.35 m, colliding | ONE straight non-colliding line, 0.60 m above the ground | **sidestepped** |
 | D10 | terrain roughness | patch B's measured micro-roughness, RMS 0.114 m, on a heightfield | a plane. No roughness at all | **REMAINS.** Her network has never seen a rough surface, so it is not run on one. Putting her on `lhotse_B` is the open experiment, not a claim |
-| D11 | slope | 0.4°–50°, whatever the patch is | 20° (one task per slope: 0/10/20/30/40) | **sidestepped** at 20; `chloe_25` is one rung INSIDE the measured 10–30° band but is not a slope she was trained at |
+| D11 | slope | 0.4°–50°, whatever the patch is | 20° (one task per slope: 0/10/20/30/40) | **sidestepped** at 20; `chloe_v1_25` is one rung INSIDE the measured 10–30° band but is not a slope she was trained at |
 | D12 | rates | 500 Hz physics, 10 substeps, 50 Hz control | 200 Hz physics, 4 substeps, 50 Hz control | **sidestepped** — 5 ms / 4 |
 | D13 | how the slope is expressed | terrain geom quaternion; gravity vertical | flat plane, gravity tilted | **sidestepped by a rotation** — see below; both frames run and both are printed |
 | D14 | the `ClimbScene` carrier and its per-substep projection | present on every Lhotse world, and part of what those numbers mean | absent | **REMAINS as a difference between the two world families.** `rope_travel_meters` on a Chloe world is the slide joint's own coordinate; on a Lhotse world it is `RopeCarrier.progress` along a draped polyline. The two are not the same measurement and must never be pooled |
@@ -1629,7 +1629,7 @@ SLIDE/WALK mode bit is the shape that would fix it.
 `guide` ON the follower owns the command, so it owns the gate. v3 walks uphill
 *backwards* (no heading term in its reward — `rl/chloe/README.md` says so), the
 human ends up behind the cameras within about three seconds, the follower drops
-to WAIT/LOST and commands zero, and the gate closes. Measured on `chloe_20`,
+to WAIT/LOST and commands zero, and the gate closes. Measured on `chloe_v1_20`,
 guide ON, W held: 0.83 m of rope by t = 3 s and then flat to the end of the run,
 torso `up_z` settling at +0.56. Nothing crashes, the eyes keep rendering and
 every readout stays live — but the climb is over. Until the policy can recover,

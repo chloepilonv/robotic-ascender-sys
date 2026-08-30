@@ -42,6 +42,9 @@ WORLD_ALIASES = {
     "legacy_climb_0": "flat_0",
     "legacy_free_30": "lhotse_B_free",
     "legacy_climb_30": "lhotse_B",
+    # the Chloe worlds before the app started numbering her checkpoints
+    "chloe_20": "chloe_v1_20",
+    "chloe_25": "chloe_v1_25",
 }
 
 

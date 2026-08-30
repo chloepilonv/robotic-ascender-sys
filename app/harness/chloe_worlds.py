@@ -1,7 +1,6 @@
 """Chloe's rope-ascender worlds: the plant her policy was trained in.
 
-    Chloe · 20° · rope      chloe_20
-    Chloe · 25° · rope      chloe_25
+    Chloe v1 · 20° · rope   chloe_v1_20     (the whole ladder: chloe_v1_{0..40})
 
 These two are the ONLY worlds in the harness where the walking policy does not
 fly the robot. Picking one of them loads
@@ -146,6 +145,22 @@ def _definition(name, slope_degrees, label, description):
     }
 
 
+# Her policies, as the APP numbers them (user ruling 2026-08-30: "classify
+# this as v1 of Chloe's policy"). Her own file names carry her training-run
+# counter (this one is her `..._v3_...`); the app counts the checkpoints it
+# has actually shipped, starting at v1. Add a row per new checkpoint; the
+# world keys and labels pick the version up automatically.
+CHLOE_POLICY_VERSIONS = {
+    "v1": {
+        "relative_path": os.path.join(
+            "rl", "chloe", "policies",
+            "g1_ascender_slope20_v3_2026-08-30_04-35-59.onnx"),
+        "trained_slope_degrees": 20.0,
+        "note": "her run v3 of 2026-08-30 04:35; mjlab PPO, 96-d obs, no command",
+    },
+}
+CURRENT_CHLOE_VERSION = "v1"
+
 # The slope ladder (user ruling 2026-08-30: "run Chloe's policy with varying
 # degrees of slope, but no uneven ground, just a flat slope"). Every rung is
 # the same plant -- flat plane, one straight rope 0.60 m up, her gains and
@@ -155,25 +170,36 @@ def _definition(name, slope_degrees, label, description):
 CHLOE_SLOPE_LADDER_DEGREES = (0, 5, 10, 15, 20, 25, 30, 35, 40)
 
 
-def _ladder_description(slope):
-    if slope == 20:
-        return ("Her mjlab rope-ascender policy on the plant it was trained"
-                " in: one straight line 0.60 m up, an ascender welded to it,"
-                " and a 20 degree slope. W gates it; nothing steers it.")
+def _ladder_description(version, slope):
+    trained = CHLOE_POLICY_VERSIONS[version]["trained_slope_degrees"]
+    if slope == trained:
+        return (f"Chloe's {version} mjlab rope-ascender policy on the plant it"
+                " was trained in: one straight line 0.60 m up, an ascender"
+                f" welded to it, and a {slope:g} degree slope. W gates it;"
+                " nothing steers it.")
     low, high = SLOPE_BAND_DEGREES
     where = ("inside" if low <= slope <= high else "OUTSIDE")
-    return (f"The same policy and the same flat plant at {slope:g} degrees --"
-            f" {where} the measured {low:g}-{high:g} degree band it climbs in."
-            " Not a slope she trained at (she trained at 20).")
+    return (f"The same {version} policy and the same flat plant at {slope:g}"
+            f" degrees -- {where} the measured {low:g}-{high:g} degree band it"
+            f" climbs in. Not a slope she trained at (she trained at {trained:g}).")
+
+
+def _versioned_definition(version, slope):
+    name, definition = _definition(
+        f"chloe_{version}_{slope:g}", float(slope),
+        f"Chloe {version} · {slope:g}° · rope", _ladder_description(version, slope))
+    definition["policy_version"] = version
+    definition["policy_relative_path"] = CHLOE_POLICY_VERSIONS[version]["relative_path"]
+    return name, definition
 
 
 CHLOE_WORLD_DEFINITIONS = dict([
-    _definition(f"chloe_{slope:g}", float(slope),
-                f"Chloe · {slope:g}° · rope", _ladder_description(slope))
+    _versioned_definition(version, slope)
+    for version in CHLOE_POLICY_VERSIONS
     for slope in CHLOE_SLOPE_LADDER_DEGREES
 ])
 
-DEFAULT_CHLOE_WORLD = "chloe_20"
+DEFAULT_CHLOE_WORLD = f"chloe_{CURRENT_CHLOE_VERSION}_20"
 
 
 # --------------------------------------------------------------- the frames
@@ -731,6 +757,9 @@ class ChloeAscenderEpisode:
         self.imu_torso_site_id = meta["imu_torso_site_id"]
         self.grip_equality_id = meta["grip_equality_id"]
 
+        if policy_path is None and definition.get("policy_relative_path"):
+            policy_path = os.path.join(
+                chloe_policy.REPOSITORY_ROOT, definition["policy_relative_path"])
         self.controller = chloe_policy.AscenderController(
             self.model, scene.default_joint_positions, policy_path=policy_path,
             control_dt_seconds=meta["control_dt_seconds"],
