@@ -146,14 +146,31 @@ def _definition(name, slope_degrees, label, description):
     }
 
 
-CHLOE_WORLD_DEFINITIONS = dict([
-    _definition("chloe_20", 20.0, "Chloe · 20° · rope",
-                "Her mjlab rope-ascender policy on the plant it was trained"
+# The slope ladder (user ruling 2026-08-30: "run Chloe's policy with varying
+# degrees of slope, but no uneven ground, just a flat slope"). Every rung is
+# the same plant -- flat plane, one straight rope 0.60 m up, her gains and
+# scales -- with only the slope changed. She trained at 20; the measured band
+# she climbs in is 10-30 (SLOPE_BAND_DEGREES); rungs outside it are kept ON
+# PURPOSE so the failure is visible in the app, not just in a table.
+CHLOE_SLOPE_LADDER_DEGREES = (0, 5, 10, 15, 20, 25, 30, 35, 40)
+
+
+def _ladder_description(slope):
+    if slope == 20:
+        return ("Her mjlab rope-ascender policy on the plant it was trained"
                 " in: one straight line 0.60 m up, an ascender welded to it,"
-                " and a 20 degree slope. W gates it; nothing steers it."),
-    _definition("chloe_25", 25.0, "Chloe · 25° · rope",
-                "The same policy and the same plant at 25 degrees -- the"
-                " upper half of the 10-30 degree band it climbs in."),
+                " and a 20 degree slope. W gates it; nothing steers it.")
+    low, high = SLOPE_BAND_DEGREES
+    where = ("inside" if low <= slope <= high else "OUTSIDE")
+    return (f"The same policy and the same flat plant at {slope:g} degrees --"
+            f" {where} the measured {low:g}-{high:g} degree band it climbs in."
+            " Not a slope she trained at (she trained at 20).")
+
+
+CHLOE_WORLD_DEFINITIONS = dict([
+    _definition(f"chloe_{slope:g}", float(slope),
+                f"Chloe · {slope:g}° · rope", _ladder_description(slope))
+    for slope in CHLOE_SLOPE_LADDER_DEGREES
 ])
 
 DEFAULT_CHLOE_WORLD = "chloe_20"
@@ -1008,7 +1025,7 @@ def _equivalence(slope_degrees, seconds, policy_path=None):
     return rows
 
 
-MATRIX_SLOPES_DEGREES = (20.0, 25.0)
+MATRIX_SLOPES_DEGREES = (20.0, 25.0)   # the stop/go matrix; the full ladder is --ladder
 MATRIX_WIND_SPEEDS_MPS = (0.0, 6.0, 12.0)
 MATRIX_CLIMB_SECONDS = 5.0     # climb, then release the gate
 MATRIX_HOLD_SECONDS = 10.0     # stand there, held pose, ratchet engaged
