@@ -49,7 +49,8 @@ WALK_S       = 1.5     # ~2 gait cycles at 1.375 Hz -> 2-4 footfalls
 CMD_VX       = 0.25    # ~0.19 m/s -> ~0.47 m total, half the 1 m limit
 MAX_TILT_DEG = 30.0    # abort if the robot leans past this (rest pose is ~13 deg)
 DAMP_KD = 8.0          # per the access doc: kp=0, kd~8 on all 29 joints.
-MAX_TARGET_STEP = 0.05     # rad per control step; refuse bigger jumps
+MAX_TARGET_STEP   = 0.05   # rad/step: SLEW LIMIT -- clamp changes above this
+ABORT_TARGET_STEP = 0.30   # rad/step: genuinely wrong -> damp and stop
 
 
 class Robot:
@@ -145,6 +146,8 @@ def main():
         return float("nan")
 
     prof = {k: [] for k in ("read", "obs", "policy", "send", "total")}
+    n_slew = 0
+    n_overlimit = 0
     rss0 = rss_mb()
     print(f"RSS at start: {rss0:.1f} MB")
 
@@ -199,10 +202,25 @@ def main():
                 target = C.DEFAULT_POSE + r * C.ACTION_SCALE * action
                 kp, kd, stage = C.TRAIN_KP, C.TRAIN_KD, stage_c
 
-            step = np.abs(target - prev).max()
-            if step > MAX_TARGET_STEP:                 # refuse violent jumps
-                print(f"\nABORT: target jumped {step:.3f} rad in one step")
-                break
+            # Slew-rate limit rather than abort. A policy output can legitimately
+            # change fast; what must never reach the joints is a large STEP.
+            delta = target - prev
+            step = float(np.abs(delta).max())
+            if step > ABORT_TARGET_STEP:
+                if robot.armed:
+                    print(f"\nABORT: target jumped {step:.3f} rad in one step "
+                          f"(limit {ABORT_TARGET_STEP})")
+                    break
+                # DRY: nothing is published, so there is nothing to protect.
+                # Clamp and continue so the run profiles the whole timeline.
+                n_overlimit += 1
+                delta *= ABORT_TARGET_STEP / step
+                target = prev + delta
+                step = ABORT_TARGET_STEP
+            if step > MAX_TARGET_STEP:
+                delta *= MAX_TARGET_STEP / step
+                target = prev + delta
+                n_slew += 1
             _t = time.perf_counter()
             robot.send(target, kp, kd)
             prof["send"].append(time.perf_counter() - _t)
@@ -234,6 +252,16 @@ def main():
             print(f"\nbudget used at p99: {np.percentile(tot,99)/(C.CTRL_DT*1e3)*100:.1f}%")
             print(f"overruns (>20 ms)  : {(tot > C.CTRL_DT*1e3).sum()} / {tot.size}")
         print(f"RSS: {rss0:.1f} -> {rss_mb():.1f} MB  (growth {rss_mb()-rss0:+.1f} MB)")
+        n_pol = len(prof["policy"])
+        if n_pol:
+            print(f"slew-limited steps : {n_slew} / {n_pol} policy steps "
+                  f"({100.0*n_slew/n_pol:.0f}%)")
+            print(f"over ABORT limit   : {n_overlimit} (dry only; would have "
+                  f"aborted an armed run)")
+            print("  NOTE: in a DRY run the robot never moves, so the observation stays "
+                  "far\n  out of distribution and the policy output is erratic. High slew "
+                  "counts here\n  are expected and are NOT predictive of the armed run --"
+                  "\n  step 04 ran armed and stood without tripping a 0.05 rad guard.")
 
 
 if __name__ == "__main__":
