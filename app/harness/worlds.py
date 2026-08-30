@@ -12,12 +12,22 @@ external callers (app/bms_ui's selftest) don't break; `resolve_world_name`
 maps them to the closest ClimbScene world.
 """
 
+from app.harness.chloe_worlds import CHLOE_WORLD_DEFINITIONS
 from app.harness.climb_worlds import (
     CLIMB_WORLD_DEFINITIONS,
     DEFAULT_CLIMB_WORLD,
 )
 
-WORLD_DEFINITIONS = CLIMB_WORLD_DEFINITIONS
+# The catalogue is the walking worlds THEN Chloe's two. Her worlds carry
+# `kind: "chloe_ascender"`, which is the one thing `runtime.open_world` and
+# `export_scene.open_world` branch on: a different plant (mjlab gains, one
+# straight rope, her slope) and a different brain (her ONNX ascender policy
+# instead of the walking network). Everything else in the harness -- the
+# recorder, the pose stream, the snow, the sky, the flags, the hiker, the
+# visibility dial -- treats them like any other world, because they present
+# the same scene and episode surface.
+WORLD_DEFINITIONS = dict(CLIMB_WORLD_DEFINITIONS)
+WORLD_DEFINITIONS.update(CHLOE_WORLD_DEFINITIONS)
 
 DEFAULT_WORLD_NAME = DEFAULT_CLIMB_WORLD
 
@@ -32,6 +42,9 @@ WORLD_ALIASES = {
     "legacy_climb_0": "flat_0",
     "legacy_free_30": "lhotse_B_free",
     "legacy_climb_30": "lhotse_B",
+    # the Chloe worlds before the app started numbering her checkpoints
+    "chloe_20": "chloe_v1_20",
+    "chloe_25": "chloe_v1_25",
 }
 
 

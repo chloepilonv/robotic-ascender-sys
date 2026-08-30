@@ -72,6 +72,7 @@ from app.harness.playground_policy import (  # noqa: E402
 from app.harness.recorder import Recorder  # noqa: E402
 from app.harness import worlds as worlds_module  # noqa: E402
 from app.harness import climb_worlds as climb_worlds_module  # noqa: E402
+from app.harness import chloe_worlds as chloe_worlds_module  # noqa: E402
 from app.harness import graphics as graphics_module  # noqa: E402
 from app.harness import guide as guide_module  # noqa: E402
 from app.harness import snow as snow_module  # noqa: E402
@@ -273,7 +274,10 @@ def make_header(episode, meta, arguments) -> dict:
         "world_description": episode.definition["description"],
         "config_overrides": dict(episode.definition.get("config_overrides", {})),
         "rope_enabled": episode.rope_enabled,
-        "policy": "mels_g1_joystick.npz",
+        "policy": (os.path.basename(episode.controller.policy_path)
+                   if meta.get("kind") == "chloe_ascender"
+                   else "mels_g1_joystick.npz"),
+        "autonomous": bool(getattr(episode, "autonomous", False)),
         "seed": arguments.seed,
         "slope_degrees": episode.slope_degrees,
         "control_hz": episode.control_hz,
@@ -323,6 +327,10 @@ def run(arguments) -> str:
     print(policy.describe(), flush=True)
     wind_drag = wind_drag_coefficient()
     climb_library = climb_worlds_module.ClimbSceneLibrary()
+    # CHLOE'S WORLDS ARE THE ONE PLACE THE WALKER DOES NOT FLY THE ROBOT.
+    # `chloe_worlds` builds her mjlab plant and drives her ONNX ascender
+    # policy; every other world is untouched by its existence.
+    chloe_library = chloe_worlds_module.ChloeSceneLibrary()
 
     server = None
     if arguments.live:
@@ -360,8 +368,15 @@ def run(arguments) -> str:
         """
         name = worlds_module.resolve_world_name(name)
         kind = worlds_module.WORLD_DEFINITIONS[name]["kind"]
-        if kind == "climb_scene":
-            scene, meta, definition = climb_library.load(
+        if kind in ("climb_scene", "chloe_ascender"):
+            # Two libraries, one shape. `chloe_ascender` worlds are her mjlab
+            # plant and her ONNX policy (app/harness/chloe_worlds.py); they
+            # present the same scene surface -- spec, model, data, terrain,
+            # route, ascender, reset -- so every line below this one, the
+            # guide surgery and the whole alpine dressing included, is shared.
+            library = (chloe_library if kind == "chloe_ascender"
+                       else climb_library)
+            scene, meta, definition = library.load(
                 name, on_build_start=lambda: announce_build(name))
             # THE GUIDE'S SURGERY GOES FIRST, before anything dresses the model.
             # It recompiles the spec, and `apply_alpine_look` writes to the
@@ -391,8 +406,17 @@ def run(arguments) -> str:
                       f" {look['fog_start_meters']:.0f}-{look['fog_end_meters']:.0f} m,"
                       f" sun {look['sun']['elevation_degrees']:.0f} deg elevation,"
                       f" shadows {look['shadow_texture']}, snow on", flush=True)
-            episode = climb_worlds_module.ClimbSceneEpisode(
-                scene, meta, definition, name, seed=arguments.seed)
+            if kind == "chloe_ascender":
+                episode = chloe_worlds_module.ChloeAscenderEpisode(
+                    scene, meta, definition, name, seed=arguments.seed,
+                    policy_path=arguments.chloe_policy,
+                    hold_blend_seconds=arguments.chloe_hold_blend)
+                print(f"[runtime] {name}: {episode.controller.describe()}"
+                      "  -- W gates the network, A/D and the mouse do nothing",
+                      flush=True)
+            else:
+                episode = climb_worlds_module.ClimbSceneEpisode(
+                    scene, meta, definition, name, seed=arguments.seed)
             model = scene.model
             print(f"[runtime] world={name} ({definition['label']})"
                   f"  patch={definition['patch']} robot={definition['robot']}"
@@ -469,6 +493,13 @@ def run(arguments) -> str:
     storm_vision = storm_module.StormVision(seed=arguments.seed)
 
     def make_guide(current_scene, current_model, current_episode):
+        # CHLOE'S WORLDS ARE AUTONOMOUS. Her network has no command port at
+        # all, so nothing here may claim to steer it: `yaw_command_available`
+        # is forced False and the waist "neck" is NOT registered, whatever
+        # `--policy` says. The follower still SEES -- both eyes render, the
+        # block matcher runs, the distance and bearing are real -- and it may
+        # drive the go/stop gate through `command[0]`. It may not aim the robot.
+        autonomous = bool(getattr(current_episode, "autonomous", False))
         system = guide_module.GuideSystem(
             current_scene, current_model, current_episode.control_hz,
             enable=not arguments.no_guide_body,
@@ -478,11 +509,13 @@ def run(arguments) -> str:
             # commanded turn does nothing and the waist has to do the aiming.
             # A policy trained with randomised ang_vel_yaw would earn a True
             # here and a steerable body with it. `--policy` supplies one.
-            yaw_command_available=arguments.policy is not None)
+            yaw_command_available=(arguments.policy is not None
+                                   and not autonomous))
         gate = HumanGate(guide_module.GuideVisionDetector(system),
                          clear_after_seconds=0.0)
         if system.available:
             system.place(current_episode.spawn_position_world)
+        if system.available and not autonomous:
             # THE "NECK", REGISTERED ON THE CONTROL SEAM. `control_hooks` runs
             # after the policy writes `data.ctrl` and before the `mj_step` that
             # acts on it, which is the only place a waist-yaw offset can be
@@ -785,6 +818,11 @@ def run(arguments) -> str:
                 "world": episode.world_name,
                 "world_label": episode.definition["label"],
                 "rope_enabled": episode.rope_enabled,
+                # TRUE ON CHLOE'S WORLDS ONLY. The page reads it for one
+                # purpose: to say out loud that nothing steers this robot --
+                # W gates her policy, A/D and the mouse are dead, and the
+                # guide card's readouts are a measurement, not a control loop.
+                "autonomous": bool(getattr(episode, "autonomous", False)),
                 "paused": False,
                 "loading": False,
                 # bms + actuator_names + r_int_curve, straight from her plugin.
@@ -845,6 +883,17 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bms", action="store_true",
                         help="accepted and ignored: the BMS is always on now")
     parser.add_argument("--policy", default=None, help="path to a policy npz")
+    parser.add_argument("--chloe-policy", default=None,
+                        help="path to the ONNX rope-ascender policy the"
+                             " `chloe_*` worlds run. Defaults to"
+                             " rl/chloe/policies/g1_ascender_slope20_v3_*.onnx"
+                             " (chloe_policy.default_policy_path). Ignored by"
+                             " every other world.")
+    parser.add_argument("--chloe-hold-blend", type=float, default=0.0,
+                        help="seconds over which a STOPPED Chloe world eases"
+                             " its held PD targets toward the reset pose."
+                             " 0 (the default, measured sufficient) freezes"
+                             " them exactly where the policy left them.")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--randomise-reset-velocity", action="store_true",
                         help="reproduce their reset base-velocity draw U(-0.5, 0.5)")

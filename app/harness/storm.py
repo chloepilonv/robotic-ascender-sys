@@ -26,8 +26,9 @@ nothing sits on the lens.
               end of the dial is MINIMUM_VISIBILITY_METERS (3 m), at which only
               the nearest couple of metres are readable.
   THE FOG     composited per pixel from the eye renderer's OWN DEPTH BUFFER:
-              `out = colour*(1 - f) + white*f`, `f` ramping linearly from
-              `FOG_START_FRACTION_OF_VISIBILITY * v` (nothing) to `v` (gone).
+              `out = colour*(1 - f) + fog_colour*f`, and BOTH halves of that
+              are the PAGE'S, not this file's own (user's ruling, 2026-08-30 --
+              see "ONE LAW, ONE COLOUR" below).
   SENSOR      mild Gaussian noise per eye, drawn INDEPENDENTLY for the left and
               the right. That is the one thing fog does not reproduce: a real
               pair of cameras staring into a low-contrast white field produces
@@ -92,12 +93,43 @@ import numpy as np
 # blind as the demo can be and still be a demo.
 CLEAR_VISIBILITY_METERS = 100.0
 MINIMUM_VISIBILITY_METERS = 3.0
-# Fog starts this fraction of the way out. Not zero: fog that begins at the lens
-# is a flat wash over the whole frame, which is the look this is not.
-FOG_START_FRACTION_OF_VISIBILITY = 0.15
-# Snow-and-sky white. A white-out is white; the clear-weather pale blue-grey is
-# haze, which is a different thing.
-WHITEOUT_RGB = (247.0, 250.0, 253.0)
+# ------------------------------------------------- ONE LAW, ONE COLOUR
+# (user's ruling, 2026-08-30, and it is what the rest of this section exists
+# for.) The eyes and the viewport used to run TWO DIFFERENT fog laws in TWO
+# DIFFERENT colours: this file ramped LINEARLY from 0.15*v to v and always
+# blended toward a flat white, while the page ran three.js `FogExp2` toward a
+# colour that starts as blue-grey haze and only becomes snow-white further down
+# the dial. Same knob, two weathers -- the eye picture-in-picture and the 3-D
+# view visibly disagreed. The eyes now adopt the PAGE'S law and the PAGE'S
+# colour, exactly.
+#
+# THE FIVE NUMBERS BELOW ARE MIRRORED IN app/web/three/world.js
+# (`FOG_EXP2_95_PERCENT`, `FOG_COLOUR`, `FOG_WHITEOUT_COLOUR`,
+#  `FOG_WHITENESS_FULL_SHARE`, `FOG_WHITEOUT_EXPOSURE_HEADROOM`). If one moves,
+# move the other, or the robot and the picture stop being in the same weather.
+# `test_storm` section K prints both laws side by side so a drift shows up as a
+# number rather than as a vague feeling that the little window looks wrong.
+#
+# THE LAW. three.js `FogExp2` is `f = 1 - exp(-(density*d)^2)`, which reaches
+# 95% at `d = 1.73 / density`; the page therefore sets `density = 1.73 / v` so
+# that "visibility v" means "95% gone at v metres". Substituting:
+#
+#     f(d) = 1 - exp( -(d * FOG_EXP2_95_PERCENT / v)^2 )
+#
+# It is SOFT near the lens (quadratic, not linear) and never quite reaches 1,
+# which is why the far-depth clamp below still matters.
+FOG_EXP2_95_PERCENT = 1.73
+# THE COLOUR, and it is a RAMP, not a constant. Clear weather's fog is a cold
+# blue-grey haze; a white-out is snow-and-sky white; the page lerps between them
+# on `min(1, share / 0.66)` and then multiplies by an exposure headroom.
+FOG_HAZE_RGB = (191.0, 208.0, 226.0)          # 0xbfd0e2, world.js FOG_COLOUR
+WHITEOUT_RGB = (247.0, 250.0, 253.0)          # 0xf7fafd, FOG_WHITEOUT_COLOUR
+FOG_WHITENESS_FULL_SHARE = 0.66
+# The page multiplies the fog colour by this in LINEAR light before it is
+# written out. It was put there to survive tone mapping; it survives into the
+# displayed pixel as a hard clip to white, and `fog_colour_rgb` reproduces that
+# clip rather than second-guessing it. See that function for the measurement.
+FOG_WHITEOUT_EXPOSURE_HEADROOM = 2.6
 # Anything at or past this depth is sky or the far clip plane and is fully
 # fogged whatever the visibility. It also keeps the ramp away from the 3219 m
 # the depth buffer reports for background pixels.
@@ -151,19 +183,84 @@ def whiteout_share(visibility_meters) -> float:
 
 
 def fog_fraction(depth_meters, visibility) -> np.ndarray:
-    """How white each pixel goes. -> (H, W) float32 in [0, 1].
+    """How much fog each pixel gets. -> (H, W) float32 in [0, 1].
 
-    A linear ramp from `FOG_START_FRACTION_OF_VISIBILITY * visibility` (nothing)
-    to `visibility` (gone) -- the same law GL's `GL_LINEAR` fog uses. Background
-    pixels come back from the depth buffer at the far clip plane, 3219 m on this
-    scene, and land at 1.0 like any other distant thing, which is why the sky
-    whites out too.
+    THE PAGE'S LAW, `f = 1 - exp(-(d * FOG_EXP2_95_PERCENT / v)^2)` -- three.js
+    `FogExp2` at `density = FOG_EXP2_95_PERCENT / v`, which is exactly what
+    `applyVisibility` writes into `scene.fog.density`. Quadratic in the exponent,
+    so it is SOFT near the lens and hard in the middle distance, where the old
+    linear ramp was a straight line from 0.15*v.
+
+    Background pixels come back from the depth buffer at the far clip plane,
+    3219 m on this scene; the clamp to FAR_DEPTH_METERS keeps the exponent
+    finite and they land at 1.0 like any other distant thing, which is why the
+    sky whites out too -- the page does the same thing by replacing
+    `scene.background` with the fog colour.
     """
-    start = FOG_START_FRACTION_OF_VISIBILITY * float(visibility)
-    span = max(float(visibility) - start, 1e-3)
+    density = FOG_EXP2_95_PERCENT / max(float(visibility), 1e-3)
     depth = np.minimum(np.asarray(depth_meters, dtype=np.float32),
                        FAR_DEPTH_METERS)
-    return np.clip((depth - start) / span, 0.0, 1.0)
+    exponent = np.square(depth * density)
+    return np.clip(1.0 - np.exp(-exponent), 0.0, 1.0).astype(np.float32)
+
+
+# ------------------------------------------------------------ the fog colour
+# three.js's own two transfer functions, character for character (r169,
+# `SRGBToLinear` / `LinearToSRGB`). The truncated 0.41666 exponent is THEIRS,
+# not a typo here: copying it is the difference between reproducing the page and
+# approximating it.
+def _srgb_to_linear(channel: float) -> float:
+    return (channel * 0.0773993808 if channel < 0.04045
+            else (channel * 0.9478672986 + 0.0521327014) ** 2.4)
+
+
+def _linear_to_srgb(channel: float) -> float:
+    return (channel * 12.92 if channel < 0.0031308
+            else 1.055 * (channel ** 0.41666) - 0.055)
+
+
+def fog_colour_rgb(visibility_meters) -> np.ndarray:
+    """What colour the page's fog DISPLAYS as. -> (3,) float32, 0-255 sRGB.
+
+    Inputs  : the visibility in metres.
+    Outputs : the sRGB triple a screenshot of the viewport would read at full
+              fog -- i.e. the colour to blend the eye image toward.
+
+    The page's chain, reproduced step for step:
+      1. both endpoints are sRGB hex; three.js `Color` stores them LINEAR.
+      2. `lerp` toward the white-out endpoint on
+         `whiteness = min(1, share / FOG_WHITENESS_FULL_SHARE)`, in linear light.
+      3. `multiplyScalar(1 + (HEADROOM - 1) * whiteness)`, still linear.
+      4. linear -> sRGB on the way to the framebuffer, and the framebuffer
+         CLIPS at 1.0.
+
+    WHY THERE IS NO TONE MAPPING IN HERE, which is the one step a reader expects
+    and will not find. In three.js r169 the fog is mixed in AFTER tone mapping
+    and after the colour-space encode -- the stock fragment shaders run
+    `<tonemapping_fragment>`, `<colorspace_fragment>`, THEN `<fog_fragment>` --
+    and the `fogColor` uniform is uploaded already sRGB-encoded
+    (`getUnlitUniformColorSpace`). So the ACES curve never touches the fog
+    colour; the exposure headroom of step 3 is a straight linear gain that the
+    8-bit framebuffer clips. `scene.background` takes the identical path
+    (`setClear` -> the same encode), which is why sky and slope agree.
+
+    The visible consequence, and it is the reason this function exists rather
+    than a constant: the headroom saturates every channel at a whiteness of
+    about 0.33, i.e. a share of 0.22, i.e. **46.7 m of visibility**. Above that
+    the fog is tinted haze; below it the fog is pure 255 white. `test_storm`
+    section K prints the table.
+    """
+    share = whiteout_share(visibility_meters)
+    whiteness = min(1.0, share / FOG_WHITENESS_FULL_SHARE)
+    gain = 1.0 + (FOG_WHITEOUT_EXPOSURE_HEADROOM - 1.0) * whiteness
+    out = []
+    for haze, white in zip(FOG_HAZE_RGB, WHITEOUT_RGB):
+        haze_linear = _srgb_to_linear(haze / 255.0)
+        white_linear = _srgb_to_linear(white / 255.0)
+        linear = (haze_linear + (white_linear - haze_linear) * whiteness) * gain
+        encoded = _linear_to_srgb(max(0.0, linear))
+        out.append(255.0 * min(1.0, max(0.0, encoded)))
+    return np.array(out, dtype=np.float32)
 
 
 def fog_image(image, depth_meters, visibility) -> np.ndarray:
@@ -172,10 +269,14 @@ def fog_image(image, depth_meters, visibility) -> np.ndarray:
     Inputs  : `image` (H, W, 3) uint8 RGB; `depth_meters` (H, W) float32 from
               the same renderer and the same scene; `visibility` in metres.
     Outputs : (H, W, 3) uint8, same shape. The input is not modified.
+
+    `mix(pixel, fog_colour, f)` in DISPLAY space, which is where three.js mixes
+    it too -- so this is the same arithmetic on the same numbers, not an
+    imitation of it.
     """
     fraction = fog_fraction(depth_meters, visibility)[:, :, None]
-    white = np.array(WHITEOUT_RGB, dtype=np.float32)
-    blended = image.astype(np.float32) * (1.0 - fraction) + white * fraction
+    colour = fog_colour_rgb(visibility)
+    blended = image.astype(np.float32) * (1.0 - fraction) + colour * fraction
     return np.clip(blended, 0.0, 255.0).astype(np.uint8)
 
 

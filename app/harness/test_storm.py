@@ -28,6 +28,10 @@ that says the two are now unrelated.
   I  WHAT THE FOLLOWER DOES ABOUT IT, from its own authority.
   J  VISIBILITY IS NOT WIND. The same measurement at one visibility with the
      wind dial at 0 and at 12 m/s.
+  K  ONE LAW, ONE COLOUR. The eyes' fog against the PAGE'S fog, both computed
+     from constants READ OUT OF `app/web/three/world.js` at run time, at
+     d = 0.25v / 0.5v / v / 2v -- so a number that drifts on one side and not
+     the other is a failing row rather than a slow-dawning suspicion.
 
 CLEAR IS A ROW IN EVERY TABLE, and it is not a nearly-clear one: at
 `CLEAR_VISIBILITY_METERS` the degradation hook returns the image it was handed,
@@ -537,6 +541,149 @@ def print_visibility_is_not_wind(result) -> None:
           " the wind has no path to the eyes.")
 
 
+# ------------------------------------------------ K: one law, one colour
+WORLD_JS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "web", "three", "world.js")
+# The four depths every row is sampled at, as multiples of the visibility.
+LAW_DEPTH_MULTIPLES = (0.25, 0.5, 1.0, 2.0)
+# The shares the colour table is printed at.
+COLOUR_SHARES = (0.0, 0.33, 0.66, 1.0)
+# name in storm.py -> name in world.js. Numbers on the left, hex colours on the
+# right are handled separately because a colour is three numbers.
+MIRRORED_NUMBERS = {
+    "FOG_EXP2_95_PERCENT": "FOG_EXP2_95_PERCENT",
+    "FOG_WHITENESS_FULL_SHARE": "FOG_WHITENESS_FULL_SHARE",
+    "FOG_WHITEOUT_EXPOSURE_HEADROOM": "FOG_WHITEOUT_EXPOSURE_HEADROOM",
+    "CLEAR_VISIBILITY_METERS": "CLEAR_VISIBILITY_METERS",
+    "MINIMUM_VISIBILITY_METERS": "MINIMUM_VISIBILITY_METERS",
+}
+MIRRORED_COLOURS = {
+    "FOG_HAZE_RGB": "FOG_COLOUR",
+    "WHITEOUT_RGB": "FOG_WHITEOUT_COLOUR",
+}
+
+
+def read_world_js_constants() -> dict:
+    """The page's own numbers, off the page's own source. -> {name: value}.
+
+    Inputs  : nothing; it reads `app/web/three/world.js` from disk.
+    Outputs : a map from the JS constant name to a float, or to an (r, g, b)
+              tuple of 0-255 floats for the two hex colours.
+
+    A regex over a source file is a blunt instrument, and it is the right one
+    here: the alternative is a second hand-written copy of the same five numbers
+    in this test, which is the very failure the section exists to catch.
+    """
+    import re
+
+    with open(WORLD_JS_PATH, "r", encoding="utf-8") as handle:
+        source = handle.read()
+    found = {}
+    for name in set(MIRRORED_NUMBERS.values()):
+        match = re.search(r"^const\s+" + name + r"\s*=\s*([0-9.]+)\s*;",
+                          source, re.MULTILINE)
+        if match:
+            found[name] = float(match.group(1))
+    for name in set(MIRRORED_COLOURS.values()):
+        match = re.search(r"^const\s+" + name + r"\s*=\s*0x([0-9a-fA-F]{6})\s*;",
+                          source, re.MULTILINE)
+        if match:
+            packed = int(match.group(1), 16)
+            found[name] = (float(packed >> 16 & 0xFF), float(packed >> 8 & 0xFF),
+                           float(packed & 0xFF))
+    return found
+
+
+def page_fog_fraction(depth_meters, visibility, page) -> float:
+    """three.js FogExp2, from the PAGE'S constants. -> the fraction at one depth.
+
+    Deliberately written out longhand from the shader rather than by calling
+    `storm.fog_fraction`: a check that calls the thing it is checking proves
+    only that the thing equals itself.
+    """
+    density = page["FOG_EXP2_95_PERCENT"] / visibility
+    return 1.0 - math.exp(-((density * depth_meters) ** 2))
+
+
+def one_law_one_colour(page) -> dict:
+    """K: the two fog laws and the two colour ramps, side by side."""
+    missing = [name for name in
+               list(MIRRORED_NUMBERS.values()) + list(MIRRORED_COLOURS.values())
+               if name not in page]
+    mismatched = []
+    for here, there in MIRRORED_NUMBERS.items():
+        if there in page and abs(getattr(storm_module, here) - page[there]) > 1e-9:
+            mismatched.append((here, getattr(storm_module, here), page[there]))
+    for here, there in MIRRORED_COLOURS.items():
+        if there in page and tuple(getattr(storm_module, here)) != page[there]:
+            mismatched.append((here, tuple(getattr(storm_module, here)),
+                               page[there]))
+
+    laws = []
+    for visibility in VISIBILITY_METERS:
+        for multiple in LAW_DEPTH_MULTIPLES:
+            depth = multiple * visibility
+            eyes = float(storm_module.fog_fraction(
+                np.array([[depth]], dtype=np.float32), visibility)[0, 0])
+            laws.append({
+                "visibility": visibility, "multiple": multiple, "depth": depth,
+                "eyes": eyes,
+                "page": (page_fog_fraction(depth, visibility, page)
+                         if not missing else float("nan")),
+            })
+
+    colours = []
+    for share in COLOUR_SHARES:
+        # share -> the visibility that produces it, so the colour is asked for
+        # the way the running code asks for it: by metres.
+        visibility = (storm_module.CLEAR_VISIBILITY_METERS
+                      * math.exp(-share * math.log(
+                          storm_module.CLEAR_VISIBILITY_METERS
+                          / storm_module.MINIMUM_VISIBILITY_METERS)))
+        colours.append({
+            "share": share, "visibility": visibility,
+            "rgb": storm_module.fog_colour_rgb(visibility),
+        })
+    return {"missing": missing, "mismatched": mismatched, "laws": laws,
+            "colours": colours}
+
+
+def print_one_law_one_colour(result) -> None:
+    print("\nK. ONE LAW, ONE COLOUR -- the robot's eyes (app/harness/storm.py)"
+          " against the page (app/web/three/world.js, read from disk)")
+    if result["missing"]:
+        print(f"  !! could not find in world.js: {result['missing']}"
+              "  -- the mirror is BROKEN, the rows below are meaningless")
+    elif result["mismatched"]:
+        for name, mine, theirs in result["mismatched"]:
+            print(f"  !! DRIFT: storm.{name} = {mine}, world.js has {theirs}")
+    else:
+        print("  every mirrored constant agrees with world.js"
+              f" ({len(MIRRORED_NUMBERS) + len(MIRRORED_COLOURS)} of them)")
+    print("| visibility m | depth | eyes f | page f | difference |")
+    print("|---|---|---|---|---|")
+    for row in result["laws"]:
+        print(f"| {row['visibility']:.0f} | {row['multiple']:g}v"
+              f" = {row['depth']:.2f} m | {row['eyes']:.4f} |"
+              f" {row['page']:.4f} | {abs(row['eyes'] - row['page']):.2e} |")
+    print("  Both columns are 1 - exp(-(d * 1.73 / v)^2). They agree to floating"
+          " point or the two sides have drifted apart.")
+    print("\n  THE FOG COLOUR, as the viewport DISPLAYS it (the exposure headroom"
+          " is a linear gain the 8-bit framebuffer clips; three.js r169 mixes fog"
+          " AFTER tone mapping, so ACES never touches it)")
+    print("| share | visibility m | fog colour R,G,B |")
+    print("|---|---|---|")
+    for row in result["colours"]:
+        red, green, blue = row["rgb"]
+        print(f"| {row['share']:.2f} | {row['visibility']:.1f} |"
+              f" {red:.0f}, {green:.0f}, {blue:.0f} |")
+    print("  Share 0 is the clear haze and the eyes are handed back untouched"
+          " there anyway. Every channel clips at 255 once the whiteness passes"
+          " ~0.33, i.e. below 46.7 m of visibility -- so most of the dial is"
+          " pure white on BOTH sides.")
+
+
 def main(arguments) -> None:
     scene, episode = test_guide_module.open_world(arguments.world)
     print_fog_table(arguments.world, fog_reaches_the_eyes(scene, episode))
@@ -551,6 +698,7 @@ def main(arguments) -> None:
     print_visibility_is_not_wind(
         visibility_is_not_wind(scene, episode, arguments.repeats,
                                arguments.world))
+    print_one_law_one_colour(one_law_one_colour(read_world_js_constants()))
 
 
 if __name__ == "__main__":

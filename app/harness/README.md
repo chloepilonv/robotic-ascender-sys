@@ -38,6 +38,16 @@ Also `terrain_free_5/10/15/20/25/30` (patch B's measured roughness re-tilted,
 rope off — the walker gives up between 10° and 15°) and `sandbox_free` /
 `sandbox_rope`, a 120 × 120 m free-roam map.
 
+And two worlds that are **not the walking policy at all**:
+
+| world | what |
+|---|---|
+| `chloe_v1_20` | Chloe's mjlab rope-ascender network on her own plant, 20° |
+| `chloe_v1_25` | the same, 25° |
+
+See "Chloe's ascender policy" below — different plant, different brain,
+different controls.
+
 Keys: **W** walk, **A/D** turn in place (they suspend the camera-follow while
 held) — *unless the `guide` knob is on, in which case W walks the HUMAN up the
 rope, S walks her back down it, and the robot drives itself; see "Follow the
@@ -384,8 +394,24 @@ slider's own centre at `sqrt(100 × 3)` = 17.3 m. It lives in `whiteoutShare`
 duplicated in both. If one moves, move the other, or the picture and the robot
 stop being in the same weather.
 
+**One law, one colour** (user's ruling, 2026-08-30). The two sides used to fog
+by two different laws in two different colours — the eyes ramped LINEARLY from
+`0.15 × v` toward a flat white, the page ran `FogExp2` toward a colour that
+starts as blue-grey haze and only becomes snow-white further down the dial, and
+the page painted a 2-D white veil on top that the eye image never received. Same
+knob, two weathers, and the eye PiP visibly disagreed with the viewport. The
+eyes now adopt the page's law, `f = 1 − exp(−(d × 1.73 / v)²)`, and the page's
+colour ramp; the veil is gone. The five constants live in
+`app/web/three/world.js` and are mirrored in `storm.py`, and `test_storm`
+section K reads them back out of the JS at run time and prints both laws at
+`d = 0.25v / 0.5v / v / 2v` so a drift is a failing row. Measured on a 1920×1080
+headless shot with the viewport put in first person on the ROBOT (same mount,
+same 58° fovy as the stereo eye): the sky region — where the fog colour is the
+whole answer — reads within **2–4 of 255** between the viewport and the PiP at
+30 m, 10 m and 3 m.
+
 **On the robot's eyes** the fog is composited per pixel from the eye renderer's
-own DEPTH buffer, `out = colour*(1 − f) + white*f`, plus a couple of grey levels
+own DEPTH buffer, `out = colour*(1 − f) + fog_colour*f`, plus a couple of grey levels
 of Gaussian sensor noise drawn INDEPENDENTLY per eye — the one thing fog does
 not reproduce, and what leaves the block matcher nothing to match. The grain now
 scales with the white-out share too (1.0 grey level at 100 m, 7.0 at 3 m); it
@@ -400,9 +426,13 @@ orange backpack as the target, `test_storm` sections E and F):
 | visibility | detected at 2 m | detected at 5 m | max detection range |
 |---|---|---|---|
 | 100 m (clear) | 100% | 100% | 16 m |
-| 30 m | 100% | 100% | 10 m |
-| 10 m | 100% | **0%** | **4 m** |
+| 30 m | 100% | 100% | 8 m |
+| 10 m | 100% | **0%** | **3 m** |
 | 3 m | **0%** | **0%** | **never seen** |
+
+(The max ranges were 16 / 10 / 4 / never under the retired linear ramp. Adopting
+the page's exp² law made the middle of the dial slightly thicker, which is where
+the two ranges moved.)
 
 and with the human parked at 9 m the follower goes to LOST on its own — 100% of
 detections at 100 m and 30 m, **0%** at 10 m and 3 m, and the mode follows.
@@ -413,9 +443,9 @@ not a wash (section E0, sensor noise off, the guide at 5 m):
 | visibility | mean pixel change NEAR (≤ 6 m) | mean pixel change FAR (> 6 m) |
 |---|---|---|
 | 100 m (clear) | 0.0 | 0.0 |
-| 30 m | 0.5 | 42.9 |
-| 10 m | 30.1 | 58.6 |
-| 3 m | 126.8 | 63.8 |
+| 30 m | 5.3 | 49.0 |
+| 10 m | 42.0 | 65.0 |
+| 3 m | 135.4 | 68.8 |
 
 
     python -m app.harness.test_storm      # the tables above + the eye contact sheet
@@ -435,6 +465,10 @@ the same measurement at 10 m visibility with the wind dial at 0 m/s and at
 the guide on. (`storm_before/` and `storm_after/` are the wind-indexed shots
 from the 2026-08-29 fog ruling, kept as history — their file names are wind
 speeds, from when visibility was derived from wind.)
+
+`render3d_shots/fogmatch_{100,30,10,3}.png` is the one-law proof: the viewport
+in first person on the robot beside the EYE0 PiP of the same camera, one shot
+per visibility.
 
 The camera-subject shots are `render3d_shots/camera_{guide,robot}_{3p,1p}.png`,
 one per state of the guide switch and the **V** toggle.
@@ -492,6 +526,131 @@ Measured **0.000e+00**: bit-identical.
 disk (`.reference/`, the jacketed robot's stock link STLs, `~/mujoco_menagerie`)
 by copying from the installed `mujoco_playground`, because all of the repo's own
 fetch paths fail here. It runs automatically; PARITY.md says what is broken.
+
+## Chloe's ascender policy (`chloe_v1_20`, `chloe_v1_25`)
+
+Everything above this line is the WALKING policy on the Lhotse terrain. These
+two worlds are neither: they run **Chloe's mjlab-trained rope-ascender
+network** on **her own plant**, and they are the only worlds in the harness
+where the robot is not steered by a person.
+
+    pip install onnxruntime                      # the one extra these need
+    python -m app.harness.export_scene --worlds chloe_v1_20 chloe_v1_25
+    python -m app.harness.runtime --live --world chloe_v1_20
+
+then open **http://localhost:8766/** and hold **W**.
+
+### How to run it, and what each entry point is for
+
+    python -m app.harness.runtime --live --world chloe_v1_20        # the page
+    python -m app.harness.runtime --world chloe_v1_20 --duration 15 --hold-w
+    python -m app.harness.chloe_worlds --slope 20 --seconds 15   # no server at all
+    python -m app.harness.chloe_worlds --equivalence --slope 20  # both frames
+    python -m app.harness.chloe_worlds --matrix                  # slope x wind, and stop/go
+
+`--chloe-policy PATH` swaps the ONNX (the default is
+`rl/chloe/policies/g1_ascender_slope20_v3_2026-08-30_04-35-59.onnx`);
+`--chloe-hold-blend SECONDS` is the one knob on the stop behaviour, below.
+`--policy` is the WALKING policy's npz and does nothing here.
+
+### The controls, and what they honestly do
+
+| key | on every other world | on `chloe_v1_20` / `chloe_v1_25` |
+|---|---|---|
+| **W** | commands `lin_vel_x` 0.5 m/s | **gates the network**: held = it runs, released = held pose |
+| **A** / **D** | turn in place | **nothing** (the keycaps are hidden, the legend says "she steers herself") |
+| mouse look | steers by camera heading | **nothing** |
+| **R** | reset | reset |
+| the guide switch | the follower drives the robot | the follower still SEES; it may drive W's gate; it may not steer |
+
+Her network **has no command input**. There is no `lin_vel_x`, no
+`ang_vel_yaw`, no gait clock and no stop: 96 numbers in, 29 joint targets out,
+50 times a second, and it climbs. So the harness does not pretend to steer it.
+The one control that exists on a rope is go / don't go, and that is what W is
+wired to (`chloe_policy.AscenderController.go`, also drivable by any other
+lane — the hearing lane included — because it is a plain boolean).
+
+**STOP IS A HELD POSE, NOT A PAUSE.** With the gate released the last PD
+targets the policy wrote are frozen and the physics keeps running: the legs
+hold where they are and the ascender's cam holds the body on the line. What
+that measures out at is in PARITY.md; the short version is that **she stops,
+and she does not start again**. See "the one-way stop" there before you build
+anything on top of it.
+
+That is also why you want the **guide switch OFF** on these two worlds if what
+you want is a climb: the follower owns the command, so it owns the gate, and v3
+walks uphill *backwards* — the human is behind the cameras within about three
+seconds, the follower commands zero, and the gate shuts for good. Everything
+still runs and every readout stays live; the climbing stops. Measured in
+PARITY.md.
+
+### The plant is hers, and every part of it is load-bearing
+
+* actuators: mjlab's `G1_ARTICULATION` — per-motor-group `kp`/`kd`/`armature`
+  (`chloe_policy.G1_ARTICULATION`), NOT the harness's walking gains
+* action decode: `ctrl = default + per_joint_scale × action`, her per-joint
+  scale table, NOT a flat 0.5
+* feet: the XML's four spheres per foot, unchanged — no box swap, no
+  `policy_compat`
+* rope: `assets/robots/mujoco/rope_rail.py` — ONE straight non-colliding line
+  0.60 m above the ground, the ascender WELDED to a 1-DoF `rope_carriage`
+  slide, ratchet = the slide's moving lower limit, raised before every
+  `mj_step`
+* ground: one plane. No heightfield, no roughness.
+* rates: physics 5 ms, decimation 4, control 50 Hz
+
+Measured, both directions: give her policy the walking gains (kp 75 / kd 2) and
+it falls in under two seconds; give it a flat 0.5 action scale and it falls in
+under two seconds. The usable slope band is 10–30°, which is why there are two
+worlds and not six.
+
+### The frame — why the slope is a slope here and a gravity vector in `rl/chloe`
+
+She trained on a FLAT plane with GRAVITY TILTED by the slope. That reproduces
+exactly (`--frame tilted_gravity`) and it looks wrong: level ground, a
+horizontal rope, a robot leaning 20° backwards, and "height gained" reading
+0.00 m forever.
+
+The shipped worlds rotate the WHOLE WORLD by −slope about +y and put gravity
+back to (0, 0, −9.81) (`--frame tilted_plane`, the default). It is a change of
+coordinates and nothing else: her observation is invariant under it term by
+term (pelvis angular velocity is already body-frame; projected gravity, the
+joint block and the carriage-minus-pelvis vector all cancel the rotation), and
+the weld and the slide survive it because the carriage body rotates with
+everything else, so their numbers never change.
+
+That claim is measured, not asserted:
+
+    python -m app.harness.chloe_worlds --equivalence --slope 20
+      tilted_gravity   uphill  +5.301 m   rope  +5.504 m   STANDING
+      tilted_plane     uphill  +5.300 m   rope  +5.502 m   STANDING
+      |difference| 0.0018 m (0.03 %)
+
+### Honesty notes
+
+* **The policy is hers and the plant is hers.** `rl/chloe/` is the source of
+  truth for both; `app/harness/chloe_policy.py` is a re-implementation of the
+  sim2sim loop against a plain `MjData`, and `chloe_worlds.py` rebuilds the
+  plant around `rope_rail.py`. Nothing here re-derives a number that lives
+  there — the default pose in particular is whatever `add_rope_rail` solves,
+  never a transcribed constant.
+* **No command input, so no steering, so no honest way to drive her.** Stated
+  in the UI as well as here.
+* **The rope model is `rope_rail.py`'s**, which is a straight line and a
+  prismatic joint — not the draped polyline and mocap bead the Lhotse worlds
+  ride. The two are different mechanisms and their telemetry means different
+  things; PARITY.md has the ledger.
+* **The rope rail moved under the policy on 2026-08-30.** v3 was trained with
+  the channel at the mesh hull's centre; the shared `rope_rail.py` now puts it
+  at x = +15 mm, pitch +5°, set from renders. The same policy, same seed,
+  15 s at 20°: **+5.61 m before the change, +5.30 m after** (rope +5.82 →
+  +5.50). It still climbs and it never falls, but it has lost about 5 % — the
+  network and the rail have drifted apart, and the fix is a retrain (v7 is
+  training against the new rail), not a harness change.
+* **Wind, visibility, snow and the storm are demo-only here too.** The state
+  message says `wind_in_training: false`. `terrain_in_training` is `true` on
+  these two worlds and only these two, because the slope IS what she trained
+  on.
 
 ## The Pemba G1 (the real demo robot, legacy env only)
 

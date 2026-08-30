@@ -259,7 +259,15 @@ class G1:
 
     def start(self):
         # robot must already be standing (remote: L2+A -> R2+B ...). Start() = walk-ready mode.
-        self.loco.Start(); time.sleep(3.0)
+        # Start() is SetFsmId(200) on the installed SDK and RETURNS A CODE. Discarding it
+        # makes a refused transition look identical to a successful one: on the gantry robot
+        # this printed every phase cleanly while nothing moved.
+        code = self.loco.SetFsmId(200)
+        if code != 0:
+            sys.exit(f"loco SetFsmId(200) refused (code {code}); the robot is not in a state "
+                     f"that accepts motion. Put it in a standing stance first "
+                     f"(physical remote: L2+A then R2+B).")
+        time.sleep(3.0)
 
     def set_arm_weight(self, w): self.weight = max(0.0, min(1.0, w))
 
@@ -271,7 +279,15 @@ class G1:
         self.cmd.crc = self.crc.Crc(self.cmd)
         self.pub.Write(self.cmd)
 
-    def move(self, vx): self.base_pose(); self.vx = vx; self.loco.Move(vx, 0.0, 0.0)
+    def move(self, vx):
+        # LocoClient.Move() is SetVelocity(..., duration=1) and returns None, so a single
+        # call expires after 1 s while the caller tracks for several seconds. Re-issue the
+        # SHORT command instead of using continous_move=True (864000 s): a 1 s duration
+        # means the robot stops by itself within a second if this process dies.
+        self.base_pose(); self.vx = vx
+        code = self.loco.SetVelocity(vx, 0.0, 0.0, 1.0)
+        if code != 0:
+            raise RuntimeError(f"SetVelocity refused, code {code}")
     def stop_move(self): self.base_pose(); self.vx = 0.0; self.loco.StopMove()
 
     def tilt_ok(self):
@@ -556,8 +572,12 @@ class RopeWalker:
         direction) and bites when loaded the other way, so when the arm runs out of reach the
         grip point advances along the rope; it never moves back."""
         n = max(1, int(dur * CTRL_HZ)); sliding = False
-        for _ in range(n):
+        for i in range(n):
             if not self.bot.tilt_ok(): self.abort("tilt")
+            # The velocity command carries a 1 s duration (see G1.move), so re-issue it
+            # twice a second while walking or the robot stops partway through the track.
+            if getattr(self.bot, "vx", 0.0) and i and i % max(1, CTRL_HZ // 2) == 0:
+                self.bot.move(self.bot.vx)
             base = self.bot.base_pose()
             pt = (self.grip_pt[0], self.grip_pt[1], self.grip_pt[2] + lift)
             target, dx = hand_at_world(pt, base)

@@ -109,17 +109,20 @@ class RatchetEnv(ManagerBasedRlEnv):
     n = len(env_ids)
     self.climb_mode[env_ids] = torch.randint(0, 2, (n,), device=self.device).float()
     self._slide_at_switch[env_ids] = self.sim.data.qpos[env_ids, self._slide_qadr]
+    self._phase_t[env_ids] = 0.0
 
   def _mode_update(self) -> None:
     robot = self.scene["robot"]
     carrier_x = robot.data.body_link_pos_w[:, self._carrier_body, 0]
     rel_x = carrier_x - robot.data.root_link_pos_w[:, 0]
-    self.climb_mode, self._slide_at_switch = CM.update_mode(
-      self.climb_mode, self.sim.data.qpos[:, self._slide_qadr], self._slide_at_switch, rel_x
+    self.climb_mode, self._slide_at_switch, self._phase_t = CM.update_mode(
+      self.climb_mode, self.sim.data.qpos[:, self._slide_qadr], self._slide_at_switch, rel_x,
+      self._phase_t, self.step_dt,
     )
 
   def __init__(self, cfg, device: str, **kwargs):
     self.climb_mode = torch.zeros(cfg.scene.num_envs, device=device)  # obs term reads it during init
+    self.slope_deg = torch.full((cfg.scene.num_envs,), R.NOMINAL_SLOPE_DEG, device=device)
     super().__init__(cfg, device=device, **kwargs)
     n, a = self.num_envs, self.action_manager.total_action_dim
     self._act_hist = torch.zeros(self.MAX_ACTION_DELAY + 1, n, a, device=self.device)
@@ -131,6 +134,8 @@ class RatchetEnv(ManagerBasedRlEnv):
     self._carrier_body = self.scene["robot"].find_bodies(R.CARRIER_BODY)[0][0]
     self.climb_mode = torch.zeros(self.num_envs, device=self.device)
     self._slide_at_switch = torch.zeros(self.num_envs, device=self.device)
+    self._phase_t = torch.zeros(self.num_envs, device=self.device)
+    self.slope_deg = torch.full((self.num_envs,), R.NOMINAL_SLOPE_DEG, device=self.device)
     self._slide_qadr = int(model.jnt_qposadr[jid])
     self._slide_dadr = int(model.jnt_dofadr[jid])
     self._sim_step = self.sim.step
@@ -225,8 +230,11 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
   }
 
   events = {
-    "reset_base": EventTermCfg(
-      func=base_mdp.reset_root_state_uniform,
+    # Per-env slope 0-40 deg (+ wind): spawn pose from the per-slope table and
+    # constant per-body forces = the env's own tilted gravity. Replaces the
+    # root/joint/slide resets (they are written here) and the wind event.
+    "reset_slope_wind": EventTermCfg(
+      func=mdp.reset_slope_wind,
       mode="reset",
       params={
         # No pose jitter: the carriage resets to the rope start = the ascender
@@ -356,6 +364,7 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
     "ascender_progress": RewardTermCfg(  # reward longer ascender slides
       func=mdp.ascender_progress, weight=1.5, params={"asset_cfg": mdp.SLIDE, "max_vel": 2.0}
     ),
+    "slide_time_pressure": RewardTermCfg(func=mdp.in_slide, weight=-0.5),  # standing in SLIDE costs
     "rope_tension": RewardTermCfg(
       func=mdp.rope_tension_band, weight=0.5, params={"lo": 20.0, "hi": 150.0}
     ),
@@ -377,7 +386,7 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
       func=mdp.feet_air_time, weight=0.3, params={"threshold": 0.05, "asset_cfg": mdp.FEET}
     ),
     "upright": RewardTermCfg(
-      func=vel_mdp.upright,
+      func=mdp.upright_eff,
       weight=1.0,
       params={"std": math.sqrt(0.2), "asset_cfg": mdp.TORSO},
     ),
@@ -400,7 +409,7 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
   terminations = {
     "time_out": TerminationTermCfg(func=base_mdp.time_out, time_out=True),
     "fell_over": TerminationTermCfg(
-      func=base_mdp.bad_orientation, params={"limit_angle": math.radians(60.0)}
+      func=mdp.bad_orientation_eff, params={"limit_angle": math.radians(60.0)}
     ),
     "facing_downhill": TerminationTermCfg(func=mdp.facing_downhill),
     "base_low": TerminationTermCfg(
@@ -411,7 +420,7 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
   cfg = ManagerBasedRlEnvCfg(
     scene=SceneCfg(
       terrain=TerrainEntityCfg(terrain_type="plane"),
-      entities={"robot": R.get_robot_cfg(slope_deg)},
+      entities={"robot": R.get_robot_cfg(R.NOMINAL_SLOPE_DEG)},
       num_envs=16 if play else 4096,
       env_spacing=0.0,  # envs share the same rope line; MuJoCo worlds don't collide.
     ),
@@ -438,7 +447,7 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
         timestep=0.005,
         iterations=10,
         ls_iterations=20,
-        gravity=R.gravity_for_slope(slope_deg),
+        gravity=R.gravity_for_slope(R.NOMINAL_SLOPE_DEG),  # per-env slope = extra body forces
       ),
     ),
     decimation=4,  # 50 Hz policy, the G1 deployment rate.

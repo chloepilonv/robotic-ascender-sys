@@ -356,7 +356,9 @@
 <script type="module">
 import { Stage } from '/app/web/three/stage.js';
 import { fnv1a32, whiteoutShare, CLEAR_VISIBILITY_METERS,
-         MINIMUM_VISIBILITY_METERS } from '/app/web/three/world.js';
+         MINIMUM_VISIBILITY_METERS, FOG_EXP2_95_PERCENT, FOG_WHITEOUT_COLOUR,
+         FOG_WHITENESS_FULL_SHARE, FOG_WHITEOUT_EXPOSURE_HEADROOM }
+       from '/app/web/three/world.js';
 
 const $ = id => document.getElementById(id);
 const canvas = $('canvas'), stage = new Stage(canvas);
@@ -377,6 +379,22 @@ const state = {
   paused: true, pauseIntent: true, loading: false,
   windNow: null, actuatorNames: null, worldKey: 0,
 };
+
+// CHLOE'S WORLDS ARE AUTONOMOUS (`autonomous` in the state message, set by
+// app/harness/chloe_worlds.py). Her mjlab ascender network has no command
+// port: W gates it -- held, the network runs; released, the PD targets freeze
+// and the ascender's cam holds her on the line -- and A, D and the mouse do
+// nothing at all. The key legend has to say so, because a key that looks live
+// and is not is worse than no key.
+let autonomousKeysShown = null;
+function paintAutonomyKeys(frame) {
+  const autonomous = Boolean(frame.autonomous);
+  if (autonomous === autonomousKeysShown) return;
+  autonomousKeysShown = autonomous;
+  $('turnLeftKey').style.display = autonomous ? 'none' : '';
+  $('turnRightKey').style.display = autonomous ? 'none' : '';
+  $('turnLabel').textContent = autonomous ? ' she steers herself ' : ' turn ';
+}
 
 // ---------- HUD (ported verbatim from the retired index.html) ----------
 function paintHud(frame) {
@@ -402,6 +420,7 @@ function paintHud(frame) {
   noteVisibility(frame.visibility_meters);
   paintBatteryCard(frame);
   paintGuideCard(frame);
+  paintAutonomyKeys(frame);
   const climbing = Number(command[0]) > 0;
   const fell = Boolean(frame.fell);
   const motion = $('motionBadge');
@@ -575,6 +594,15 @@ function paintGuideCard(frame) {
     phase.textContent = guide.search_phase;
     pill.appendChild(phase);
   }
+  // CHLOE'S WORLDS: the follower still SEES -- the distance and bearing below
+  // are a real stereo measurement -- but her ascender network has no command
+  // port, so nothing here aims the robot. The mode is honest about what the
+  // follower wants; this says what it is allowed to do about it.
+  if (frame.autonomous) {
+    const inert = document.createElement('em');
+    inert.textContent = 'no steering';
+    pill.appendChild(inert);
+  }
   const distance = Number(guide.distance_meters);
   const truth = Number(guide.true_distance_meters);
   $('guideDistance').textContent = Number.isFinite(distance) ? distance.toFixed(1) + ' m' : '—';
@@ -661,21 +689,15 @@ function updateWindRibbons(elapsedSeconds, widthPixels, heightPixels) {
     }
   }
 }
-// A white haze over the whole frame, thickest in the distance. The 3-D fog only tints
-// GEOMETRY, and on a close, dark slope very little of it accumulates -- so this is what
-// sells the white-out. It follows the VISIBILITY dial and nothing else.
-const VEIL_MAXIMUM_ALPHA = 0.35;
-function drawVisibilityVeil(widthPixels, heightPixels) {
-  const alpha = VEIL_MAXIMUM_ALPHA * whiteoutShare(visibilityState.meters);
-  if (alpha < 0.003) return;
-  const gradient = snowContext.createRadialGradient(
-    widthPixels * 0.5, heightPixels * 0.44, 0,
-    widthPixels * 0.5, heightPixels * 0.44, Math.hypot(widthPixels, heightPixels) * 0.62);
-  gradient.addColorStop(0, 'rgba(233,238,244,' + alpha.toFixed(3) + ')');
-  gradient.addColorStop(1, 'rgba(233,238,244,' + (alpha * 0.22).toFixed(3) + ')');
-  snowContext.fillStyle = gradient;
-  snowContext.fillRect(0, 0, widthPixels, heightPixels);
-}
+// THE VEIL IS GONE (user's ruling, 2026-08-30). A 2-D radial white wash used to be
+// painted over the whole viewport, alpha up to 0.35 of the share, on the argument that
+// the 3-D fog only tints GEOMETRY and a close dark slope accumulates little of it. It
+// was a PAGE-ONLY effect: the robot's eye image never received it, so the EYE0
+// picture-in-picture and the viewport showed two different weathers at every point of
+// the dial -- which is exactly what the user reported. The fog alone now carries the
+// white-out on both sides. If the near field reads too clear at mid-dial, that is the
+// truth of the law and both sides show it; the fix belongs in the law, not in a wash
+// only one of the two can see.
 function drawWindRibbons(widthPixels, heightPixels) {
   const strength = Math.max(0, Math.min(1,
     (windScreen.speed - 1.5) / (BLIZZARD_METERS_PER_SECOND - 1.5)));
@@ -1184,22 +1206,12 @@ let lastResizeCheck = 0, lastCanvasWidth = 0, lastCanvasHeight = 0;
 // from the WIND SPEED -- `100 m * exp(-speed / 6)` -- now simply reads the VISIBILITY
 // knob, in metres. Wind does force, flag, sound and gusting; visibility does visibility.
 //
-// ONE CURVE, THREE PLACES. `whiteoutShare` in three/world.js is the shared law, and
-// app/harness/storm.py holds the same two endpoints for the ROBOT'S EYES. If one moves,
-// move the others, or the picture and the robot stop being in the same weather.
-//
-// THREE's FogExp2 factor is 1 - exp(-(density*distance)^2), which reaches 95% at
-// distance = 1.73 / density, so a visibility of v metres is a density of 1.73 / v.
-const FOG_EXP2_95_PERCENT = 1.73;
-const FOG_WHITEOUT_COLOUR = 0xf7fafd;     // snow-and-sky white, not the clear blue-grey
-// HDR HEADROOM, and it is not a fudge. The renderer tone-maps ACES-filmic at
-// exposure 0.92, and ACES deliberately rolls off: a colour of 1.0 comes out of it at
-// about 0.77, so a fog painted at "white" renders as a MID GREY. Measured on the first
-// build of this whiteout: a full white-out frame came back at RGB 150, not 250 -- a
-// convincing erasure of the mountain in a colour nobody would call snow. A whiteout is
-// BRIGHT, so it is given the linear headroom a bright thing has and the tone mapper
-// takes it to white on its own.
-const FOG_WHITEOUT_EXPOSURE_HEADROOM = 2.6;
+// ONE LAW, ONE COLOUR, BOTH SIDES (user's ruling, 2026-08-30). `whiteoutShare` and the
+// five fog constants now all live in three/world.js, and app/harness/storm.py mirrors
+// every one of them so the ROBOT'S EYES fog by the same arithmetic in the same colour.
+// Nothing here defines a fog number of its own any more; if one moves, it moves in
+// world.js and in storm.py together. `test_storm` section K prints both laws side by
+// side so a future drift shows up as a number.
 const whiteoutFog = { baseDensity: null, baseColour: null, whiteout: null,
                       lastWritten: null, background: null };
 function applyVisibility() {
@@ -1227,7 +1239,7 @@ function applyVisibility() {
     fog.color.copy(whiteoutFog.baseColour);
   } else {
     // Never CLEARER than clear weather, however open the dial.
-    const whiteness = Math.min(1, share / 0.66);
+    const whiteness = Math.min(1, share / FOG_WHITENESS_FULL_SHARE);
     fog.density = Math.max(whiteoutFog.baseDensity,
                            FOG_EXP2_95_PERCENT / visibilityState.meters);
     fog.color.copy(whiteoutFog.baseColour).lerp(whiteoutFog.whiteout, whiteness)
@@ -1285,7 +1297,6 @@ function frame(nowMilliseconds) {
     updateWindScreen(elapsedSeconds);
     updateWindRibbons(elapsedSeconds, snowLayout.width, snowLayout.height);
     snowContext.clearRect(0, 0, snowLayout.width, snowLayout.height);
-    drawVisibilityVeil(snowLayout.width, snowLayout.height);
     drawWindRibbons(snowLayout.width, snowLayout.height);
   }
 }

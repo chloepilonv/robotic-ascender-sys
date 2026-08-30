@@ -58,8 +58,6 @@ const MINIMUM_BOOM_METERS = 1.6;
 // a 4.3 m arm is a sample every 36 cm, which is finer than the camera's own
 // clearance.
 const COLLISION_SAMPLES = 12;
-const RECENTRE_IDLE_SECONDS = 2.0;
-const RECENTRE_LAG_SECONDS = 1.1;
 const SWAY_AMPLITUDE_METERS = 0.035;
 // The boom's own pitch range, which is wider than the mouse's because the slope
 // bias above pushes past it. Terrain collision and the ride-up clamp are what
@@ -90,7 +88,6 @@ export class ChaseCamera {
     this.aimPosition = new THREE.Vector3();
     this.fieldOfView = FIELD_OF_VIEW_SLOW;
     this.secondsSinceMouse = 99;
-    this.autoRecentre = true;
     this.seeded = false;
     this.swayPhase = Math.random() * 100;
     this.boomLength = BOOM_LENGTH_METERS;
@@ -148,19 +145,8 @@ export class ChaseCamera {
     this.followPosition.lerp(target, blend(POSITION_LAG_SECONDS, elapsedSeconds));
 
     // --- where the boom is pointing --------------------------------------
-    // After two idle seconds the camera drifts back behind the robot, the way
-    // every third-person game does it. It is a drift, not a snap: the target is
-    // the mouse's own azimuth, nudged toward the robot's heading.
-    if (this.autoRecentre && this.secondsSinceMouse > RECENTRE_IDLE_SECONDS) {
-      // The runtime turns the browser's azimuth into a heading by adding half a
-      // turn (runtime.BROWSER_AZIMUTH_OFFSET_DEGREES), i.e. the camera's VIEWING
-      // direction is where the robot walks. So the azimuth that puts the camera
-      // behind the robot is its yaw minus half a turn.
-      const behindDegrees = headingRadians * 180 / Math.PI - 180;
-      const share = blend(RECENTRE_LAG_SECONDS, elapsedSeconds);
-      this.azimuthDegrees = ((this.azimuthDegrees
-        + shortestAngleDegrees(this.azimuthDegrees, behindDegrees) * share) % 360 + 360) % 360;
-    }
+    // No idle auto-recentre (user ruling 2026-08-30): the azimuth is wherever
+    // the mouse last left it, until R resets it through recentreNow().
     // SLOPE-AWARE PITCH, and the sign of it is the whole difference between a
     // walking simulator and a map. MuJoCo elevation is NEGATIVE when the camera
     // is above the target looking down. On a 38.6 deg face the default -15 puts

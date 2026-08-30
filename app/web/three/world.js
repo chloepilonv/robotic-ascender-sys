@@ -47,6 +47,36 @@ const SUN_DISTANCE_METERS = 60.0;
 const FOG_COLOUR = 0xbfd0e2;           // cold blue-white, matching graphics.py's haze
 const FOG_DENSITY_PER_METER = 0.0085;
 
+// ------------------------------------------- ONE FOG LAW, ONE FOG COLOUR
+// (user's ruling, 2026-08-30.) These five numbers are THE fog, and the ROBOT'S
+// EYES read the same five: app/harness/storm.py mirrors them as
+// `FOG_EXP2_95_PERCENT`, `FOG_HAZE_RGB` (= FOG_COLOUR above), `WHITEOUT_RGB`,
+// `FOG_WHITENESS_FULL_SHARE` and `FOG_WHITEOUT_EXPOSURE_HEADROOM`, and
+// `storm.fog_fraction` / `storm.fog_colour_rgb` reproduce exactly what
+// `render3d.html`'s `applyVisibility` writes into `scene.fog`. If one moves,
+// move the other -- `test_storm` section K prints both laws side by side so the
+// drift shows up as a number.
+//
+// They live HERE rather than in render3d.html because storm.py's comment has to
+// point at one file, and this is the module that already owns FOG_COLOUR.
+//
+// THREE's FogExp2 factor is 1 - exp(-(density*distance)^2), which reaches 95% at
+// distance = 1.73 / density, so a visibility of v metres is a density of 1.73 / v.
+const FOG_EXP2_95_PERCENT = 1.73;
+// snow-and-sky white, the far end of the colour ramp; the near end is FOG_COLOUR
+const FOG_WHITEOUT_COLOUR = 0xf7fafd;
+// the two-thirds point of the log share is where the fog stops being blue-grey
+// haze and is fully snow-and-sky white
+const FOG_WHITENESS_FULL_SHARE = 0.66;
+// HDR HEADROOM. A whiteout is BRIGHT, so the fog colour is given the linear gain
+// a bright thing has. NOTE (measured 2026-08-30, against the r169 source): the
+// fog is mixed AFTER `<tonemapping_fragment>` and after `<colorspace_fragment>`,
+// so ACES never touches it -- this gain is a straight linear multiply that the
+// 8-bit framebuffer clips, and it clips every channel to 255 once the whiteness
+// passes ~0.33 (a share of 0.22, a visibility of 46.7 m). Below that the fog is
+// pure white on the page, and storm.py's `fog_colour_rgb` says so too.
+const FOG_WHITEOUT_EXPOSURE_HEADROOM = 2.6;
+
 // ------------------------------------------------------------- VISIBILITY
 // HOW FAR YOU CAN SEE, IN METRES, AND NOTHING ELSE (user's ruling,
 // 2026-08-30). It used to be a `storm` switch whose thickness was derived from
@@ -744,4 +774,5 @@ export function fnv1a32(text) {
 
 export { FOG_COLOUR, FOG_DENSITY_PER_METER, SUN_ELEVATION_DEGREES,
          SUN_AZIMUTH_DEGREES, CLEAR_VISIBILITY_METERS,
-         MINIMUM_VISIBILITY_METERS };
+         MINIMUM_VISIBILITY_METERS, FOG_EXP2_95_PERCENT, FOG_WHITEOUT_COLOUR,
+         FOG_WHITENESS_FULL_SHARE, FOG_WHITEOUT_EXPOSURE_HEADROOM };

@@ -9,7 +9,8 @@ The model, all of it standard and none of it invented here:
 
   speed  = target * gain,  gain = clamp(1 + OU(sigma 0.25, tau 4 s), 0.4, 1.6)
                                   * gust(t)
-  head   = target_heading + OU(sigma 15 deg, tau 6 s)
+  head   = target_heading + OU(sigma 75 deg, tau 45 s) + OU(sigma 15 deg, tau 6 s)
+           (the slow wander swings the quarter it blows from; the fast term shakes it)
 
 `OU` is an Ornstein-Uhlenbeck process -- the standard "wanders around a mean and
 is pulled back to it" noise. Exactly integrated per tick rather than Euler-
@@ -47,8 +48,14 @@ DRIFT_SIGMA = 0.25          # fractional, 1-sigma of the slow speed drift
 DRIFT_TAU_SECONDS = 4.0
 DRIFT_CLAMP = (0.4, 1.6)    # gain never outside this, however the draw lands
 
-HEADING_SIGMA_DEGREES = 15.0
+HEADING_SIGMA_DEGREES = 15.0        # the fast jitter: the wind shaking about
 HEADING_TAU_SECONDS = 6.0
+# The slow WANDER (user ruling 2026-08-30: "for natural wind vary the
+# directions too"). A second, much slower mean-reverting walk with big
+# excursions, so over a minute the wind comes round from another quarter --
+# the dial's heading is the long-run average, not what it does right now.
+WANDER_SIGMA_DEGREES = 75.0
+WANDER_TAU_SECONDS = 45.0
 
 GUST_INTERVAL_SECONDS = (3.0, 8.0)
 GUST_DURATION_SECONDS = (0.5, 1.5)
@@ -84,6 +91,8 @@ class NaturalWind:
         self.drift = OrnsteinUhlenbeck(DRIFT_SIGMA, DRIFT_TAU_SECONDS, self.random)
         self.heading_drift = OrnsteinUhlenbeck(
             HEADING_SIGMA_DEGREES, HEADING_TAU_SECONDS, self.random)
+        self.heading_wander = OrnsteinUhlenbeck(
+            WANDER_SIGMA_DEGREES, WANDER_TAU_SECONDS, self.random)
         self.velocity_world = np.zeros(2)
         self.speed = 0.0
         self.heading_degrees = 0.0
@@ -99,6 +108,7 @@ class NaturalWind:
     def reset(self) -> None:
         self.drift.reset()
         self.heading_drift.reset()
+        self.heading_wander.reset()
         self.gain = 1.0
         self.gust_amount = 0.0
         self._reset_gust(0.0)
@@ -132,7 +142,8 @@ class NaturalWind:
         self.gain = float(np.clip(1.0 + self.drift.step(dt), *DRIFT_CLAMP))
         self.gust_amount = self._gust(now)
         self.speed = target_speed * self.gain * (1.0 + self.gust_amount)
-        self.heading_degrees = target_heading + self.heading_drift.step(dt)
+        self.heading_degrees = (target_heading + self.heading_wander.step(dt)
+                                + self.heading_drift.step(dt))
 
         radians = math.radians(self.heading_degrees)
         self.velocity_world[:] = (self.speed * math.cos(radians),
@@ -170,8 +181,10 @@ if __name__ == "__main__":
         print(f"seed {seed}: speed mean {speeds.mean():6.2f} (target 12.00)"
               f"  sd {speeds.std():5.2f}  min {speeds.min():5.2f}"
               f"  max {speeds.max():6.2f}")
+        excursion = np.abs(headings).max()
         print(f"         heading mean {headings.mean():+6.2f} deg"
-              f"  sd {headings.std():5.2f} (target sd 15.00)")
+              f"  sd {headings.std():5.2f} (target sd {math.hypot(WANDER_SIGMA_DEGREES, HEADING_SIGMA_DEGREES):.2f})"
+              f"  largest swing {excursion:5.1f} deg")
         print(f"         gusts {onsets} in 300 s"
               f" ({300 / max(onsets, 1):.1f} s apart, expect 3-8 + duration)"
               f"  in-gust fraction {active.mean():.3f}")
