@@ -981,7 +981,7 @@ document.addEventListener('mousemove', event => {
   const azimuth = state.camera.azimuth_degrees + event.movementX * AZIMUTH_DEGREES_PER_PIXEL;
   state.camera.azimuth_degrees = ((azimuth % 360) + 360) % 360;
   // mouse up raises the camera, i.e. drives elevation more negative, then clamps
-  const elevation = state.camera.elevation_degrees - event.movementY * ELEVATION_DEGREES_PER_PIXEL;
+  const elevation = state.camera.elevation_degrees + event.movementY * ELEVATION_DEGREES_PER_PIXEL;
   state.camera.elevation_degrees = Math.max(ELEVATION_MINIMUM_DEGREES,
                                             Math.min(ELEVATION_MAXIMUM_DEGREES, elevation));
   queueCameraMessage();
