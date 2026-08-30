@@ -4,36 +4,34 @@
 <meta charset="utf-8">
 <title>G1 Fixed-Line Ascent</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- inline so the page stays self-contained and the tab stops asking for /favicon.ico -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%2318181b'/%3E%3Cpath d='M3 12.5 8 3.5l5 9' fill='none' stroke='%23fafafa' stroke-width='1.6' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
+  /* shadcn-style neutral zinc surface. Colour is reserved for status:
+     green = good / climbing / live, red = fell / cutoff, amber = paused. */
   :root {
-    /* cold palette: night ice, glacier blue, snow */
-    --bg: #070c13; --bg-2: #0a121c; --panel: #0e1725; --panel-2: #162335; --line: #22344c;
-    --ink: #eaf3fc; --ink-dim: #8ba6c4; --ink-faint: #5f7794;
-    --accent: #6fd0ff; --accent-2: #a6e3ff; --warn: #ffc773; --bad: #ff6b7d; --good: #7ce0b0;
-    font-family: -apple-system, "Inter", "Segoe UI", system-ui, sans-serif;
+    --bg: #09090b;          /* zinc-950 */
+    --card: #18181b;        /* zinc-900 */
+    --elevated: #27272a;    /* zinc-800 */
+    --border: #27272a;      /* zinc-800 */
+    --ink: #fafafa;         /* zinc-50  */
+    --ink-2: #a1a1aa;       /* zinc-400 */
+    --ink-3: #71717a;       /* zinc-500 */
+    --good: #22c55e;
+    --bad: #ef4444;
+    --warn: #f59e0b;
+    --radius: 8px;
+    font-family: "Inter", -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-feature-settings: "cv02","cv03","cv04","cv11";
   }
   * { box-sizing: border-box; }
-  body { margin: 0; color: var(--ink); height: 100vh; display: grid; grid-template-rows: 54px 1fr;
-         background: radial-gradient(120% 90% at 20% -10%, #12233a 0%, var(--bg-2) 45%, var(--bg) 100%); }
-  header { display: flex; align-items: center; gap: 18px; padding: 0 20px; border-bottom: 1px solid var(--line);
-           background: linear-gradient(180deg, rgba(30,52,80,.55), rgba(14,23,37,.9)); }
-  header h1 { font-size: 15px; font-weight: 600; letter-spacing: .10em; margin: 0; text-transform: uppercase; }
-  header h1 em { font-style: normal; color: var(--accent); }
-  header h1 span { color: var(--ink-dim); font-weight: 400; margin-left: 10px; letter-spacing: .04em;
-                   text-transform: none; font-size: 12.5px; }
-  .tabs { display: flex; gap: 4px; margin-left: 12px; }
-  .tab { padding: 6px 14px; border-radius: 8px; color: var(--ink-dim); cursor: pointer; font-size: 13px; }
-  .tab:hover { color: var(--ink); }
-  .tab.active { background: var(--panel-2); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
-  #status { margin-left: auto; font-size: 12px; color: var(--ink-dim); display: flex; align-items: center; gap: 8px; }
-  #status i { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); display: inline-block;
-              box-shadow: 0 0 8px currentColor; }
-  #status.on i { background: var(--good); }
-  #realtime { color: var(--ink-faint); font-variant-numeric: tabular-nums; }
-  main { display: grid; grid-template-columns: 1fr 300px; min-height: 0; }
-  #stage { position: relative; background: #04080e; display: flex; align-items: center; justify-content: center;
-           overflow: hidden; }
-  #canvas, #stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }   /* fill the stage edge to edge; crop, never letterbox */
+  body { margin: 0; height: 100vh; background: var(--bg); color: var(--ink);
+         display: grid; grid-template-columns: 1fr 320px; font-size: 13px;
+         -webkit-font-smoothing: antialiased; }
+
+  /* ---------- stage: the picture, edge to edge, and nothing else ---------- */
+  #stage { position: relative; background: #000; overflow: hidden; }
+  #canvas, #stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
   #stage canvas { cursor: pointer; }
   body.pointer-locked #stage canvas { cursor: none; }
   #stage video { display: none; }
@@ -42,167 +40,211 @@
   #snow { position: absolute; left: 0; top: 0; display: none; pointer-events: none;
           max-width: none; max-height: none; }
 
-  /* F = fullscreen: only the picture. Overlays go; the paused card and the FELL banner stay so a judge knows what to click. */
-  #stage:fullscreen .hud, #stage:fullscreen .badges, #stage:fullscreen #lookHint, #stage:fullscreen #worldToast { display: none !important; }
-  .hud { position: absolute; left: 16px; right: 16px; bottom: 16px; display: flex; gap: 10px; align-items: flex-end;
-         pointer-events: none; flex-wrap: wrap; }
-  .card { background: rgba(7,12,19,.72); backdrop-filter: blur(7px); border: 1px solid var(--line); border-radius: 11px;
-          padding: 9px 12px; font-size: 11px; color: var(--ink-dim); min-width: 104px;
-          text-transform: uppercase; letter-spacing: .09em; }
-  .card b { display: block; color: var(--ink); font-size: 19px; font-weight: 600; letter-spacing: 0;
-            text-transform: none; font-variant-numeric: tabular-nums; margin: 1px 0 1px; }
-  .card.hero { min-width: 152px; border-color: #2f527a; background: rgba(14,30,49,.78); }
-  .card.hero b { font-size: 34px; line-height: 1.05; color: var(--accent-2); }
-  .bar { height: 5px; border-radius: 3px; background: #162335; overflow: hidden; margin-top: 5px; }
-  .bar i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), var(--warn));
-           transition: width .08s linear; }
-  #compass { width: 56px; height: 56px; display: block; margin: -2px auto -4px; }
-  /* the wind readout carries "12.0 m/s · NNE", so it needs more room than a bare number */
-  .card.windcard { min-width: 152px; }
-  .card.windcard b { font-size: 15px; letter-spacing: .01em; }
-  /* battery / thermal card: only ever shown when a state frame carries a `bms` object */
-  .card.bms { display: none; min-width: 190px; }
-  .card.bms.cutoff { border-color: var(--bad); background: rgba(46,12,18,.78); }
-  .card.bms b#bmsSoc { font-size: 21px; }
-  .bmsrows { display: grid; gap: 3px; margin-top: 8px; font-size: 10px; letter-spacing: .08em; }
+  /* the only two things allowed to sit on the picture — and they survive fullscreen,
+     because a judge still has to know what to click and why it stopped */
+  #lockOverlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+                 pointer-events: none; background: rgba(9,9,11,.55); }
+  #lockOverlay > div { text-align: center; background: var(--card); border: 1px solid var(--border);
+                       border-radius: var(--radius); padding: 14px 22px; }
+  #pausedPill { display: none; margin-bottom: 9px; padding: 2px 10px; border-radius: 999px;
+                background: rgba(245,158,11,.14); border: 1px solid rgba(245,158,11,.35);
+                color: var(--warn); font-style: normal; font-weight: 600;
+                font-size: 10.5px; letter-spacing: .08em; }
+  #lockTitle { display: block; font-size: 13px; font-weight: 500; color: var(--ink); }
+  #lockSubtitle { display: block; margin-top: 4px; font-size: 11.5px; color: var(--ink-3); }
+  #banner { position: absolute; left: 0; right: 0; top: 0; display: none; padding: 9px 16px;
+            text-align: center; background: var(--bad); color: #fff;
+            font-size: 11.5px; font-weight: 600; letter-spacing: .07em; }
+
+  /* ---------- sidebar: every control and every number ---------- */
+  aside { border-left: 1px solid var(--border); background: var(--bg); padding: 14px;
+          overflow: auto; display: flex; flex-direction: column; gap: 12px; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; order: 0; }
+  .segmented { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid var(--border);
+               border-radius: var(--radius); background: var(--card); }
+  .tab { padding: 4px 13px; border-radius: 6px; font-size: 12px; color: var(--ink-2);
+         cursor: pointer; user-select: none; line-height: 1.5; }
+  .tab:hover { color: var(--ink); }
+  .tab.active { background: var(--elevated); color: var(--ink); }
+  #status { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--ink-3); }
+  #status i { width: 6px; height: 6px; border-radius: 50%; background: var(--bad); flex: none; }
+  #status.on i { background: var(--good); }
+  #realtime { color: var(--ink-3); font-variant-numeric: tabular-nums; font-size: 10.5px; }
+
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+          padding: 12px; }
+  h2 { font-size: 10.5px; font-weight: 500; text-transform: uppercase; letter-spacing: .1em;
+       color: var(--ink-3); margin: 0 0 8px; }
+  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+  .head h2 { margin: 0; }
+  .head output { font-size: 12px; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .note { font-size: 11px; color: var(--ink-3); margin-top: 7px; }
+
+  select { width: 100%; appearance: none; -webkit-appearance: none; background: var(--bg);
+           color: var(--ink); border: 1px solid var(--border); border-radius: 6px;
+           padding: 7px 30px 7px 10px; font: inherit; font-size: 12.5px; cursor: pointer;
+           background-image: url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+           background-repeat: no-repeat; background-position: right 10px center; }
+  select:hover:not(:disabled) { border-color: #3f3f46; }
+  select:disabled { color: var(--ink-3); cursor: default; opacity: .7; }
+  button { width: 100%; background: var(--elevated); color: var(--ink); border: 1px solid var(--border);
+           border-radius: 6px; padding: 8px 12px; font: inherit; font-size: 12.5px; font-weight: 500;
+           cursor: pointer; }
+  button:hover { background: #323238; }
+  button:active { background: var(--elevated); }
+
+  input[type=range] { width: 100%; appearance: none; -webkit-appearance: none; background: transparent;
+                      height: 16px; cursor: pointer; margin: 2px 0 0; }
+  input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 999px;
+    background: linear-gradient(90deg, var(--ink) 0 var(--fill,0%), var(--elevated) var(--fill,0%) 100%); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 13px; height: 13px;
+    margin-top: -4.5px; border-radius: 50%; background: var(--ink); border: none; }
+  input[type=range]::-moz-range-track { height: 4px; border-radius: 999px; background: var(--elevated); }
+  input[type=range]::-moz-range-progress { height: 4px; border-radius: 999px; background: var(--ink); }
+  input[type=range]::-moz-range-thumb { width: 13px; height: 13px; border-radius: 50%;
+    background: var(--ink); border: none; }
+
+  #windDial { width: 132px; height: 132px; display: block; margin: 2px auto 6px;
+              cursor: grab; touch-action: none; }
+
+  /* ---------- telemetry (the former bottom HUD) ---------- */
+  #telemetry { order: 2; }
+  .hero { display: flex; align-items: baseline; gap: 6px; margin: -1px 0 10px; }
+  .hero b { font-size: 30px; font-weight: 600; letter-spacing: -.02em; line-height: 1;
+            font-variant-numeric: tabular-nums; }
+  .hero span { font-size: 12px; color: var(--ink-3); }
+  .kv { display: grid; grid-template-columns: 1fr auto; gap: 7px 10px; align-items: baseline;
+        font-size: 12px; color: var(--ink-2); }
+  .kv b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; }
+  .kv b em { font-style: normal; color: var(--ink-3); font-weight: 400; margin-left: 3px; }
+  .bar { grid-column: 1 / -1; height: 3px; border-radius: 999px; background: var(--elevated);
+         overflow: hidden; margin: -2px 0 1px; }
+  .bar i { display: block; height: 100%; width: 0%; background: var(--ink); transition: width .08s linear; }
+  #motionBadge { margin-top: 11px; padding-top: 10px; border-top: 1px solid var(--border);
+                 font-size: 12px; color: var(--ink-3); display: flex; align-items: center; gap: 7px; }
+  #motionBadge::before { content: ""; width: 6px; height: 6px; border-radius: 50%;
+                         background: currentColor; flex: none; }
+  #motionBadge.climbing { color: var(--good); }
+  #motionBadge.fell { color: var(--bad); }
+
+  /* ---------- battery / thermal: only when a frame carries a `bms` object ---------- */
+  #bmsCard { display: none; order: 3; }
+  #bmsCard.cutoff { border-color: rgba(239,68,68,.5); }
+  #bmsSoc { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .bmsbar { grid-column: auto; margin: 1px 0 0; }
+  .bmsrows { display: grid; gap: 6px; margin-top: 10px; font-size: 11.5px; color: var(--ink-2); }
   .bmsrows span { display: flex; justify-content: space-between; gap: 10px; white-space: nowrap; }
-  .bmsrows b { display: inline; font-size: 11.5px; letter-spacing: 0; text-transform: none; margin: 0; }
+  .bmsrows b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; }
   .bmsrows b.hot { color: var(--warn); }
   .bmsrows b.critical { color: var(--bad); }
-  #bmsHot { display: none; margin-top: 6px; font-size: 10px; color: var(--ink-faint);
-            text-transform: none; letter-spacing: .04em; }
-  #bmsCutoffPill { display: none; margin-top: 8px; padding: 3px 11px; border-radius: 999px;
-                   background: var(--bad); color: #2a0308; font-style: normal; font-weight: 700;
-                   font-size: 10px; letter-spacing: .16em; }
+  #bmsHot { display: none; margin-top: 8px; font-size: 11px; color: var(--ink-3); }
+  #bmsCutoffPill { display: none; margin-top: 10px; padding: 2px 10px; border-radius: 999px;
+                   background: rgba(239,68,68,.14); border: 1px solid rgba(239,68,68,.4);
+                   color: var(--bad); font-style: normal; font-weight: 600;
+                   font-size: 10.5px; letter-spacing: .08em; }
 
-  .badges { position: absolute; top: 14px; left: 16px; display: flex; gap: 8px; align-items: center; pointer-events: none; }
-  .badge { background: rgba(7,12,19,.72); backdrop-filter: blur(7px); border: 1px solid var(--line); border-radius: 999px;
-           padding: 5px 12px; font-size: 11.5px; color: var(--ink-dim); letter-spacing: .06em; }
-  .badge b { color: var(--ink); font-variant-numeric: tabular-nums; }
-  #motionBadge { color: var(--ink-faint); }
-  #motionBadge.climbing { color: #06131f; background: var(--accent); border-color: var(--accent); font-weight: 600; }
-  #lookHint { position: absolute; top: 14px; right: 16px; font-size: 11px; color: var(--ink-faint);
-              background: rgba(7,12,19,.6); border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px;
-              pointer-events: none; display: none; }
-  /* shown until the judge clicks the view and the pointer is captured */
-  #lockOverlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
-                 pointer-events: none; background: radial-gradient(70% 70% at 50% 50%, rgba(4,8,14,.10), rgba(4,8,14,.62)); }
-  #lockOverlay div { text-align: center; background: rgba(9,16,26,.86); backdrop-filter: blur(8px);
-                     border: 1px solid #2f527a; border-radius: 14px; padding: 16px 26px;
-                     box-shadow: 0 10px 40px rgba(0,0,0,.55); }
-  #pausedPill { display: none; margin-bottom: 9px; padding: 3px 13px; border-radius: 999px;
-                background: var(--warn); color: #2a1a05; font-style: normal; font-weight: 700;
-                font-size: 10.5px; letter-spacing: .18em; }
-  #lockOverlay b { display: block; font-size: 15px; font-weight: 600; color: var(--accent-2); letter-spacing: .02em; }
-  #lockOverlay span { display: block; margin-top: 5px; font-size: 11.5px; color: var(--ink-faint); letter-spacing: .06em; }
-  /* shown from the moment a map is picked until the first state frame from that map */
-  #worldToast { position: absolute; top: 52px; left: 50%; transform: translateX(-50%); padding: 7px 18px;
-                border-radius: 999px; background: rgba(14,30,49,.92); backdrop-filter: blur(7px);
-                border: 1px solid #2f527a; color: var(--accent-2); font-size: 12px; letter-spacing: .06em;
-                display: none; pointer-events: none; box-shadow: 0 6px 24px rgba(0,0,0,.45); }
-  #banner { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); padding: 12px 26px;
-            border-radius: 999px; background: rgba(255,107,125,.92); color: #fff; font-weight: 700; font-size: 14px;
-            letter-spacing: .08em; display: none; box-shadow: 0 8px 30px rgba(0,0,0,.5); }
+  /* ---------- footer: reset + the whole key legend, one row ---------- */
+  #liveFooter { order: 4; margin-top: auto; display: flex; flex-direction: column; gap: 10px; }
+  .keys { display: flex; align-items: center; gap: 3px; flex-wrap: wrap;
+          font-size: 10.5px; color: var(--ink-3); }
+  .keycap { display: inline-flex; align-items: center; justify-content: center; min-width: 18px;
+            height: 18px; padding: 0 4px; border: 1px solid var(--border); border-radius: 5px;
+            background: var(--card); color: var(--ink-2); font-size: 10px; font-weight: 600;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #climbKey { cursor: pointer; user-select: none; transition: background .05s, color .05s; }
+  #climbKey.down { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .keys s { text-decoration: none; color: #3f3f46; }
 
-  aside { border-left: 1px solid var(--line); background: linear-gradient(180deg, var(--panel), #0a121c);
-          padding: 18px; overflow: auto; display: flex; flex-direction: column; gap: 16px; }
-  aside h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .14em; color: var(--ink-faint); margin: 0 0 8px; }
-  .row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; margin: 8px 0; }
-  .row output { color: var(--accent); font-variant-numeric: tabular-nums; min-width: 62px; text-align: right; }
-  input[type=range] { width: 100%; accent-color: var(--accent); }
-  .climbkey { display: flex; justify-content: center; margin: 6px 0 10px; }
-  .key { width: 108px; height: 62px; border: 1px solid var(--line); border-radius: 12px; display: flex; flex-direction: column;
-         align-items: center; justify-content: center; gap: 2px; font-size: 24px; font-weight: 700; color: var(--ink-dim);
-         background: linear-gradient(180deg, var(--panel-2), #0e1725); box-shadow: 0 3px 0 #0a1120;
-         user-select: none; cursor: pointer; transition: transform .05s, background .05s; }
-  .key small { font-size: 9.5px; font-weight: 500; letter-spacing: .12em; text-transform: uppercase; }
-  .key.down { background: linear-gradient(180deg, var(--accent-2), var(--accent)); color: #06131f;
-              border-color: var(--accent); box-shadow: 0 0 22px rgba(111,208,255,.35); transform: translateY(3px); }
-  button { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 8px;
-           padding: 8px 12px; font-size: 13px; cursor: pointer; width: 100%; }
-  button:hover { border-color: var(--accent); color: var(--accent-2); }
-  select { width: 100%; background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
-  .hint { font-size: 11px; color: var(--ink-faint); line-height: 1.55; }
-  #replayPanel, #livePanel { display: none; }
-  body.live #livePanel, body.replay #replayPanel { display: block; }
+  #replayPanel, #livePanel { display: none; order: 1; flex-direction: column; gap: 12px; }
+  body.live #livePanel, body.replay #replayPanel { display: flex; }
+  body.replay #liveFooter { display: none; }
+  #episodeInfo { font-size: 11px; color: var(--ink-3); margin-top: 9px; line-height: 1.6;
+                 word-break: break-word; }
 </style>
 </head>
 <body class="live">
-<header>
-  <h1><em>EVEREST</em> · Fixed-Line Ascent <span>Unitree G1 · rl/environment/climb_env.py, live</span></h1>
-  <div class="tabs"><div class="tab active" data-mode="live">Live</div><div class="tab" data-mode="replay">Replay</div></div>
-  <div id="status"><i></i><span id="statusText">disconnected</span><span id="realtime"></span></div>
-</header>
-<main>
-  <div id="stage">
-    <canvas id="canvas" width="1280" height="720"></canvas>
-    <video id="video" controls></video>
-    <canvas id="snow"></canvas>
-    <div class="badges">
-      <div class="badge">slope <b id="hudSlope">—</b>°</div>
-      <div class="badge" id="ropeBadge">rope —</div>
-      <div class="badge" id="motionBadge">holding</div>
-    </div>
-    <div id="lookHint">move mouse to look · hold W to climb · R to respawn · F fullscreen</div>
-    <div id="lockOverlay"><div><i id="pausedPill">PAUSED</i><b id="lockTitle">click to take control</b><span id="lockSubtitle">Esc to release</span></div></div>
-    <div id="worldToast"></div>
-    <div id="banner">FELL</div>
-    <div class="hud">
-      <div class="card hero">ascender<b id="hudClimb">0.00</b>m up the line</div>
-      <div class="card">height gained<b id="hudHeight">0.0</b>m vertical</div>
-      <div class="card">rope load<b id="hudRope">0</b>newtons<div class="bar"><i id="ropeBar"></i></div></div>
-      <div class="card windcard" title="speed and the compass point the wind is blowing TOWARD (+Y is north, +X is east)">wind<b id="hudWind">0.0 m/s · calm</b><svg id="compass" viewBox="-32 -32 64 64">
-        <circle r="30" fill="none" stroke="#22344c"/><line id="windArrow" x1="0" y1="0" x2="0" y2="0" stroke="#6fd0ff" stroke-width="3" stroke-linecap="round"/></svg></div>
-      <div class="card">time<b id="hudTime">0.00</b>seconds</div>
-      <div class="card bms" id="bmsCard">battery<b id="bmsSoc">—</b>
-        <div class="bar"><i id="bmsSocBar"></i></div>
-        <div class="bmsrows">
-          <span id="bmsPowerRow">power<b id="bmsPower">—</b></span>
-          <span id="bmsWindingRow">winding<b id="bmsWinding">—</b></span>
-          <span id="bmsAmbientRow">ambient<b id="bmsAmbient">—</b></span>
-        </div>
-        <div id="bmsHot"></div>
-        <i id="bmsCutoffPill">BMS CUTOFF</i>
-      </div>
-    </div>
+<div id="stage">
+  <canvas id="canvas" width="1280" height="720"></canvas>
+  <video id="video" controls></video>
+  <canvas id="snow"></canvas>
+  <div id="lockOverlay"><div><i id="pausedPill">Paused</i><b id="lockTitle">click to take control</b><span id="lockSubtitle">Esc to release</span></div></div>
+  <div id="banner">FELL</div>
+</div>
+<aside>
+  <div class="topbar">
+    <div class="segmented"><div class="tab active" data-mode="live">Live</div><div class="tab" data-mode="replay">Replay</div></div>
+    <div id="status"><i></i><span id="statusText">offline</span><span id="realtime"></span></div>
   </div>
-  <aside>
-    <div id="livePanel">
-      <h2>Ascend</h2>
-      <div class="climbkey"><div class="key" id="climbKey" data-key="w">W<small>hold to climb</small></div></div>
-      <p class="hint"><b>Click the view</b> to take control, then move the mouse to look around — the G1 turns to
-        face wherever you are looking. Hold <b>W</b> and it hauls itself that way up the fixed line; let go and it
-        just hangs on the ascender, standing in the wind. <b>Esc</b> releases the pointer. <b>R</b> respawns the
-        climber and puts the camera back behind it, without giving up the pointer.</p>
-      <h2>Mountain</h2>
-      <div class="row"><label>map</label></div>
+
+  <div id="livePanel">
+    <section class="card">
+      <h2>Map</h2>
       <select id="worldSelect"></select>
-      <p class="hint" id="worldHint">Switching maps respawns the climber at that world’s start.</p>
-      <div class="row"><label>wind speed</label><output id="windOut">0.0 m/s · 0°</output></div>
-      <svg id="windDial" viewBox="-70 -70 140 140" style="width:140px;height:140px;display:block;margin:4px auto;cursor:grab;touch-action:none">
-        <circle r="55" fill="none" stroke="var(--line)" stroke-width="2"/>
-        <text x="0" y="-60" text-anchor="middle" font-size="9" fill="var(--ink-dim)">+Y</text>
-        <text x="63" y="3" text-anchor="middle" font-size="9" fill="var(--ink-dim)">+X</text>
-        <line id="windDialArrow" x1="0" y1="0" x2="0" y2="0" stroke="var(--accent)" stroke-width="3" stroke-linecap="round"/>
-        <circle id="windDot" cx="55" cy="0" r="8" fill="var(--accent)"/>
+      <div class="note" id="worldStatus" style="display:none"></div>
+    </section>
+
+    <section class="card">
+      <div class="head"><h2>Wind</h2><output id="windOut">0.0 m/s</output></div>
+      <svg id="windDial" viewBox="-70 -70 140 140">
+        <circle r="55" fill="none" stroke="var(--border)" stroke-width="1.5"/>
+        <text x="0" y="-60" text-anchor="middle" font-size="9" fill="var(--ink-3)">N</text>
+        <text x="63" y="3" text-anchor="middle" font-size="9" fill="var(--ink-3)">E</text>
+        <line id="windDialArrow" x1="0" y1="0" x2="0" y2="0" stroke="var(--ink-2)" stroke-width="2.5" stroke-linecap="round"/>
+        <circle id="windDot" cx="55" cy="0" r="7" fill="var(--ink)"/>
       </svg>
       <input type="range" id="windStrength" min="0" max="25" step="0.5" value="0">
-      <p class="hint">Wind speed in <b>m/s</b>, blown along the dial direction. The force is the quadratic drag law from <code>rl/environment/wind_env.py</code> applied to the torso. <b>The climb env has no wind at training time</b> — this is a demo knob, not something the policy has ever seen.</p>
-      <div class="row"><label>foot friction (μ)</label><output id="frictionOut">0.80</output></div>
+    </section>
+
+    <section class="card">
+      <div class="head"><h2>Friction</h2><output id="frictionOut">0.80</output></div>
       <input type="range" id="friction" min="0.05" max="1.5" step="0.05" value="0.8">
-      <p class="hint">Training pins this at <code>climb_config.foot_friction</code> = 0.8.</p>
-      <p style="margin-top:14px"><button id="resetBtn">Reset climber</button></p>
-      <p class="hint">Same as pressing <b>R</b>, which also recentres the camera and keeps the pointer.</p>
-      <p class="hint">Every live session is recorded to <code>app/harness/episodes/</code> and appears in Replay.</p>
+    </section>
+  </div>
+
+  <div id="replayPanel">
+    <section class="card">
+      <h2>Episode</h2>
+      <select id="episodeSelect"></select>
+      <div id="episodeInfo"></div>
+      <p style="margin:10px 0 0"><button id="refreshBtn">Refresh list</button></p>
+    </section>
+  </div>
+
+  <section class="card" id="telemetry">
+    <h2>Telemetry</h2>
+    <div class="hero"><b id="hudClimb">0.00</b><span>m up the line</span></div>
+    <div class="kv">
+      <span>Height gained</span><b id="hudHeight">0.0<em>m</em></b>
+      <span>Rope load</span><b id="hudRope">0<em>N</em></b>
+      <div class="bar"><i id="ropeBar"></i></div>
+      <span>Time</span><b id="hudTime">0.00<em>s</em></b>
+      <span>Wind</span><b id="hudWind">0.0 m/s · calm</b>
     </div>
-    <div id="replayPanel">
-      <h2>Episodes</h2>
-      <select id="episodeSelect" size="12"></select>
-      <p><button id="refreshBtn">Refresh list</button></p>
-      <div id="episodeInfo" class="hint"></div>
+    <div id="motionBadge">holding</div>
+  </section>
+
+  <section class="card" id="bmsCard">
+    <div class="head"><h2>Battery</h2><output id="bmsSoc">—</output></div>
+    <div class="bar bmsbar"><i id="bmsSocBar"></i></div>
+    <div class="bmsrows">
+      <span id="bmsPowerRow">Power<b id="bmsPower">—</b></span>
+      <span id="bmsWindingRow">Winding<b id="bmsWinding">—</b></span>
+      <span id="bmsAmbientRow">Ambient<b id="bmsAmbient">—</b></span>
     </div>
-  </aside>
-</main>
+    <div id="bmsHot"></div>
+    <i id="bmsCutoffPill">Cutoff</i>
+  </section>
+
+  <div id="liveFooter">
+    <button id="resetBtn">Reset climber</button>
+    <div class="keys">
+      <span class="keycap" id="climbKey" data-key="w">W</span> climb <s>·</s>
+      <span class="keycap">R</span> reset <s>·</s>
+      <span class="keycap">F</span> fullscreen <s>·</s>
+      <span class="keycap">Esc</span> pause
+    </div>
+  </div>
+</aside>
 <script>
 const $ = id => document.getElementById(id);
 const canvas = $('canvas'), context = canvas.getContext('2d'), video = $('video');
@@ -230,31 +272,27 @@ function paintHud(frame) {
   const windVelocity = windVelocityFromFrame(frame);
   const command = frame.command || [0, 0, 0];
   $('hudClimb').textContent = climb.toFixed(2);
-  $('hudHeight').textContent = height.toFixed(1);
-  $('hudRope').textContent = rope.toFixed(0);
+  $('hudHeight').innerHTML = height.toFixed(1) + '<em>m</em>';
+  $('hudRope').innerHTML = rope.toFixed(0) + '<em>N</em>';
   $('ropeBar').style.width = Math.max(0, Math.min(100, rope / ROPE_LOAD_FULL_SCALE_NEWTONS * 100)).toFixed(1) + '%';
-  $('hudTime').textContent = Number(frame.time_seconds || 0).toFixed(2);
+  $('hudTime').innerHTML = Number(frame.time_seconds || 0).toFixed(2) + '<em>s</em>';
   const magnitude = Math.hypot(windVelocity[0], windVelocity[1]);
   $('hudWind').textContent = magnitude < 0.05
     ? '0.0 m/s · calm'
     : magnitude.toFixed(1) + ' m/s · ' + compassPointName(windVelocity[0], windVelocity[1]);
-  const reach = Math.min(28, magnitude / 25 * 28);
-  $('windArrow').setAttribute('x2', magnitude ? windVelocity[0] / magnitude * reach : 0);
-  $('windArrow').setAttribute('y2', magnitude ? -windVelocity[1] / magnitude * reach : 0);
   noteWindVelocity(windVelocity);
   paintBatteryCard(frame);
+  // one status line replaces the old motion badge: climbing (green) / holding / hanging (red)
   const climbing = Number(command[0]) > 0;
+  const fell = Boolean(frame.fell);
   const motion = $('motionBadge');
-  motion.textContent = state.paused ? 'paused' : climbing ? 'climbing' : 'holding';
-  motion.classList.toggle('climbing', climbing && !state.paused);
-  if (frame.rope_enabled !== undefined) {
-    $('ropeBadge').textContent = frame.rope_enabled ? 'rope on' : 'no rope';
-  }
-  const slope = frame.slope_degrees !== undefined && frame.slope_degrees !== null ? frame.slope_degrees : state.slopeDegrees;
-  $('hudSlope').textContent = (slope === null || slope === undefined) ? '—' : Number(slope).toFixed(0);
+  motion.textContent = fell ? 'hanging' : state.paused ? 'paused' : climbing ? 'climbing' : 'holding';
+  motion.classList.toggle('climbing', climbing && !state.paused && !fell);
+  motion.classList.toggle('fell', fell);
+  if (frame.slope_degrees !== undefined && frame.slope_degrees !== null) state.slopeDegrees = frame.slope_degrees;
   const banner = $('banner');
-  banner.textContent = state.mode === 'live' ? 'HANGING ON THE ROPE — press Reset' : 'FELL';
-  banner.style.display = frame.fell ? 'block' : 'none';
+  banner.textContent = state.mode === 'live' ? 'HANGING ON THE ROPE — PRESS R' : 'FELL';
+  banner.style.display = fell ? 'block' : 'none';
 }
 
 // The wind the HUD and the weather layer both read, in METRES PER SECOND, world XY.
@@ -294,10 +332,10 @@ function paintBatteryCard(frame) {
   $('bmsSoc').textContent = stateOfChargeKnown ? stateOfCharge.toFixed(0) + '%' : '—';
   const fill = $('bmsSocBar');
   fill.style.width = (stateOfChargeKnown ? Math.max(0, Math.min(100, stateOfCharge)) : 0).toFixed(1) + '%';
-  fill.style.background = !stateOfChargeKnown ? 'var(--ink-faint)'
+  fill.style.background = !stateOfChargeKnown ? 'var(--ink-3)'
     : stateOfCharge <= 15 ? 'var(--bad)'
     : stateOfCharge <= 35 ? 'var(--warn)'
-    : 'linear-gradient(90deg, var(--good), var(--accent))';
+    : 'var(--good)';
   const power = Number(bms.power_W);
   setBatteryRow('bmsPowerRow', 'bmsPower', Number.isFinite(power) ? power.toFixed(0) + ' W' : null);
   const winding = Number(bms.max_temp_winding_C);
@@ -439,14 +477,14 @@ function drawSnow(widthPixels, heightPixels) {
     const pointX = flake.x * widthPixels, pointY = flake.y * heightPixels;
     const tailX = flake.velocityX * streakSeconds, tailY = flake.velocityY * streakSeconds;
     if (Math.hypot(tailX, tailY) > radius * 2.2) {
-      snowContext.strokeStyle = 'rgba(233,246,255,' + alpha + ')';
+      snowContext.strokeStyle = 'rgba(244,244,245,' + alpha + ')';
       snowContext.lineWidth = radius * 1.5;
       snowContext.beginPath();
       snowContext.moveTo(pointX, pointY);
       snowContext.lineTo(pointX - tailX, pointY - tailY);
       snowContext.stroke();
     } else {
-      snowContext.fillStyle = 'rgba(233,246,255,' + alpha + ')';
+      snowContext.fillStyle = 'rgba(244,244,245,' + alpha + ')';
       snowContext.beginPath();
       snowContext.arc(pointX, pointY, radius, 0, Math.PI * 2);
       snowContext.fill();
@@ -489,8 +527,8 @@ function drawWindRibbons(widthPixels, heightPixels) {
     const tailX = pointX - directionX * length, tailY = pointY - directionY * length;
     const alpha = ((0.10 + 0.17 * ribbon.depth) * strength * gust).toFixed(3);
     const gradient = snowContext.createLinearGradient(pointX, pointY, tailX, tailY);
-    gradient.addColorStop(0, 'rgba(206,236,255,' + alpha + ')');
-    gradient.addColorStop(1, 'rgba(206,236,255,0)');
+    gradient.addColorStop(0, 'rgba(228,228,231,' + alpha + ')');
+    gradient.addColorStop(1, 'rgba(228,228,231,0)');
     snowContext.strokeStyle = gradient;
     snowContext.lineWidth = (1.1 + ribbon.depth * 2.4) * pixelScale;
     snowContext.beginPath();
@@ -557,11 +595,12 @@ function connect() {
   const url = 'ws://' + location.hostname + ':' + (Number(location.port) - 1);
   const socket = new WebSocket(url); socket.binaryType = 'arraybuffer'; state.socket = socket;
   socket.onopen = () => {
-    $('status').classList.add('on'); $('statusText').textContent = 'live · ' + url;
+    $('status').classList.add('on'); $('statusText').textContent = 'live';
+    $('status').title = url;
     sendInput(); setPaused(!pointerIsLocked(), { force: true });
   };
   socket.onclose = () => {
-    $('status').classList.remove('on'); $('statusText').textContent = 'disconnected · retrying';
+    $('status').classList.remove('on'); $('statusText').textContent = 'offline';
     $('realtime').textContent = ''; setTimeout(connect, 1500);
   };
   socket.onmessage = event => {
@@ -569,16 +608,16 @@ function connect() {
       const message = JSON.parse(event.data);
       if (state.mode !== 'live') return;
       if (message.loading !== undefined && Boolean(message.loading) !== state.loading) {
-        state.loading = Boolean(message.loading); paintWorldToast();
+        state.loading = Boolean(message.loading); paintWorldStatus();
       }
       // A `loading` frame still carries the OLD world's name — it is the last
-      // frame before the build — so it must not clear the toast.
+      // frame before the build — so it must not clear the status line.
       if (message.world !== undefined && !state.loading) noteWorldArrived(message.world);
       if (message.paused !== undefined) noteServerPaused(Boolean(message.paused));
       if (message.slope_degrees !== undefined) state.slopeDegrees = message.slope_degrees;
       paintHud(message);
       if (message.realtime_factor !== undefined)
-        $('realtime').textContent = '· ' + Number(message.realtime_factor).toFixed(2) + 'x realtime';
+        $('realtime').textContent = '· ' + Number(message.realtime_factor).toFixed(2) + 'x';
     } else {
       createImageBitmap(new Blob([event.data], { type: 'image/jpeg' })).then(bitmap => {
         if (state.mode !== 'live') return;
@@ -639,7 +678,6 @@ function pointerIsLocked() { return document.pointerLockElement === canvas; }
 function paintLockState() {
   const locked = pointerIsLocked();
   document.body.classList.toggle('pointer-locked', locked);
-  $('lookHint').style.display = (locked && state.mode === 'live') ? 'block' : 'none';
   $('lockOverlay').style.display = (!locked && state.mode === 'live') ? 'flex' : 'none';
   $('pausedPill').style.display = state.paused ? 'inline-block' : 'none';
   $('lockTitle').textContent = state.paused ? 'click to resume' : 'click to take control';
@@ -692,7 +730,17 @@ document.addEventListener('keydown', event => {
   send({ type: 'reset' });
 });
 
-$('friction').addEventListener('input', e => { $('frictionOut').textContent = Number(e.target.value).toFixed(2); send({ type: 'knob', name: 'friction', value: Number(e.target.value) }); });
+// the shadcn slider track is filled to the left of the thumb; nothing but paint
+function paintSliderFill(slider) {
+  const minimum = Number(slider.min), maximum = Number(slider.max);
+  const share = maximum > minimum ? (Number(slider.value) - minimum) / (maximum - minimum) : 0;
+  slider.style.setProperty('--fill', (share * 100).toFixed(1) + '%');
+}
+$('friction').addEventListener('input', e => {
+  paintSliderFill(e.target);
+  $('frictionOut').textContent = Number(e.target.value).toFixed(2);
+  send({ type: 'knob', name: 'friction', value: Number(e.target.value) });
+});
 // wind = direction dial (drag the dot) + speed slider; sent as wind_x / wind_y in METRES PER SECOND
 // (the runtime turns them into a force with wind_env.py's quadratic drag law)
 const wind = { angle: 0, strength: 0 };
@@ -701,7 +749,9 @@ function sendWind() {
   $('windDot').setAttribute('cx', 55 * Math.cos(wind.angle)); $('windDot').setAttribute('cy', -55 * Math.sin(wind.angle));
   const reach = 50 * wind.strength / 25;
   $('windDialArrow').setAttribute('x2', reach * Math.cos(wind.angle)); $('windDialArrow').setAttribute('y2', -reach * Math.sin(wind.angle));
-  $('windOut').textContent = `${wind.strength.toFixed(1)} m/s · ${Math.round(wind.angle * 180 / Math.PI)}°`;
+  $('windOut').textContent = wind.strength < 0.05
+    ? '0.0 m/s'
+    : `${wind.strength.toFixed(1)} m/s · ${compassPointName(x, y)}`;
   send({ type: 'knob', name: 'wind_x', value: x }); send({ type: 'knob', name: 'wind_y', value: y });
   noteWindVelocity([x, y]);   // the weather answers the dial immediately, not a tick later
 }
@@ -710,7 +760,7 @@ function dialAngle(e) { const r = dial.getBoundingClientRect(); return Math.atan
 dial.addEventListener('pointerdown', e => { dragging = true; dial.setPointerCapture(e.pointerId); wind.angle = dialAngle(e); sendWind(); });
 dial.addEventListener('pointermove', e => { if (dragging) { wind.angle = dialAngle(e); sendWind(); } });
 dial.addEventListener('pointerup', () => dragging = false);
-$('windStrength').addEventListener('input', e => { wind.strength = Number(e.target.value); sendWind(); });
+$('windStrength').addEventListener('input', e => { paintSliderFill(e.target); wind.strength = Number(e.target.value); sendWind(); });
 $('resetBtn').onclick = () => send({ type: 'reset' });
 
 // ---------- MAPS ----------
@@ -722,22 +772,24 @@ function worldLabel(name, slopeDegrees) {
   return (slopeDegrees === undefined || slopeDegrees === null)
     ? name : `${name} · ${Number(slopeDegrees).toFixed(0)}°`;
 }
-function paintWorldToast() {
-  const toast = $('worldToast');
-  const waiting = state.pendingWorld && state.mode === 'live';
+// no stage toast any more: a map that is still arriving shows inline, on the selector itself
+function paintWorldStatus() {
+  const status = $('worldStatus');
+  const waiting = Boolean(state.pendingWorld) && state.mode === 'live';
   const label = (state.worlds[state.pendingWorld] || {}).label || state.pendingWorld;
   // The runtime says `loading:true` on the last frame before it blocks to build
   // a world it has never opened. Say so, or 25 frozen seconds look like a crash.
-  toast.textContent = !waiting ? ''
+  status.textContent = !waiting ? ''
     : state.loading ? `building ${label} — first time only…`
-    : `dropping into ${label} at the start…`;
-  toast.style.display = waiting ? 'block' : 'none';
+    : 'loading…';
+  status.style.display = waiting ? 'block' : 'none';
+  $('worldSelect').disabled = waiting;
 }
 function noteWorldArrived(name) {
-  // clear the toast first: re-picking the map you are already on still respawns you at
+  // clear the status first: re-picking the map you are already on still respawns you at
   // the start, and the sim's "world" never changes, so this is the only frame that says so
   if (state.pendingWorld === name) {
-    state.pendingWorld = null; clearTimeout(worldArrivalTimer); paintWorldToast();
+    state.pendingWorld = null; clearTimeout(worldArrivalTimer); paintWorldStatus();
   }
   if (name === state.world) return;
   state.world = name;
@@ -757,18 +809,20 @@ async function listWorlds() {
     select.appendChild(option);
   }
   if (state.world && state.worlds[state.world]) select.value = state.world;
-  $('worldHint').textContent = entries.length
-    ? 'Switching maps respawns the climber at that world\u2019s start. A world\u2019s first selection builds its model, then it is cached.'
-    : 'The runtime reported no worlds.';
+  if (!entries.length) {
+    const status = $('worldStatus');
+    status.textContent = 'no worlds reported';
+    status.style.display = 'block';
+  } else paintWorldStatus();
 }
 $('worldSelect').addEventListener('change', event => {
   const name = event.target.value;
   state.pendingWorld = name;
   state.loading = false;
-  paintWorldToast();
+  paintWorldStatus();
   clearTimeout(worldArrivalTimer);
-  // the backend may not answer at all; do not strand the toast on screen forever
-  worldArrivalTimer = setTimeout(() => { state.pendingWorld = null; paintWorldToast(); },
+  // the backend may not answer at all; do not strand the selector disabled forever
+  worldArrivalTimer = setTimeout(() => { state.pendingWorld = null; paintWorldStatus(); },
                                  WORLD_ARRIVAL_TIMEOUT_MILLISECONDS);
   send({ type: 'world', name });
 });
@@ -790,11 +844,11 @@ $('episodeSelect').onchange = async e => {
   const outcomeText = outcome.fell
     ? 'fell at ' + Number(outcome.fell_at_seconds).toFixed(2) + ' s (' + (outcome.fall_reason || '?') + ')'
     : 'stayed up';
-  const climbed = outcome.rope_travel_meters !== undefined ? Number(outcome.rope_travel_meters).toFixed(2) + ' m up the line'
-                : outcome.distance_meters !== undefined ? Number(outcome.distance_meters).toFixed(2) + ' m' : '';
-  $('episodeInfo').innerHTML = `<b>${name}</b><br>world ${header.world} · policy ${header.policy}<br>` +
-    `slope ${header.slope_degrees !== undefined ? Number(header.slope_degrees).toFixed(0) + '°' : '—'} · seed ${header.seed}<br>` +
-    `${header.n_ticks} ticks · ${outcomeText}${climbed ? ' · ' + climbed : ''}`;
+  $('episodeInfo').textContent = [
+    header.world, header.policy,
+    header.slope_degrees !== undefined ? Number(header.slope_degrees).toFixed(0) + '°' : null,
+    outcomeText,
+  ].filter(Boolean).join(' · ');
 };
 video.addEventListener('timeupdate', () => {
   const hud = state.hud; if (!hud) return;
@@ -834,8 +888,10 @@ document.querySelectorAll('.tab').forEach(tab => tab.onclick = () => {
     listEpisodes();
   } else video.pause();
   paintLockState();
-  paintWorldToast();
+  paintWorldStatus();
 });
+paintSliderFill($('friction'));
+paintSliderFill($('windStrength'));
 paintLockState();
 listWorlds();
 connect();
