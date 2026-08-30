@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>G1 Fixed-Line Ascent</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    /* cold palette: night ice, glacier blue, snow */
+    --bg: #070c13; --bg-2: #0a121c; --panel: #0e1725; --panel-2: #162335; --line: #22344c;
+    --ink: #eaf3fc; --ink-dim: #8ba6c4; --ink-faint: #5f7794;
+    --accent: #6fd0ff; --accent-2: #a6e3ff; --warn: #ffc773; --bad: #ff6b7d; --good: #7ce0b0;
+    font-family: -apple-system, "Inter", "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; color: var(--ink); height: 100vh; display: grid; grid-template-rows: 54px 1fr;
+         background: radial-gradient(120% 90% at 20% -10%, #12233a 0%, var(--bg-2) 45%, var(--bg) 100%); }
+  header { display: flex; align-items: center; gap: 18px; padding: 0 20px; border-bottom: 1px solid var(--line);
+           background: linear-gradient(180deg, rgba(30,52,80,.55), rgba(14,23,37,.9)); }
+  header h1 { font-size: 15px; font-weight: 600; letter-spacing: .10em; margin: 0; text-transform: uppercase; }
+  header h1 em { font-style: normal; color: var(--accent); }
+  header h1 span { color: var(--ink-dim); font-weight: 400; margin-left: 10px; letter-spacing: .04em;
+                   text-transform: none; font-size: 12.5px; }
+  .tabs { display: flex; gap: 4px; margin-left: 12px; }
+  .tab { padding: 6px 14px; border-radius: 8px; color: var(--ink-dim); cursor: pointer; font-size: 13px; }
+  .tab:hover { color: var(--ink); }
+  .tab.active { background: var(--panel-2); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
+  #status { margin-left: auto; font-size: 12px; color: var(--ink-dim); display: flex; align-items: center; gap: 8px; }
+  #status i { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); display: inline-block;
+              box-shadow: 0 0 8px currentColor; }
+  #status.on i { background: var(--good); }
+  #realtime { color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+  main { display: grid; grid-template-columns: 1fr 300px; min-height: 0; }
+  #stage { position: relative; background: #04080e; display: flex; align-items: center; justify-content: center;
+           overflow: hidden; }
+  #stage canvas, #stage video { max-width: 100%; max-height: 100%; }
+  #stage canvas { cursor: pointer; }
+  body.pointer-locked #stage canvas { cursor: none; }
+  #stage video { display: none; }
+
+  .hud { position: absolute; left: 16px; right: 16px; bottom: 16px; display: flex; gap: 10px; align-items: flex-end;
+         pointer-events: none; flex-wrap: wrap; }
+  .card { background: rgba(7,12,19,.72); backdrop-filter: blur(7px); border: 1px solid var(--line); border-radius: 11px;
+          padding: 9px 12px; font-size: 11px; color: var(--ink-dim); min-width: 104px;
+          text-transform: uppercase; letter-spacing: .09em; }
+  .card b { display: block; color: var(--ink); font-size: 19px; font-weight: 600; letter-spacing: 0;
+            text-transform: none; font-variant-numeric: tabular-nums; margin: 1px 0 1px; }
+  .card.hero { min-width: 152px; border-color: #2f527a; background: rgba(14,30,49,.78); }
+  .card.hero b { font-size: 34px; line-height: 1.05; color: var(--accent-2); }
+  .bar { height: 5px; border-radius: 3px; background: #162335; overflow: hidden; margin-top: 5px; }
+  .bar i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), var(--warn));
+           transition: width .08s linear; }
+  #compass { width: 56px; height: 56px; display: block; margin: -2px auto -4px; }
+
+  .badges { position: absolute; top: 14px; left: 16px; display: flex; gap: 8px; align-items: center; pointer-events: none; }
+  .badge { background: rgba(7,12,19,.72); backdrop-filter: blur(7px); border: 1px solid var(--line); border-radius: 999px;
+           padding: 5px 12px; font-size: 11.5px; color: var(--ink-dim); letter-spacing: .06em; }
+  .badge b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  #motionBadge { color: var(--ink-faint); }
+  #motionBadge.climbing { color: #06131f; background: var(--accent); border-color: var(--accent); font-weight: 600; }
+  #lookHint { position: absolute; top: 14px; right: 16px; font-size: 11px; color: var(--ink-faint);
+              background: rgba(7,12,19,.6); border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px;
+              pointer-events: none; display: none; }
+  /* shown until the judge clicks the view and the pointer is captured */
+  #lockOverlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+                 pointer-events: none; background: radial-gradient(70% 70% at 50% 50%, rgba(4,8,14,.10), rgba(4,8,14,.62)); }
+  #lockOverlay div { text-align: center; background: rgba(9,16,26,.86); backdrop-filter: blur(8px);
+                     border: 1px solid #2f527a; border-radius: 14px; padding: 16px 26px;
+                     box-shadow: 0 10px 40px rgba(0,0,0,.55); }
+  #pausedPill { display: none; margin-bottom: 9px; padding: 3px 13px; border-radius: 999px;
+                background: var(--warn); color: #2a1a05; font-style: normal; font-weight: 700;
+                font-size: 10.5px; letter-spacing: .18em; }
+  #lockOverlay b { display: block; font-size: 15px; font-weight: 600; color: var(--accent-2); letter-spacing: .02em; }
+  #lockOverlay span { display: block; margin-top: 5px; font-size: 11.5px; color: var(--ink-faint); letter-spacing: .06em; }
+  /* shown from the moment a map is picked until the first state frame from that map */
+  #worldToast { position: absolute; top: 52px; left: 50%; transform: translateX(-50%); padding: 7px 18px;
+                border-radius: 999px; background: rgba(14,30,49,.92); backdrop-filter: blur(7px);
+                border: 1px solid #2f527a; color: var(--accent-2); font-size: 12px; letter-spacing: .06em;
+                display: none; pointer-events: none; box-shadow: 0 6px 24px rgba(0,0,0,.45); }
+  #banner { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); padding: 12px 26px;
+            border-radius: 999px; background: rgba(255,107,125,.92); color: #fff; font-weight: 700; font-size: 14px;
+            letter-spacing: .08em; display: none; box-shadow: 0 8px 30px rgba(0,0,0,.5); }
+
+  aside { border-left: 1px solid var(--line); background: linear-gradient(180deg, var(--panel), #0a121c);
+          padding: 18px; overflow: auto; display: flex; flex-direction: column; gap: 16px; }
+  aside h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .14em; color: var(--ink-faint); margin: 0 0 8px; }
+  .row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; margin: 8px 0; }
+  .row output { color: var(--accent); font-variant-numeric: tabular-nums; min-width: 62px; text-align: right; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .climbkey { display: flex; justify-content: center; margin: 6px 0 10px; }
+  .key { width: 108px; height: 62px; border: 1px solid var(--line); border-radius: 12px; display: flex; flex-direction: column;
+         align-items: center; justify-content: center; gap: 2px; font-size: 24px; font-weight: 700; color: var(--ink-dim);
+         background: linear-gradient(180deg, var(--panel-2), #0e1725); box-shadow: 0 3px 0 #0a1120;
+         user-select: none; cursor: pointer; transition: transform .05s, background .05s; }
+  .key small { font-size: 9.5px; font-weight: 500; letter-spacing: .12em; text-transform: uppercase; }
+  .key.down { background: linear-gradient(180deg, var(--accent-2), var(--accent)); color: #06131f;
+              border-color: var(--accent); box-shadow: 0 0 22px rgba(111,208,255,.35); transform: translateY(3px); }
+  button { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 8px;
+           padding: 8px 12px; font-size: 13px; cursor: pointer; width: 100%; }
+  button:hover { border-color: var(--accent); color: var(--accent-2); }
+  select { width: 100%; background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+  .hint { font-size: 11px; color: var(--ink-faint); line-height: 1.55; }
+  #replayPanel, #livePanel { display: none; }
+  body.live #livePanel, body.replay #replayPanel { display: block; }
+</style>
+</head>
+<body class="live">
+<header>
+  <h1><em>EVEREST</em> · Fixed-Line Ascent <span>Unitree G1 · rl/environment/climb_env.py, live</span></h1>
+  <div class="tabs"><div class="tab active" data-mode="live">Live</div><div class="tab" data-mode="replay">Replay</div></div>
+  <div id="status"><i></i><span id="statusText">disconnected</span><span id="realtime"></span></div>
+</header>
+<main>
+  <div id="stage">
+    <canvas id="canvas" width="1280" height="720"></canvas>
+    <video id="video" controls></video>
+    <div class="badges">
+      <div class="badge">slope <b id="hudSlope">—</b>°</div>
+      <div class="badge" id="motionBadge">holding</div>
+    </div>
+    <div id="lookHint">move mouse to look · hold W to climb</div>
+    <div id="lockOverlay"><div><i id="pausedPill">PAUSED</i><b id="lockTitle">click to take control</b><span id="lockSubtitle">Esc to release</span></div></div>
+    <div id="worldToast"></div>
+    <div id="banner">FELL</div>
+    <div class="hud">
+      <div class="card hero">ascender<b id="hudClimb">0.00</b>m up the line</div>
+      <div class="card">height gained<b id="hudHeight">0.0</b>m vertical</div>
+      <div class="card">rope load<b id="hudRope">0</b>newtons<div class="bar"><i id="ropeBar"></i></div></div>
+      <div class="card">wind<b id="hudWind">0.0 m/s</b><svg id="compass" viewBox="-32 -32 64 64">
+        <circle r="30" fill="none" stroke="#22344c"/><line id="windArrow" x1="0" y1="0" x2="0" y2="0" stroke="#6fd0ff" stroke-width="3" stroke-linecap="round"/></svg></div>
+      <div class="card">time<b id="hudTime">0.00</b>seconds</div>
+    </div>
+  </div>
+  <aside>
+    <div id="livePanel">
+      <h2>Ascend</h2>
+      <div class="climbkey"><div class="key" id="climbKey" data-key="w">W<small>hold to climb</small></div></div>
+      <p class="hint"><b>Click the view</b> to take control, then move the mouse to look around — the G1 turns to
+        face wherever you are looking. Hold <b>W</b> and it hauls itself that way up the fixed line; let go and it
+        just hangs on the ascender, standing in the wind. <b>Esc</b> releases the pointer, <b>R</b> recentres the
+        camera behind the robot.</p>
+      <h2>Mountain</h2>
+      <div class="row"><label>map</label></div>
+      <select id="worldSelect"></select>
+      <p class="hint" id="worldHint">One world: the team climb env. More appear when rl/environment does.</p>
+      <div class="row"><label>wind speed</label><output id="windOut">0.0 m/s · 0°</output></div>
+      <svg id="windDial" viewBox="-70 -70 140 140" style="width:140px;height:140px;display:block;margin:4px auto;cursor:grab;touch-action:none">
+        <circle r="55" fill="none" stroke="var(--line)" stroke-width="2"/>
+        <text x="0" y="-60" text-anchor="middle" font-size="9" fill="var(--ink-dim)">+Y</text>
+        <text x="63" y="3" text-anchor="middle" font-size="9" fill="var(--ink-dim)">+X</text>
+        <line id="windDialArrow" x1="0" y1="0" x2="0" y2="0" stroke="var(--accent)" stroke-width="3" stroke-linecap="round"/>
+        <circle id="windDot" cx="55" cy="0" r="8" fill="var(--accent)"/>
+      </svg>
+      <input type="range" id="windStrength" min="0" max="25" step="0.5" value="0">
+      <p class="hint">Wind speed in <b>m/s</b>, blown along the dial direction. The force is the quadratic drag law from <code>rl/environment/wind_env.py</code> applied to the torso. <b>The climb env has no wind at training time</b> — this is a demo knob, not something the policy has ever seen.</p>
+      <div class="row"><label>foot friction (μ)</label><output id="frictionOut">0.80</output></div>
+      <input type="range" id="friction" min="0.05" max="1.5" step="0.05" value="0.8">
+      <p class="hint">Training pins this at <code>climb_config.foot_friction</code> = 0.8.</p>
+      <p style="margin-top:14px"><button id="resetBtn">Reset climber</button></p>
+      <p class="hint">Every live session is recorded to <code>app/harness/episodes/</code> and appears in Replay.</p>
+    </div>
+    <div id="replayPanel">
+      <h2>Episodes</h2>
+      <select id="episodeSelect" size="12"></select>
+      <p><button id="refreshBtn">Refresh list</button></p>
+      <div id="episodeInfo" class="hint"></div>
+    </div>
+  </aside>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const canvas = $('canvas'), context = canvas.getContext('2d'), video = $('video');
+const ROPE_LOAD_FULL_SCALE_NEWTONS = 800;   // the grip really does see ~1 kN when the robot hangs
+const EPISODES_URL_PREFIX = '/app/harness/episodes';
+const CAMERA_MESSAGE_INTERVAL_MILLISECONDS = 20;   // <= 50 messages / second
+const DEFAULT_AZIMUTH_DEGREES = 180;               // behind the robot, looking uphill
+const DEFAULT_ELEVATION_DEGREES = -15;
+const WORLD_ARRIVAL_TIMEOUT_MILLISECONDS = 8000;   // give up waiting for the map to load
+const state = {
+  mode: 'live', socket: null, keys: new Set(), hud: null, slopeDegrees: null,
+  camera: { azimuth_degrees: DEFAULT_AZIMUTH_DEGREES, elevation_degrees: DEFAULT_ELEVATION_DEGREES },
+  worlds: {}, world: null, pendingWorld: null, paused: true, pauseIntent: true,
+};
+
+// ---------- HUD ----------
+function paintHud(frame) {
+  const climb = Number(frame.rope_travel_meters !== undefined ? frame.rope_travel_meters : (frame.climb_meters || 0));
+  const height = Number(frame.height_gained_meters || 0);
+  const rope = Number(frame.rope_force_newtons || 0);
+  // wind is now a VELOCITY in m/s, not a force in newtons
+  const wind = frame.wind_velocity_world_meters_per_second || [0, 0];
+  const command = frame.command || [0, 0, 0];
+  $('hudClimb').textContent = climb.toFixed(2);
+  $('hudHeight').textContent = height.toFixed(1);
+  $('hudRope').textContent = rope.toFixed(0);
+  $('ropeBar').style.width = Math.max(0, Math.min(100, rope / ROPE_LOAD_FULL_SCALE_NEWTONS * 100)).toFixed(1) + '%';
+  $('hudTime').textContent = Number(frame.time_seconds || 0).toFixed(2);
+  const magnitude = Math.hypot(wind[0], wind[1]);
+  $('hudWind').textContent = magnitude.toFixed(1) + ' m/s';
+  const reach = Math.min(28, magnitude / 25 * 28);
+  $('windArrow').setAttribute('x2', magnitude ? wind[0] / magnitude * reach : 0);
+  $('windArrow').setAttribute('y2', magnitude ? -wind[1] / magnitude * reach : 0);
+  const climbing = Number(command[0]) > 0;
+  const motion = $('motionBadge');
+  motion.textContent = state.paused ? 'paused' : climbing ? 'climbing' : 'holding';
+  motion.classList.toggle('climbing', climbing && !state.paused);
+  const slope = frame.slope_degrees !== undefined && frame.slope_degrees !== null ? frame.slope_degrees : state.slopeDegrees;
+  $('hudSlope').textContent = (slope === null || slope === undefined) ? '—' : Number(slope).toFixed(0);
+  const banner = $('banner');
+  banner.textContent = state.mode === 'live' ? 'HANGING ON THE ROPE — press Reset' : 'FELL';
+  banner.style.display = frame.fell ? 'block' : 'none';
+}
+
+// ---------- LIVE ----------
+function connect() {
+  const url = 'ws://' + location.hostname + ':' + (Number(location.port) - 1);
+  const socket = new WebSocket(url); socket.binaryType = 'arraybuffer'; state.socket = socket;
+  socket.onopen = () => {
+    $('status').classList.add('on'); $('statusText').textContent = 'live · ' + url;
+    sendInput(); setPaused(!pointerIsLocked(), { force: true });
+  };
+  socket.onclose = () => {
+    $('status').classList.remove('on'); $('statusText').textContent = 'disconnected · retrying';
+    $('realtime').textContent = ''; setTimeout(connect, 1500);
+  };
+  socket.onmessage = event => {
+    if (typeof event.data === 'string') {
+      const message = JSON.parse(event.data);
+      if (state.mode !== 'live') return;
+      if (message.world !== undefined) noteWorldArrived(message.world);
+      if (message.paused !== undefined) noteServerPaused(Boolean(message.paused));
+      if (message.slope_degrees !== undefined) state.slopeDegrees = message.slope_degrees;
+      paintHud(message);
+      if (message.realtime_factor !== undefined)
+        $('realtime').textContent = '· ' + Number(message.realtime_factor).toFixed(2) + 'x realtime';
+    } else {
+      createImageBitmap(new Blob([event.data], { type: 'image/jpeg' })).then(bitmap => {
+        if (state.mode !== 'live') return;
+        canvas.width = bitmap.width; canvas.height = bitmap.height; context.drawImage(bitmap, 0, 0);
+      });
+    }
+  };
+}
+function send(payload) { if (state.socket && state.socket.readyState === 1) state.socket.send(JSON.stringify(payload)); }
+let lastCameraSendMilliseconds = 0, cameraSendPending = false;
+function sendInput() {
+  lastCameraSendMilliseconds = performance.now(); cameraSendPending = false;
+  send({ type: 'input', keys: [...state.keys], camera: { ...state.camera } });
+}
+
+// the single climb key: W held = climb, released = hang
+let climbHeldByPointer = false;
+function setClimbing(down) {
+  if (down === state.keys.has('w')) return;
+  if (down) state.keys.add('w'); else state.keys.delete('w');
+  $('climbKey').classList.toggle('down', down);
+  sendInput();
+}
+document.addEventListener('keydown', event => { if (event.key.toLowerCase() === 'w' && !event.repeat) setClimbing(true); });
+document.addEventListener('keyup', event => { if (event.key.toLowerCase() === 'w') { climbHeldByPointer = false; setClimbing(false); } });
+window.addEventListener('blur', () => { climbHeldByPointer = false; setClimbing(false); });
+$('climbKey').addEventListener('pointerdown', event => { event.preventDefault(); climbHeldByPointer = true; setClimbing(true); });
+document.addEventListener('pointerup', () => { if (climbHeldByPointer) { climbHeldByPointer = false; setClimbing(false); } });
+
+// orbit camera, video-game style: click the view to capture the pointer, then raw mouse
+// movement looks around until Esc (or a click outside) releases it. The robot turns to
+// face the camera heading, so azimuth is also the walking direction.
+const AZIMUTH_DEGREES_PER_PIXEL = 0.15, ELEVATION_DEGREES_PER_PIXEL = 0.12;
+function queueCameraMessage() {
+  const now = performance.now();
+  if (now - lastCameraSendMilliseconds >= CAMERA_MESSAGE_INTERVAL_MILLISECONDS) { sendInput(); return; }
+  if (cameraSendPending) return;
+  cameraSendPending = true;
+  setTimeout(() => { if (cameraSendPending) sendInput(); },
+             CAMERA_MESSAGE_INTERVAL_MILLISECONDS - (now - lastCameraSendMilliseconds));
+}
+function pointerIsLocked() { return document.pointerLockElement === canvas; }
+function paintLockState() {
+  const locked = pointerIsLocked();
+  document.body.classList.toggle('pointer-locked', locked);
+  $('lookHint').style.display = (locked && state.mode === 'live') ? 'block' : 'none';
+  $('lockOverlay').style.display = (!locked && state.mode === 'live') ? 'flex' : 'none';
+  $('pausedPill').style.display = state.paused ? 'inline-block' : 'none';
+  $('lockTitle').textContent = state.paused ? 'click to resume' : 'click to take control';
+  $('lockSubtitle').textContent = state.paused ? 'Esc pauses the climb' : 'Esc to release';
+}
+// Letting the pointer go freezes the mountain; taking it back starts it again.
+// pauseIntent is what we have TOLD the sim and is driven purely by the pointer lock;
+// state.paused is what we DISPLAY and prefers the sim's own answer. Keeping them apart
+// means exactly one message per lock transition no matter what the sim echoes back --
+// tying them together let a stale "paused:false" frame swallow a resume command.
+function setPaused(paused, { force = false } = {}) {
+  if (paused === state.pauseIntent && !force) return;
+  state.pauseIntent = paused;
+  state.paused = paused;                 // optimistic until the sim says otherwise
+  send({ type: 'pause', value: paused });
+  paintLockState();
+}
+// the sim's own view of it, reflected without echoing a command back
+function noteServerPaused(paused) {
+  if (paused === state.paused) return;
+  state.paused = paused;
+  paintLockState();
+}
+// the overlay is pointer-events:none, so the click lands on the stage under it
+$('stage').addEventListener('click', () => {
+  if (state.mode === 'live' && !pointerIsLocked() && canvas.requestPointerLock) canvas.requestPointerLock();
+});
+document.addEventListener('pointerlockchange', () => {
+  paintLockState();
+  // letting go of the pointer also lets go of the rope: never leave the robot climbing
+  if (!pointerIsLocked()) { setClimbing(false); sendInput(); }
+  setPaused(!pointerIsLocked());
+});
+document.addEventListener('mousemove', event => {
+  if (!pointerIsLocked()) return;
+  const azimuth = state.camera.azimuth_degrees + event.movementX * AZIMUTH_DEGREES_PER_PIXEL;
+  state.camera.azimuth_degrees = ((azimuth % 360) + 360) % 360;
+  state.camera.elevation_degrees = Math.max(-80, Math.min(80,
+    state.camera.elevation_degrees - event.movementY * ELEVATION_DEGREES_PER_PIXEL));
+  queueCameraMessage();
+});
+// R puts the camera back behind the robot without giving up the pointer
+document.addEventListener('keydown', event => {
+  if (event.key.toLowerCase() !== 'r' || event.repeat) return;
+  state.camera.azimuth_degrees = DEFAULT_AZIMUTH_DEGREES;
+  state.camera.elevation_degrees = DEFAULT_ELEVATION_DEGREES;
+  sendInput();
+});
+
+$('friction').addEventListener('input', e => { $('frictionOut').textContent = Number(e.target.value).toFixed(2); send({ type: 'knob', name: 'friction', value: Number(e.target.value) }); });
+// wind = direction dial (drag the dot) + speed slider; sent as wind_x / wind_y in METRES PER SECOND
+// (the runtime turns them into a force with wind_env.py's quadratic drag law)
+const wind = { angle: 0, strength: 0 };
+function sendWind() {
+  const x = wind.strength * Math.cos(wind.angle), y = wind.strength * Math.sin(wind.angle);
+  $('windDot').setAttribute('cx', 55 * Math.cos(wind.angle)); $('windDot').setAttribute('cy', -55 * Math.sin(wind.angle));
+  const reach = 50 * wind.strength / 25;
+  $('windDialArrow').setAttribute('x2', reach * Math.cos(wind.angle)); $('windDialArrow').setAttribute('y2', -reach * Math.sin(wind.angle));
+  $('windOut').textContent = `${wind.strength.toFixed(1)} m/s · ${Math.round(wind.angle * 180 / Math.PI)}°`;
+  send({ type: 'knob', name: 'wind_x', value: x }); send({ type: 'knob', name: 'wind_y', value: y });
+}
+const dial = $('windDial'); let dragging = false;
+function dialAngle(e) { const r = dial.getBoundingClientRect(); return Math.atan2(-(e.clientY - r.top - r.height / 2), e.clientX - r.left - r.width / 2); }
+dial.addEventListener('pointerdown', e => { dragging = true; dial.setPointerCapture(e.pointerId); wind.angle = dialAngle(e); sendWind(); });
+dial.addEventListener('pointermove', e => { if (dragging) { wind.angle = dialAngle(e); sendWind(); } });
+dial.addEventListener('pointerup', () => dragging = false);
+$('windStrength').addEventListener('input', e => { wind.strength = Number(e.target.value); sendWind(); });
+$('resetBtn').onclick = () => send({ type: 'reset' });
+
+// ---------- MAPS ----------
+// The map list is discovered from the file server: every folder under /worlds/ that
+// actually holds a world.json is a playable slope. That filter is what keeps worlds/g1
+// (the robot asset, no world.json) out of the menu.
+let worldArrivalTimer = null;
+function worldLabel(name, slopeDegrees) {
+  return (slopeDegrees === undefined || slopeDegrees === null)
+    ? name : `${name} · ${Number(slopeDegrees).toFixed(0)}°`;
+}
+function paintWorldToast() {
+  const toast = $('worldToast');
+  const waiting = state.pendingWorld && state.mode === 'live';
+  toast.textContent = waiting ? `dropping into ${state.pendingWorld} at the start…` : '';
+  toast.style.display = waiting ? 'block' : 'none';
+}
+function noteWorldArrived(name) {
+  // clear the toast first: re-picking the map you are already on still respawns you at
+  // the start, and the sim's "world" never changes, so this is the only frame that says so
+  if (state.pendingWorld === name) {
+    state.pendingWorld = null; clearTimeout(worldArrivalTimer); paintWorldToast();
+  }
+  if (name === state.world) return;
+  state.world = name;
+  const known = state.worlds[name];
+  if (known && known.slope_degrees !== undefined) state.slopeDegrees = known.slope_degrees;
+  if (known && $('worldSelect').value !== name) $('worldSelect').value = name;
+}
+async function listWorlds() {
+  let entries = [];
+  try { entries = (await (await fetch('/api/worlds')).json()).worlds || []; } catch { return; }
+  state.worlds = Object.fromEntries(entries.map(entry => [entry.name, entry]));
+  const select = $('worldSelect'); select.innerHTML = '';
+  for (const entry of entries) {
+    const option = document.createElement('option');
+    option.value = entry.name;
+    option.textContent = entry.label || worldLabel(entry.name, entry.slope_degrees);
+    select.appendChild(option);
+  }
+  if (state.world && state.worlds[state.world]) select.value = state.world;
+  $('worldHint').textContent = entries.length
+    ? 'One world: the team climb env. More appear when rl/environment does.'
+    : 'The runtime reported no worlds.';
+}
+$('worldSelect').addEventListener('change', event => {
+  const name = event.target.value;
+  state.pendingWorld = name;
+  paintWorldToast();
+  clearTimeout(worldArrivalTimer);
+  // the backend may not answer at all; do not strand the toast on screen forever
+  worldArrivalTimer = setTimeout(() => { state.pendingWorld = null; paintWorldToast(); },
+                                 WORLD_ARRIVAL_TIMEOUT_MILLISECONDS);
+  send({ type: 'world', name });
+});
+
+// ---------- REPLAY ----------
+async function listEpisodes() {
+  let episodes = [];
+  try { episodes = (await (await fetch('/api/episodes')).json()).episodes || []; } catch { return; }
+  const select = $('episodeSelect'); select.innerHTML = '';
+  for (const episode of episodes) { const option = document.createElement('option'); option.value = episode.name; option.textContent = episode.name; select.appendChild(option); }
+}
+$('episodeSelect').onchange = async e => {
+  const name = e.target.value;
+  const [header, hud] = await Promise.all([fetch(`${EPISODES_URL_PREFIX}/${name}/header.json`).then(r => r.json()), fetch(`${EPISODES_URL_PREFIX}/${name}/hud.json`).then(r => r.json())]);
+  state.hud = hud;
+  state.slopeDegrees = header.slope_degrees !== undefined ? header.slope_degrees : hud.slope_degrees;
+  video.src = `${EPISODES_URL_PREFIX}/${name}/episode.mp4`; video.play();
+  const outcome = header.outcome || {};
+  const outcomeText = outcome.fell
+    ? 'fell at ' + Number(outcome.fell_at_seconds).toFixed(2) + ' s (' + (outcome.fall_reason || '?') + ')'
+    : 'stayed up';
+  const climbed = outcome.rope_travel_meters !== undefined ? Number(outcome.rope_travel_meters).toFixed(2) + ' m up the line'
+                : outcome.distance_meters !== undefined ? Number(outcome.distance_meters).toFixed(2) + ' m' : '';
+  $('episodeInfo').innerHTML = `<b>${name}</b><br>world ${header.world} · policy ${header.policy}<br>` +
+    `slope ${header.slope_degrees !== undefined ? Number(header.slope_degrees).toFixed(0) + '°' : '—'} · seed ${header.seed}<br>` +
+    `${header.n_ticks} ticks · ${outcomeText}${climbed ? ' · ' + climbed : ''}`;
+};
+video.addEventListener('timeupdate', () => {
+  const hud = state.hud; if (!hud) return;
+  const controlHz = Number(hud.control_hz || 50);
+  const tick = Math.min(hud.time_seconds.length - 1, Math.floor(video.currentTime * controlHz));
+  const at = (name, fallback) => (hud[name] && hud[name][tick] !== undefined) ? hud[name][tick] : fallback;
+  const outcome = hud.outcome || {};
+  const fell = (hud.fell && hud.fell[tick] !== undefined)
+    ? Boolean(hud.fell[tick])
+    : Boolean(outcome.fell && hud.time_seconds[tick] >= outcome.fell_at_seconds);
+  paintHud({
+    time_seconds: hud.time_seconds[tick],
+    command: at('command', [0, 0, 0]),
+    wind_velocity_world_meters_per_second: at('wind_velocity_world_meters_per_second', [0, 0]),
+    rope_travel_meters: at('rope_travel_meters', 0),
+    height_gained_meters: at('height_gained_meters', 0),
+    rope_force_newtons: at('rope_force_newtons', 0),
+    fell,
+  });
+});
+$('refreshBtn').onclick = listEpisodes;
+
+// ---------- MODES ----------
+document.querySelectorAll('.tab').forEach(tab => tab.onclick = () => {
+  state.mode = tab.dataset.mode;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === tab));
+  document.body.className = state.mode;
+  canvas.style.display = state.mode === 'live' ? 'block' : 'none';
+  video.style.display = state.mode === 'replay' ? 'block' : 'none';
+  if (state.mode === 'replay') {
+    setClimbing(false); state.slopeDegrees = null;
+    if (pointerIsLocked() && document.exitPointerLock) document.exitPointerLock();
+    listEpisodes();
+  } else video.pause();
+  paintLockState();
+  paintWorldToast();
+});
+paintLockState();
+listWorlds();
+connect();
+</script>
+</body>
+</html>
