@@ -14,7 +14,7 @@ Joint: `right_wrist_yaw_joint`. Its child link `right_wrist_yaw_link` ends in th
 | Warning | with a hand/tool mounted, avoid squatting and lying down | Dex3-1 manual p.7 |
 
 Manuals: [G1 End Prosthetic Hand assembly guide](https://www.unitree.com/images/G1-End%20Prosthetic%20Hand%20Disassembly%20and%20Assembly%20Guide%20Manual.pdf),
-[Dex3-1 assembly guide](https://www.unitree.com/images/G1-Flagship%20Version%20A&B%20Terminal%20Three-Fingered%20Dexterous%20Hand%20Dex3-1%20Disassembly%20and%20Assembly%20Guide%20Manual%20V1.1.pdf).
+[Dex3-1 assembly guide](https://www.unitree.com/images/G1-Flagship%20Version%20A%26B%20Terminal%20Three-Fingered%20Dexterous%20Hand%20Dex3-1%20Disassembly%20and%20Assembly%20Guide%20Manual%20V1.1.pdf).
 CAD: no public G1 STEP ([unitree_cad](https://github.com/unitreerobotics/unitree_cad) has only A1/Aliengo/Laikago). EDU owners: support ticket at support.unitree.com → ask for `wrist_yaw_link` + hand-stem STEP.
 
 ## Build plan
