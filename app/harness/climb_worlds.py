@@ -148,6 +148,17 @@ def make_sandbox_terrain():
     )
 
 
+def make_flat_terrain():
+    """A perfectly flat plane, no roughness at all (user ruling 2026-08-30:
+    "a world where it's completely flat, no rope"). Same size as a measured
+    patch, through THEIR terrain entry point so the plant is otherwise
+    identical. -> a Terrain."""
+    from rl.environment import terrain as terrain_module
+    return terrain_module.make_terrain(
+        slope_deg=0.0, rough_rms=0.0, seed=0,
+        length_m=25.0, width_m=15.0, res=SANDBOX_RESOLUTION_METERS)
+
+
 def _definition(name, patch, label, description, robot="himalaya", rope=True,
                 terrain_factory=None, slope=None, provenance=None):
     if patch is not None:
@@ -207,6 +218,12 @@ CLIMB_WORLD_DEFINITIONS = dict([
                 slope=float(degrees), provenance="real roughness, set slope")
     for degrees in UNEVEN_SLOPE_DEGREES
 ] + [
+    _definition("flat_free", None, "Flat · 0° · no rope · smooth",
+                "A perfectly flat, perfectly smooth plane, rope off, stock"
+                " walking policy: the floor the walker was trained on. The"
+                " baseline every other world is measured against.",
+                rope=False, terrain_factory=make_flat_terrain,
+                slope=0.0, provenance="synthetic, zero roughness"),
     _definition("sandbox_free", None, "Sandbox · 120 x 120 m · 12° · no rope",
                 "Free roam. 1.44 hectares of synthetic Himalaya at a walkable"
                 " 12 degrees -- 38x the area of a measured patch. SYNTHETIC:"
