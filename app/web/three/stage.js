@@ -89,7 +89,7 @@ export class Stage {
     this.bloomPass = null;
     this.ssaoPass = null;
     this.ambientOcclusion = true;
-    this.postProcessing = true;
+    this.postProcessing = false;   // post chain removed from the UI (user: looked worse, tanked fps); plain forward render
 
     this.windEast = 0; this.windNorth = 0;
     this.paused = false;
