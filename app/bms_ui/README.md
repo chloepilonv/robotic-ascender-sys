@@ -1,24 +1,21 @@
 # app/bms_ui — Battery Management System panel (simulated)
 
-Sits on top of `app/harness` (the walker) without changing how it works. Everything
-BMS lives in this folder; the harness has 6 one-line hooks (`grep -n bms app/harness/runtime.py`)
-and `index.html` has one `<script>` tag.
+Sits on top of `app/harness` (the walker) without changing how it works.
+`bridge.py` runs `app/bms/sim/battery_model.py` (MATH.md §3–6, jacket insulation
+hardcoded at 60 %) on each control tick's `actuator_force` / `actuator_velocity`;
+the harness attaches it in `runtime.py` `make_battery_plugin` (always on,
+best-effort) and broadcasts the readout as `state["bms"]`.
 
 | File | Role |
 |---|---|
-| `bridge.py` | MuJoCo `actuator_force` / `actuator_velocity` → `app/bms/sim/battery_model.py`; knobs; state for the page |
-| `bms.js` | The panel + sidebar knobs; injects itself into the page |
+| `bridge.py` | MuJoCo τ, q̇ → battery/thermal model; knobs; `state["bms"]` for the page |
 | `selftest.py` | `python -m app.bms_ui.selftest` — 3 s headless walk, prints the numbers |
 
-## Try it
-    python -m app.harness.runtime --live --world free_0     # then http://localhost:8766/app/web/index.html
-Click the view, hold **W**. The **BMS** tab (top bar) shows/hides the panel; **details ▸** opens
-joint torques, power breakdown and the SOC/V/P history. Sidebar: **ambient temperature**, **start SOC**.
+The panel itself is the **BMS card in `app/web/render3d.html`** (`#bmsCard`), showing:
+electrical power · battery pack temperature (pulled down by the outside cold through
+the jacket) · battery life (SOC + time-to-empty) · a foldable "torque and velocity
+of joints". Each name carries an ⓘ with the math or the real-G1 source
+(`rt/lowstate`, `rt/lf/bmsstate`). Sidebar knobs: ambient temperature, start SOC.
 
-## What is shown
-SOC + time-to-empty · pack V + I·R sag · current + Wh used · P_elec (with P_mech = Σ|τ·q̇|) · pack °C
-(+ ambient, capacity factor) · R_int in mΩ · R_int(T) curve with the live point. Nothing feeds back
-into the physics — a cut-off battery does not stop the legs (yet).
-
-## Remove it
-Delete this folder, the 6 lines in `runtime.py`, the `<script>` tag. `hud.json` simply loses its `bms_*` arrays.
+Nothing feeds back into the physics — a cut-off battery does not stop the legs (yet).
+`hud.json` gains per-tick `bms_*` arrays for replay.

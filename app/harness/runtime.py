@@ -1,7 +1,17 @@
 """The interactive walker harness, running the TEAM's climbing environment.
 
   ../.venv_everest/bin/python -m app.harness.runtime --live
-  ../.venv_everest/bin/python -m app.harness.runtime --duration 15 --hold-w --no-render
+  ../.venv_everest/bin/python -m app.harness.runtime --duration 15 --hold-w
+
+THE ONLY FRONT END IS app/web/render3d.html (user's ruling, 2026-08-30). This
+loop SIMULATES and BROADCASTS NUMBERS; it renders no picture of the scene at
+all. What goes out is the `POS0` pose stream (`pose_stream.py`, ~1.1 kB a tick),
+the state JSON, and -- while the guide is on -- the `EYE0` JPEG of the robot's
+own left eye, which is a SENSOR readout and not a view of the world. The
+third-person picture is drawn in the browser in three.js from the poses. What
+was deleted with the 2-D page: the per-tick offscreen chase-camera render, its
+raw-JPEG websocket frame, the browser-viewport resize negotiation and
+`episode.mp4`. That render cost 10-20 ms of a 20 ms control tick.
 
 Two layers, kept strictly apart:
 
@@ -30,7 +40,7 @@ OUR APP LAYER (the demo; none of it exists on their side)
                          state message says so with `wind_in_training: false`.
     friction slider   -> foot geom mu, live. Training pins it at
                          climb_config.foot_friction (0.8).
-    reset / pause / recorder / renderer / websocket.
+    reset / pause / recorder / pose stream / websocket.
 
 Rates. Their model compiles at a 2 ms timestep, so physics is 500 Hz and one
 control tick is 10 substeps at 50 Hz -- the ctrl_dt 0.02 / sim_dt 0.002 pair
@@ -38,7 +48,6 @@ their config declares. Live mode paces itself against the wall clock and prints
 a realtime factor; a `--duration` run goes as fast as it can.
 """
 import argparse
-import io
 import math
 import os
 import sys
@@ -52,27 +61,38 @@ _REPOSITORY_ROOT = os.path.dirname(
 if _REPOSITORY_ROOT not in sys.path:
     sys.path.insert(0, _REPOSITORY_ROOT)
 
-import mujoco  # noqa: E402
-from PIL import Image  # noqa: E402
-
+# `import mujoco` used to live here for `MjvCamera` and `Renderer`; with the
+# chase render gone this file touches no MuJoCo type directly. The modules it
+# imports below still do.
 from app.harness import ratchet as ratchet_module  # noqa: E402
-from app.harness import team_env  # noqa: E402
 from app.harness.playground_policy import (  # noqa: E402
     GaitPhase, MelsPolicy, PlaygroundObservation, TerminationCheck,
     default_policy_path,
 )
 from app.harness.recorder import Recorder  # noqa: E402
 from app.harness import worlds as worlds_module  # noqa: E402
-from app.bms_ui.bridge import BmsPlugin  # noqa: E402  battery panel, app/bms_ui/
+from app.harness import climb_worlds as climb_worlds_module  # noqa: E402
+from app.harness import chloe_worlds as chloe_worlds_module  # noqa: E402
+from app.harness import graphics as graphics_module  # noqa: E402
+from app.harness import guide as guide_module  # noqa: E402
+from app.harness import hearing as hearing_module  # noqa: E402
+from app.harness import snow as snow_module  # noqa: E402
+from app.harness import storm as storm_module  # noqa: E402
+from app.harness.natural_wind import NaturalWind  # noqa: E402
+sys.path.insert(0, os.path.join(  # human-safety/ is a program, not a package
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", "human-safety"))
+from human_gate import (  # noqa: E402
+    HumanGate, HumanWorld, VirtualFrustumDetector)
 
-RENDER_WIDTH, RENDER_HEIGHT = 640, 480
-JPEG_QUALITY = 80
+# THE HARNESS RENDERS NOTHING. The one offscreen renderer left in the process
+# belongs to the robot's eye cameras (`guide.StereoEyes`, 320x240), and it makes
+# and sizes its own. What used to live here -- RENDER_WIDTH/HEIGHT,
+# RENDER_MAXIMUM_*, `clamp_render_size` and `make_renderer` -- served the
+# third-person JPEG the retired 2-D page displayed.
 
-# Third-person orbit, matching the browser's defaults so live and recorded
-# views agree.
-CAMERA_DISTANCE_METERS = 3.0
+# The browser's third-person orbit still steers the robot, so its zero has to
+# agree with ours even though nothing here draws it.
 CAMERA_AZIMUTH_DEGREES = 180.0
-CAMERA_ELEVATION_DEGREES = -15.0
 # The protocol declares azimuth 180 to mean "behind the robot, looking uphill".
 # MuJoCo's own azimuth 180 puts the camera UPHILL looking back down at the
 # robot's face, so the browser's number is rotated half a turn before it
@@ -83,6 +103,9 @@ BROWSER_AZIMUTH_OFFSET_DEGREES = 180.0
 
 # Camera-relative driving, third-person-game style.
 HEADING_GAIN_PER_RADIAN = 2.0
+# A/D turn-in-place rate. The policy's ang_vel_yaw was trained over [-1, 1]
+# (walk_policy.CMD_LIMITS), so this is the fastest turn it has ever seen.
+MANUAL_YAW_RATE_RADIANS_PER_SECOND = 1.0
 MAXIMUM_YAW_RATE_RADIANS_PER_SECOND = 1.0
 HEADING_DEADBAND_RADIANS = math.radians(2.0)
 # Their lin_vel_x training range is [-1, 1] m/s; a demo wants a steady pace.
@@ -92,17 +115,41 @@ CLIMB_COMMAND_METERS_PER_SECOND = 0.5
 
 FALL_LINGER_SECONDS = 1.0     # timed runs end this long after the fall
 PAUSED_BROADCAST_HZ = 5.0     # heartbeat while the browser has let go
-# A live session has no end, and the recorder holds every JPEG in RAM to mux at
-# the end: at 50 Hz / ~40 kB a frame that is ~2 MB per second, i.e. 7 GB an
-# hour. Cap the VIDEO (the per-tick numeric rows are ~1 kB/s and stay
-# uncapped), and say so on stdout when the cap bites.
-LIVE_MAXIMUM_RECORDED_FRAMES = 6000   # 2 minutes of episode.mp4 at 50 Hz
 GAIT_FREQUENCY_HZ = 1.375     # midpoint of their reset draw U(1.25, 1.5)
-
 # rl/environment/wind_env.py:28-36 -- the ONLY place wind constants come from.
 # Imported at load time rather than restated; these are the fallback if the
 # import fails (e.g. their config keys get renamed) and the run says so.
 WIND_FALLBACK = {"rho": 1.225, "cd_torso": 1.2, "area_torso": 0.5}
+
+
+def make_battery_plugin(model, substeps):
+    """Chloe's `app/bms_ui.BmsPlugin`, or None if it cannot be imported.
+
+    Always on -- the battery readout is part of the demo now, not a flag. Kept
+    best-effort anyway: a broken import in someone else's module must not take
+    the walker down with it.
+
+    ALTITUDE IS DELIBERATELY LEFT AT 0. Her `Environment` derives ambient from
+    altitude by the ISA lapse (`t_amb = t_sea_c - 6.5e-3 * altitude_m`), while
+    `set_ambient` treats the `t_amb` knob as the pack's actual temperature. Set
+    both and they fight: at 6907 m the environment's ambient lands 44.9 C BELOW
+    whatever the knob reads. So the knob is the single source of truth for
+    ambient, and Everest conditions are dialled in by setting it to about
+    -30 C rather than by declaring an altitude.
+    """
+    try:
+        from app.bms_ui.bridge import BmsPlugin
+    except Exception as error:  # pragma: no cover - reporting only
+        print(f"[bms] NOT attached: {type(error).__name__}: {error}."
+              " The harness runs normally without a battery readout.", flush=True)
+        return None
+    plugin = BmsPlugin(model, substeps)
+    print(f"[bms] BmsPlugin attached: {model.nu} actuators, dt"
+          f" {plugin.dt * 1000:.0f} ms (one call per control tick),"
+          f" ambient {plugin.t_amb_c:.1f} C, soc0 {plugin.soc0:.0f}%"
+          f"  [altitude left at 0 on purpose -- the t_amb knob is the truth]",
+          flush=True)
+    return plugin
 
 
 def wind_drag_coefficient():
@@ -133,251 +180,6 @@ def root_yaw_radians(quaternion_wxyz) -> float:
     """Yaw about world +z from a w,x,y,z quaternion (MuJoCo's qpos ordering)."""
     w, x, y, z = [float(v) for v in quaternion_wxyz]
     return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
-
-
-class Episode:
-    """One spawn-to-outcome run on the team env. Owns model, data, readouts."""
-
-    def __init__(self, model, meta, policy, wind_drag, definition,
-                 world_name, seed=0, randomise_reset_velocity=False):
-        self.model = model
-        self.meta = meta
-        self.definition = definition
-        self.world_name = world_name
-        # The ONE thing that separates a "free" world from a climbing one: the
-        # grip equality's runtime enable. Applied to MjData every reset, never
-        # to their model. See app/harness/worlds.py.
-        self.rope_enabled = bool(definition["rope"])
-        self.policy = policy
-        self.wind_drag_coefficient = wind_drag
-        self.random = np.random.default_rng(seed)
-        self.randomise_reset_velocity = randomise_reset_velocity
-
-        self.data = mujoco.MjData(model)
-        self.observation_builder = PlaygroundObservation(model, meta, noise_level=0.0)
-        self.termination = TerminationCheck(meta)
-        self.ratchet = ratchet_module.AscenderRatchet(
-            meta["slide_qpos_address"], meta["slide_dof_address"]
-        )
-        self.gait_phase = GaitPhase(meta["control_dt_seconds"], GAIT_FREQUENCY_HZ)
-        self.substeps = meta["substeps_per_control_step"]
-        self.bms = BmsPlugin(model, self.substeps)  # readout only, app/bms_ui/
-        self.control_hz = 1.0 / meta["control_dt_seconds"]
-        self.default_pose = np.asarray(meta["default_pose_radians"])
-        self.action_scale = meta["action_scale"]
-        self.torso_body_id = meta["torso_body_id"]
-        self.pelvis_body_id = meta["pelvis_body_id"]
-        self.palm_site_id = meta["palm_site_id"]
-        self.slide_qpos_address = meta["slide_qpos_address"]
-        self.grip_equality_id = meta["grip_equality_id"]
-        # The wind law needs the torso's world velocity; the sensor is looked
-        # up by ROLE in team_env, never by a name typed here.
-        self.global_linvel_torso_slice = slice(
-            *meta["sensor_addresses"]["torso_global_linvel"])
-        self.slope_degrees = meta["slope_degrees"]
-        self.wind_velocity_world = np.zeros(2)
-        self.wind_force_world_newtons = np.zeros(3)
-        # Two worlds can SHARE an MjModel (climb_30/free_30, climb_0/free_0), and
-        # both of these write to the model, so re-apply them for every episode
-        # or the previous world's friction slider and rope visibility leak in.
-        self.set_foot_friction(meta["foot_friction"])
-        self._set_ascender_visible(self.rope_enabled)
-        self.reset()
-
-    def _set_ascender_visible(self, visible: bool) -> None:
-        """Show/hide the carrier + visual rope. Cosmetic alpha only.
-
-        A "free walk" world still has the carrier body and the rope cylinder in
-        the model -- their `_build_model` always makes them and we do not edit
-        their model's structure. Drawing a rope the robot is not attached to
-        just misleads the viewer, so the apparatus geoms go transparent. Nothing
-        about the physics changes: both are already contype=0/conaffinity=0
-        (climb_env.py:181-182, :206-207), i.e. collision-free either way.
-        """
-        if not hasattr(self, "_ascender_geom_ids"):
-            self._ascender_geom_ids = worlds_module.ascender_geom_ids(
-                self.model, self.meta)
-            self._ascender_geom_alpha = [
-                float(self.model.geom_rgba[geom_id, 3])
-                for geom_id in self._ascender_geom_ids
-            ]
-        for geom_id, alpha in zip(self._ascender_geom_ids, self._ascender_geom_alpha):
-            self.model.geom_rgba[geom_id, 3] = alpha if visible else 0.0
-
-    # ------------------------------------------------------------- state
-    def reset(self) -> None:
-        """Their deterministic reset -- climb_env.py:291-312.
-
-        qpos = the `knees_bent` keyframe (palm exactly on the carrier, slide 0),
-        qvel = 0. Theirs additionally draws base velocity U(-0.5, 0.5) on
-        qvel[0:6]; a demo wants the same spawn every time, so that is OFF by
-        default and switchable with --randomise-reset-velocity.
-        """
-        mujoco.mj_resetData(self.model, self.data)
-        self.data.qpos[:] = self.meta["keyframe_qpos"]
-        self.data.qvel[:] = 0.0
-        if self.randomise_reset_velocity:
-            self.data.qvel[0:6] = self.random.uniform(-0.5, 0.5, 6)
-        self.data.ctrl[:] = self.meta["keyframe_qpos"][7:self.slide_qpos_address]
-        self.data.xfrc_applied[:] = 0.0
-        # THE ROPE FLAG. mj_resetData restores eq_active from model.eq_active0
-        # (their default: on), so a "free" world switches it off here, per
-        # MjData, leaving their model untouched. The ratchet keeps running
-        # either way -- with the grip off it simply parks the unloaded carrier
-        # at travel 0 instead of letting gravity drag it down the line.
-        self.data.eq_active[self.grip_equality_id] = 1 if self.rope_enabled else 0
-        mujoco.mj_forward(self.model, self.data)
-        self.ratchet.reset(self.data)
-        self.gait_phase.reset()
-        self.last_action = np.zeros(self.meta["action_size"])
-        self.spawn_position_world = self.data.qpos[0:3].copy()
-        self.fell_at_seconds = None
-        self.fall_reason = None
-        self.maximum_rope_force_newtons = 0.0
-        self.tick = 0
-        self.bms.reset()
-
-    def set_foot_friction(self, friction: float) -> None:
-        """Live friction knob. Training pins this at climb_config.foot_friction."""
-        for geom_id in self.meta["foot_geom_ids"]:
-            self.model.geom_friction[geom_id, 0] = float(friction)
-
-    @property
-    def pelvis_position_world(self) -> np.ndarray:
-        return self.data.qpos[0:3].copy()
-
-    @property
-    def rope_travel_meters(self) -> float:
-        """The ascender's own coordinate: metres up the line from the grip point."""
-        return float(self.data.qpos[self.slide_qpos_address])
-
-    @property
-    def height_gained_meters(self) -> float:
-        return float(self.pelvis_position_world[2] - self.spawn_position_world[2])
-
-    @property
-    def rope_force_newtons(self) -> float:
-        """Magnitude of the `connect` equality's constraint force, newtons.
-
-        The grip is a 3-row equality; MuJoCo puts its rows in efc_* tagged with
-        efc_type == mjCNSTR_EQUALITY and efc_id == the equality's id.
-        """
-        if self.data.nefc == 0:
-            return 0.0
-        rows = np.where(
-            (np.asarray(self.data.efc_type[:self.data.nefc])
-             == int(mujoco.mjtConstraint.mjCNSTR_EQUALITY))
-            & (np.asarray(self.data.efc_id[:self.data.nefc]) == self.grip_equality_id)
-        )[0]
-        if rows.size == 0:
-            return 0.0
-        return float(np.linalg.norm(np.asarray(self.data.efc_force)[rows]))
-
-    def hand_height_on_line_meters(self) -> float:
-        return ratchet_module.hand_height_on_line_meters(
-            self.data, self.palm_site_id, self.meta["line_point_world"],
-            self.meta["slope_axis_world"])
-
-    def hand_line_error_meters(self) -> float:
-        return ratchet_module.hand_line_error_meters(
-            self.data, self.palm_site_id, self.meta["line_point_world"],
-            self.meta["slope_axis_world"])
-
-    # ------------------------------------------------------- one control tick
-    def apply_wind(self, wind_velocity_world) -> None:
-        """Quadratic drag on the torso -- wind_env.py:92-103, verbatim law.
-
-        F_xy = 0.5*rho*Cd*A * |v_wind - v_torso| * (v_wind - v_torso), written
-        into xfrc_applied once per control step; mj_step does not clear it, so
-        it acts across all 10 substeps exactly as it does on their side.
-        """
-        self.wind_velocity_world[:] = wind_velocity_world
-        torso_velocity = np.zeros(2)
-        if self.global_linvel_torso_slice is not None:
-            torso_velocity = np.asarray(
-                self.data.sensordata[self.global_linvel_torso_slice][:2])
-        relative = self.wind_velocity_world - torso_velocity
-        force_xy = self.wind_drag_coefficient * np.linalg.norm(relative) * relative
-        self.wind_force_world_newtons[:2] = force_xy
-        self.wind_force_world_newtons[2] = 0.0
-        self.data.xfrc_applied[self.torso_body_id, :3] = self.wind_force_world_newtons
-        self.data.xfrc_applied[self.torso_body_id, 3:] = 0.0
-
-    def step(self, command, wind_velocity_world) -> dict:
-        observation = self.observation_builder.build(
-            self.data, command, self.last_action, self.gait_phase)
-        action = self.policy.act(observation)
-        self.data.ctrl[:] = self.default_pose + self.action_scale * action
-        self.apply_wind(wind_velocity_world)
-
-        ratchet_module.step_with_ratchet(
-            mujoco, self.model, self.data, self.ratchet, self.substeps)
-
-        self.gait_phase.advance()
-        self.last_action = action
-        self.tick += 1
-        time_seconds = self.tick / self.control_hz
-
-        rope_force = self.rope_force_newtons
-        self.maximum_rope_force_newtons = max(self.maximum_rope_force_newtons, rope_force)
-        reasons = self.termination.reasons(self.data)
-        if self.fell_at_seconds is None and (
-                reasons["tipped_over"] or reasons["self_collision"]
-                or reasons["not_finite"]):
-            self.fell_at_seconds = time_seconds
-            self.fall_reason = ("not_finite" if reasons["not_finite"]
-                                else "tipped_over" if reasons["tipped_over"]
-                                else "self_collision")
-            print(f"[runtime] FELL at t={time_seconds:.2f}s reason={self.fall_reason}"
-                  f" torso_upvector_z={reasons['torso_upvector_z']:+.3f}", flush=True)
-
-        return {
-            "time_seconds": time_seconds,
-            "root_position_world": self.pelvis_position_world,
-            "root_quaternion_world_wxyz": self.data.qpos[3:7].copy(),
-            "root_velocity_world": self.data.qvel[0:3].copy(),
-            "joint_positions_radians": self.data.qpos[7:self.slide_qpos_address].copy(),
-            "joint_velocities_radians_per_second":
-                self.data.qvel[6:self.meta["slide_dof_address"]].copy(),
-            "action": action,
-            "target_positions_radians": self.data.ctrl.copy(),
-            "command": np.asarray(command, dtype=np.float64),
-            "observation": observation,
-            "wind_velocity_world_meters_per_second": self.wind_velocity_world.copy(),
-            "wind_force_world_newtons": self.wind_force_world_newtons.copy(),
-            "projected_gravity_body": observation[6:9],
-            "rope_travel_meters": self.rope_travel_meters,
-            # Alias kept for the HUD's existing contract: on this env the climb
-            # IS the ascender's travel up the line.
-            "climb_meters": self.rope_travel_meters,
-            "hand_height_on_line_meters": self.hand_height_on_line_meters(),
-            "hand_line_error_meters": self.hand_line_error_meters(),
-            "height_gained_meters": self.height_gained_meters,
-            "rope_force_newtons": rope_force,
-            "torso_upvector_z": reasons["torso_upvector_z"],
-            "fell": 1.0 if self.fell_at_seconds is not None else 0.0,
-            **self.bms.on_tick(self.data, time_seconds),
-        }
-
-
-class ChaseCamera:
-    """Third-person orbit around the pelvis. Azimuth/elevation from the browser."""
-
-    def __init__(self):
-        self.camera = mujoco.MjvCamera()
-        self.camera.type = mujoco.mjtCamera.mjCAMERA_FREE
-        self.camera.distance = CAMERA_DISTANCE_METERS
-        self.camera.azimuth = CAMERA_AZIMUTH_DEGREES + BROWSER_AZIMUTH_OFFSET_DEGREES
-        self.camera.elevation = CAMERA_ELEVATION_DEGREES
-
-    def aim(self, lookat_world, azimuth_degrees=None, elevation_degrees=None):
-        """azimuth/elevation are the BROWSER's numbers, or None to hold."""
-        self.camera.lookat[:] = lookat_world
-        if azimuth_degrees is not None:
-            self.camera.azimuth = float(azimuth_degrees) + BROWSER_AZIMUTH_OFFSET_DEGREES
-        if elevation_degrees is not None:
-            self.camera.elevation = float(elevation_degrees)
-        return self.camera
 
 
 class HeadingController:
@@ -414,8 +216,27 @@ class HeadingController:
     def desired_heading_degrees(self) -> float:
         return float(math.degrees(wrap_to_pi(self.desired_heading_radians)))
 
-    def command(self, root_quaternion_wxyz, walking: bool) -> np.ndarray:
+    def command(self, root_quaternion_wxyz, walking: bool,
+                manual_yaw_rate=None) -> np.ndarray:
+        """`manual_yaw_rate` (rad/s) SUSPENDS the camera-follow while held.
+
+        A and D are the user steering by hand, and two controllers fighting for
+        the same channel is the worst of both: the camera-follow would drag the
+        yaw straight back the moment the key came up. So while A or D is down
+        the follow's output is ignored, and its target is RE-SEATED to the
+        robot's current yaw every tick -- whatever the yaw is at release becomes
+        the new target, and the deadband reopens on a zero error. The camera
+        only steers when the user isn't.
+        """
         current = root_yaw_radians(root_quaternion_wxyz)
+        if manual_yaw_rate is not None:
+            self.desired_heading_radians = current
+            self.yaw_error_radians = 0.0
+            forward = self.command_speed if walking else 0.0
+            return np.array([forward, 0.0, float(np.clip(
+                manual_yaw_rate,
+                -MAXIMUM_YAW_RATE_RADIANS_PER_SECOND,
+                MAXIMUM_YAW_RATE_RADIANS_PER_SECOND))])
         self.yaw_error_radians = wrap_to_pi(self.desired_heading_radians - current)
         if abs(self.yaw_error_radians) < HEADING_DEADBAND_RADIANS:
             yaw_rate = 0.0
@@ -428,14 +249,9 @@ class HeadingController:
         return np.array([forward, 0.0, yaw_rate])
 
 
-def encode_jpeg(pixels: np.ndarray) -> bytes:
-    buffer = io.BytesIO()
-    Image.fromarray(pixels).save(buffer, "JPEG", quality=JPEG_QUALITY)
-    return buffer.getvalue()
-
-
 def make_header(episode, meta, arguments) -> dict:
     fingerprint_summary = {
+        "kind": meta.get("kind", "legacy_climb_env"),
         "nq": int(episode.model.nq), "nv": int(episode.model.nv),
         "nu": int(episode.model.nu),
         "timestep_seconds": float(episode.model.opt.timestep),
@@ -444,14 +260,31 @@ def make_header(episode, meta, arguments) -> dict:
         "slide_qpos_address": meta["slide_qpos_address"],
         "foot_friction_at_load": meta["foot_friction"],
     }
+    if meta.get("kind") == "climb_scene":
+        fingerprint_summary.update({
+            "patch": meta["patch"], "robot": meta["robot"],
+            "rope_length_meters": meta["rope_length_meters"],
+            "rope_waypoints": meta["rope_waypoints"],
+            "slope_provenance": meta["slope_provenance"],
+            "adapt_report": meta["adapt_report"],
+        })
     return {
         "backend": "mujoco-c (plain), model from rl.environment.climb_env.G1ClimbAscender",
         "world": episode.world_name,
         "world_label": episode.definition["label"],
         "world_description": episode.definition["description"],
-        "config_overrides": dict(episode.definition["config_overrides"]),
+        "config_overrides": dict(episode.definition.get("config_overrides", {})),
         "rope_enabled": episode.rope_enabled,
-        "policy": "mels_g1_joystick.npz",
+        # A `chloe_ascender` world is not necessarily a NETWORK world: the
+        # `scripted_*` rungs share the plant and run a hand-written gait, whose
+        # controller has no checkpoint to name. Ask the controller what it is,
+        # rather than assuming every world of this kind carries a `.onnx`.
+        "policy": (getattr(episode.controller, "policy_path", None)
+                   and os.path.basename(episode.controller.policy_path)
+                   or ("scripted gait (no network)"
+                       if meta.get("kind") == "chloe_ascender"
+                       else "mels_g1_joystick.npz")),
+        "autonomous": bool(getattr(episode, "autonomous", False)),
         "seed": arguments.seed,
         "slope_degrees": episode.slope_degrees,
         "control_hz": episode.control_hz,
@@ -459,18 +292,21 @@ def make_header(episode, meta, arguments) -> dict:
         "joint_names": meta["joint_names"],
         "line_point_world": np.asarray(meta["line_point_world"]).tolist(),
         "slope_axis_world": np.asarray(meta["slope_axis_world"]).tolist(),
+        "patch": meta.get("patch"),
+        "robot": meta.get("robot", "bare"),
         "spawn_position_world": episode.spawn_position_world.tolist(),
         "command_speed_meters_per_second": arguments.command_speed,
         "observation_noise_level": 0.0,
         "training_observation_noise_level": meta["noise_level"],
-        "wind_in_training": False,
+        "wind_in_training": meta.get("wind_in_training", False),
+        "terrain_in_training": meta.get("terrain_in_training", False),
         "model_fingerprint": fingerprint_summary,
         "wind": [], "commands": [],
         "source": "live" if arguments.live else "timed",
     }
 
 
-def episode_outcome(episode, realtime_factor: float, frames_rendered: int) -> dict:
+def episode_outcome(episode, realtime_factor: float) -> dict:
     return {
         "fell": episode.fell_at_seconds is not None,
         "fell_at_seconds": episode.fell_at_seconds,
@@ -481,6 +317,7 @@ def episode_outcome(episode, realtime_factor: float, frames_rendered: int) -> di
             episode.pelvis_position_world - episode.spawn_position_world)),
         "rope_travel_meters": episode.rope_travel_meters,
         "climb_meters": episode.rope_travel_meters,
+        "arclength_meters": getattr(episode, "arclength_meters", None),
         "height_gained_meters": episode.height_gained_meters,
         "maximum_rope_force_newtons": episode.maximum_rope_force_newtons,
         "hand_line_error_meters": episode.hand_line_error_meters(),
@@ -488,7 +325,6 @@ def episode_outcome(episode, realtime_factor: float, frames_rendered: int) -> di
         "rope_enabled": episode.rope_enabled,
         "slope_degrees": episode.slope_degrees,
         "realtime_factor": realtime_factor,
-        "frames_rendered": frames_rendered,
     }
 
 
@@ -497,7 +333,11 @@ def run(arguments) -> str:
     policy = MelsPolicy(arguments.policy or default_policy_path(_REPOSITORY_ROOT))
     print(policy.describe(), flush=True)
     wind_drag = wind_drag_coefficient()
-    library = worlds_module.WorldLibrary()
+    climb_library = climb_worlds_module.ClimbSceneLibrary()
+    # CHLOE'S WORLDS ARE THE ONE PLACE THE WALKER DOES NOT FLY THE ROBOT.
+    # `chloe_worlds` builds her mjlab plant and drives her ONNX ascender
+    # policy; every other world is untouched by its existence.
+    chloe_library = chloe_worlds_module.ChloeSceneLibrary()
 
     server = None
     if arguments.live:
@@ -508,7 +348,7 @@ def run(arguments) -> str:
         """Tell the page why the picture is about to freeze.
 
         A world's first selection costs a full G1ClimbAscender.__init__, and the
-        sim loop is what does it, so no frames go out while it runs. Measured
+        sim loop is what does it, so no poses go out while it runs. Measured
         warm that is ~1.6 s for the first world and ~0.2 s for the second
         distinct model -- brief, but a frozen picture with no explanation is
         still worse than a labelled one, and a cold venv is slower. Push one
@@ -520,46 +360,240 @@ def run(arguments) -> str:
         if latest_state[0] is not None:
             server.broadcast(dict(latest_state[0], paused=True, loading=True,
                                   loading_world=name))
-        if latest_jpeg[0] is not None:
-            server.broadcast(latest_jpeg[0])
 
-    latest_jpeg = [None]
     latest_state = [None]
 
     def open_world(name):
-        model, meta, definition = library.load(
-            name, on_build_start=lambda: announce_build(name))
-        episode = Episode(model, meta, policy, wind_drag, definition, name,
-                          seed=arguments.seed,
-                          randomise_reset_velocity=arguments.randomise_reset_velocity)
-        print(f"[runtime] world={name} ({definition['label']})"
-              f"  slope={episode.slope_degrees} deg"
-              f"  rope={'ON' if episode.rope_enabled else 'OFF'}"
-              f"  control {episode.control_hz:.0f} Hz  physics"
-              f" {1.0 / meta['physics_dt_seconds']:.0f} Hz"
-              f"  substeps/tick={episode.substeps}", flush=True)
-        print(f"[runtime] spawn pelvis {episode.spawn_position_world.round(4).tolist()}"
-              f"  palm-on-line error {episode.hand_line_error_meters():.2e} m"
-              f"  rope travel {episode.rope_travel_meters:.4f} m"
-              f"  grip eq_active"
-              f" {int(episode.data.eq_active[episode.grip_equality_id])}",
-              flush=True)
-        return episode, model, meta
+        """Either kind of world, behind one interface.
 
-    episode, model, meta = open_world(arguments.world)
+        `climb_scene` worlds are PR #8's merged model -- real terrain, a rope
+        draped over it, the jacketed robot, his physics step and his walking
+        policy. `legacy_climb_env` worlds are the older flat tilted plane and
+        slide joint, kept because the trainer still uses them. Both return an
+        episode with the same interface, so everything below this function is
+        shared.
+        """
+        name = worlds_module.resolve_world_name(name)
+        kind = worlds_module.WORLD_DEFINITIONS[name]["kind"]
+        if kind in ("climb_scene", "chloe_ascender"):
+            # Two libraries, one shape. `chloe_ascender` worlds are her mjlab
+            # plant and her ONNX policy (app/harness/chloe_worlds.py); they
+            # present the same scene surface -- spec, model, data, terrain,
+            # route, ascender, reset -- so every line below this one, the
+            # guide surgery and the whole alpine dressing included, is shared.
+            library = (chloe_library if kind == "chloe_ascender"
+                       else climb_library)
+            scene, meta, definition = library.load(
+                name, on_build_start=lambda: announce_build(name))
+            # THE GUIDE'S SURGERY GOES FIRST, before anything dresses the model.
+            # It recompiles the spec, and `apply_alpine_look` writes to the
+            # COMPILED model (lights, fog, the snow colour) -- so doing it the
+            # other way round throws the alpine look away and the picture comes
+            # back dark. `add_skybox` survives either order because a texture
+            # lives in the spec, but the ordering rule is the same for both.
+            # `--no-guide-body` skips the surgery entirely, which is how the
+            # physics-parity claim is measured: a run with no guide bodies in
+            # the model at all against a run that has them, same seed.
+            if not arguments.no_guide_body:
+                guide_module.attach_guide(scene)
+            # Snow next, and for the same reason: it adds a texture and a
+            # material to the spec and recompiles, so it has to happen before
+            # anything writes to the compiled model.
+            if not (arguments.plain_graphics or arguments.no_snow):
+                snow_module.attach_snow(scene, seed=arguments.seed)
+            # Dress the scene BEFORE the episode binds to it: `add_skybox`
+            # recompiles the spec, so it must happen while nothing holds a
+            # reference to the old model or data. It verifies the swap and
+            # refuses if anything structural moved.
+            if not arguments.plain_graphics:
+                graphics_module.add_skybox(scene)
+                look = graphics_module.apply_alpine_look(
+                    scene.model, terrain_size_meters=scene.terrain.size_xy)
+                print(f"[graphics] {name}: fog"
+                      f" {look['fog_start_meters']:.0f}-{look['fog_end_meters']:.0f} m,"
+                      f" sun {look['sun']['elevation_degrees']:.0f} deg elevation,"
+                      f" shadows {look['shadow_texture']}, snow on", flush=True)
+            if kind == "chloe_ascender":
+                episode = chloe_worlds_module.ChloeAscenderEpisode(
+                    scene, meta, definition, name, seed=arguments.seed,
+                    policy_path=arguments.chloe_policy,
+                    hold_blend_seconds=arguments.chloe_hold_blend)
+                print(f"[runtime] {name}: {episode.controller.describe()}"
+                      "  -- W gates the network, A/D and the mouse do nothing",
+                      flush=True)
+            else:
+                episode = climb_worlds_module.ClimbSceneEpisode(
+                    scene, meta, definition, name, seed=arguments.seed)
+            model = scene.model
+            print(f"[runtime] world={name} ({definition['label']})"
+                  f"  patch={definition['patch']} robot={definition['robot']}"
+                  f"  slope={episode.slope_degrees:.1f} deg"
+                  f" ({definition['slope_provenance']})"
+                  f"  rope={'ON' if episode.rope_enabled else 'OFF'}"
+                  f"  control {episode.control_hz:.0f} Hz  physics"
+                  f" {1.0 / meta['physics_dt_seconds']:.0f} Hz"
+                  f"  substeps/tick={episode.substeps}", flush=True)
+            print(f"[runtime] spawn pelvis"
+                  f" {episode.spawn_position_world.round(4).tolist()}"
+                  f"  hand-rope distance {episode.hand_line_error_meters():.2e} m"
+                  f"  arc length {episode.arclength_meters:.3f} m of"
+                  f" {meta['rope_length_meters']:.3f}"
+                  f"  lean {meta['lean_degrees']:.1f} deg"
+                  f"  ankle {meta['ankle_degrees']:.1f} deg"
+                  f"  upright {episode.torso_upright:+.3f}", flush=True)
+            return episode, model, meta, scene
+
+
+    # THE 3-D PAGE'S SEAM (app/web/render3d.html). A wrapper rather than edits
+    # inside `open_world`: every episode -- the first and every map switch --
+    # gets a pose broadcaster on its physics_step_hooks, and this file keeps one
+    # hunk. Arity-agnostic on purpose (`open_world` grew a fourth return value
+    # while this was being written); it only ever touches element 0.
+    # Costs tens of microseconds of a 20 ms tick and prints that measurement
+    # itself. Since the 2-D page was retired this IS the picture: with the pose
+    # stream off, a browser gets telemetry and no scene.
+    if arguments.pose_stream and server is not None:
+        from app.harness import pose_stream as pose_stream_module
+        _open_world_without_poses = open_world
+
+        def open_world(name):
+            opened = _open_world_without_poses(name)
+            pose_stream_module.attach(opened[0], server, opened[0].world_name)
+            return opened
+
+    episode, model, meta, scene = open_world(arguments.world)
     print(f"[runtime] observation noise OFF (training level {meta['noise_level']});"
           f" wind NOT in training; friction knob starts at"
           f" {meta['foot_friction']}", flush=True)
     if server is not None:
         server.knobs["friction"] = meta["foot_friction"]
 
-    renderer = None
-    camera = ChaseCamera()
+    # HUMAN GATE (human-safety/human_gate.py). Deterministic, outside the policy:
+    # the forward (= up-rope) command is clamped to <= 0 while a human is in the
+    # d435i frustum. Humans are virtual (no physics; THEIR model is untouched).
+    human_world = HumanWorld.from_model(model)   # virtual unless the model has human_* bodies
+    human_gate = HumanGate(
+        VirtualFrustumDetector(model, human_world, arguments.human_range),
+        clear_after_seconds=arguments.human_clear_seconds)
+    for distance in arguments.human:
+        human_world.spawn_ahead_of(
+            episode.spawn_position_world, root_yaw_radians(episode.data.qpos[3:7]),
+            distance)
+        print(f"[safety] human spawned {distance:.1f} m ahead", flush=True)
+
+    # THE GUIDE FOLLOWER (app/harness/guide.py). A human guide walks ahead along
+    # the rope; the robot measures its distance by STEREO from two head cameras
+    # and drives itself. Off until the page's `guide` knob (or --guide) says so.
+    #
+    # ONE NOTION OF "A HUMAN IS THERE". While the guide is on, Chloe's gate is
+    # driven from the same vision measurement the follower uses, so the gate
+    # blocks UP over exactly the band in which the follower commands zero,
+    # instead of a second oracle detector disagreeing with it. Its own
+    # hysteresis is off (0.0) because the follower already has two -- the
+    # 1.0/1.3 m bands and the 1 s LOST timeout.
+    # VISIBILITY, as the robot experiences it (app/harness/storm.py). The page's
+    # `visibility` knob is a DISTANCE IN METRES, derived from nothing (user's
+    # ruling, 2026-08-30 -- it replaced a `storm` switch whose thickness came
+    # out of the wind speed). A fog is composited into the eye images between
+    # the render and the block matcher. Visual and sensor only: PARITY.md has
+    # the same-seed diff.
+    storm_vision = storm_module.StormVision(seed=arguments.seed)
+
+    def make_guide(current_scene, current_model, current_episode):
+        # CHLOE'S WORLDS ARE AUTONOMOUS. Her network has no command port at
+        # all, so nothing here may claim to steer it: `yaw_command_available`
+        # is forced False and the waist "neck" is NOT registered, whatever
+        # `--policy` says. The follower still SEES -- both eyes render, the
+        # block matcher runs, the distance and bearing are real -- and it may
+        # drive the go/stop gate through `command[0]`. It may not aim the robot.
+        autonomous = bool(getattr(current_episode, "autonomous", False))
+        system = guide_module.GuideSystem(
+            current_scene, current_model, current_episode.control_hz,
+            enable=not arguments.no_guide_body,
+            degradation=storm_vision.degrade,
+            # ASK TO MRINAL, and the reason this is a flag rather than a
+            # constant: the climb policy was trained with ang_vel_yaw ~ 0, so a
+            # commanded turn does nothing and the waist has to do the aiming.
+            # A policy trained with randomised ang_vel_yaw would earn a True
+            # here and a steerable body with it. `--policy` supplies one.
+            yaw_command_available=(arguments.policy is not None
+                                   and not autonomous),
+            # No rope means no line for her to be on: W/S walk her along her own
+            # heading and A/D turn it.
+            free_walk=not current_episode.rope_enabled)
+        gate = HumanGate(guide_module.GuideVisionDetector(system),
+                         clear_after_seconds=0.0)
+        if system.available:
+            system.place(current_episode.spawn_position_world)
+        if system.available and not autonomous:
+            # THE "NECK", REGISTERED ON THE CONTROL SEAM. `control_hooks` runs
+            # after the policy writes `data.ctrl` and before the `mj_step` that
+            # acts on it, which is the only place a waist-yaw offset can be
+            # added without touching the policy. It is a no-op whenever the
+            # offset is zero, i.e. whenever the robot is not searching.
+            current_episode.control_hooks.append(system.waist.apply)
+        return system, gate
+
+    guide_system, guide_gate = make_guide(scene, model, episode)
+
+    # THE EARS (app/harness/hearing.py). The page streams the Mac microphone
+    # down the socket as `MIC0` PCM; the runtime emits that voice at the
+    # HIKER'S MOUTH and receives it at four virtual microphones on the robot's
+    # head, then decides from those four signals alone whether a human voice is
+    # there, whether the word was `stop`, and which way it came from. It is the
+    # same honesty as the eyes: truth geometry in, a sensor image out, and every
+    # decision downstream of the sensor image. With the knob off it is a no-op
+    # and the guide follower's command goes through untouched.
+    hearing_system = hearing_module.HearingSystem(
+        model, episode.control_hz, seed=arguments.seed,
+        walk_speed=arguments.command_speed)
+    for specification in arguments.inject_voice:
+        path, _, at_seconds = specification.partition("@")
+        hearing_system.add_injector(path, float(at_seconds or 0.5))
+    if server is not None:
+        server.knobs["hearing"] = 1.0 if arguments.hearing else 0.0
+        server.microphone = hearing_system.microphone
+    print(f"[hearing] starts {'ON' if arguments.hearing else 'OFF'}"
+          f" (knob `hearing`); it needs the GUIDE on, because the voice comes"
+          f" out of her mouth and the hand-over is to her eyes", flush=True)
+
+    # FOOTSTEPS (app/harness/snow.py). The detector reads the solver's own
+    # contacts and reports each landing; that one event counts a step and
+    # becomes a `foot_steps` message, so the crunch the page plays, the decal it
+    # drops and the counter can never disagree about what a step is. The snow
+    # TEXTURE was attached to the spec at world build above; the prints that
+    # used to be stamped into it are the 3-D page's decals now.
+    def make_snow(current_model, current_meta):
+        detector = None
+        if current_meta.get("foot_geom_ids") is not None and \
+                "terrain_geom_id" in current_meta:
+            detector = snow_module.TouchdownDetector(
+                current_model, current_meta["foot_geom_ids"],
+                current_meta["terrain_geom_id"])
+            print(f"[snow] touchdowns from {detector.describe()}", flush=True)
+        return detector
+
+    touchdowns = make_snow(model, meta)
+    if server is not None:
+        server.knobs["guide"] = 1.0 if arguments.guide else 0.0
+    print(f"[guide] {'available' if guide_system.available else 'NOT available'}"
+          f" in world {episode.world_name};"
+          f" starts {'ON' if arguments.guide else 'OFF'}"
+          f" (knob `guide`, W walks the human up the rope, S back down it)",
+          flush=True)
+    starting_visibility = storm_module.clamp_visibility_meters(
+        arguments.visibility)
+    print(f"[visibility] starts at {starting_visibility:.1f} m"
+          f" (knob `visibility`, metres;"
+          f" {storm_module.CLEAR_VISIBILITY_METERS:.0f} m = clear, the eyes"
+          f" untouched;"
+          f" {storm_module.MINIMUM_VISIBILITY_METERS:.0f} m = white-out)."
+          f" A fog composited from the eye renderer's depth buffer before the"
+          f" matcher; white-out share"
+          f" {', '.join(f'{v:.0f} m -> {storm_module.whiteout_share(v):.2f}' for v in (100, 30, 10, 3))}",
+          flush=True)
+
     heading = HeadingController(arguments.command_speed)
-    rendered_model = None
-    if not arguments.no_render:
-        renderer = mujoco.Renderer(model, RENDER_HEIGHT, RENDER_WIDTH)
-        rendered_model = model
 
     episodes_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "episodes")
     directories_opened = []
@@ -582,10 +616,13 @@ def run(arguments) -> str:
 
     duration_seconds = arguments.duration if arguments.duration is not None else 1e9
     wind_velocity_world = np.zeros(2)
+    # The dial gives a TARGET; NaturalWind turns it into gusts and drift when
+    # the page asks for it. Seeded from --seed, advanced once per control tick,
+    # so a replay at the same seed sees the same weather.
+    natural_wind = NaturalWind(seed=arguments.seed)
     last_logged_command = last_logged_wind = None
     wall_start = time.time()
     realtime_factor = 0.0
-    frames_rendered = 0
     applied_friction = meta["foot_friction"]
 
     while True:
@@ -597,37 +634,76 @@ def run(arguments) -> str:
                 and time_seconds >= episode.fell_at_seconds + FALL_LINGER_SECONDS):
             break
 
-        azimuth_degrees = elevation_degrees = None
+        guide_enabled = bool(arguments.guide)
+        walking = bool(arguments.hold_w)
+        backing = False
+        # A/D as the HIKER's steering, +1 = left. Only ever non-zero on a
+        # rope-off world with the guide on; on the rope she is ON the line and
+        # there is nowhere for her to turn to (user's ruling, 2026-08-30).
+        guide_turning = 0.0
         if server is not None:
             latest = server.latest_input
             keys = set(latest.get("keys", []))
+            walking = "w" in keys
+            # S walks the HUMAN back down the rope toward the robot. Only the
+            # human: the robot's own command still comes from the follower.
+            backing = "s" in keys
+            guide_enabled = bool(server.knobs.get("guide", 0.0))
+            # Only the AZIMUTH is read: it is the steering input. Elevation
+            # moves the browser's own camera and the server no longer draws
+            # anything, so the page still sends it and the harness ignores it.
             browser_camera = latest.get("camera") or {}
-            azimuth_degrees = browser_camera.get("azimuth_degrees")
-            elevation_degrees = browser_camera.get("elevation_degrees")
-            heading.set_browser_azimuth(azimuth_degrees)
-            command = heading.command(episode.data.qpos[3:7], walking="w" in keys)
+            heading.set_browser_azimuth(browser_camera.get("azimuth_degrees"))
+            # A = turn left (positive yaw), D = turn right, both down cancel.
+            turn = ((MANUAL_YAW_RATE_RADIANS_PER_SECOND if "a" in keys else 0.0)
+                    - (MANUAL_YAW_RATE_RADIANS_PER_SECOND if "d" in keys else 0.0))
+            steering = ("a" in keys) != ("d" in keys)
+            # WITH THE GUIDE ON AND NO ROPE, A AND D ARE HERS. They were already
+            # doing nothing to the robot -- the follower owns its command while
+            # the guide is on -- so this hands two idle keys to the one body
+            # that can use them.
+            if guide_enabled and not episode.rope_enabled:
+                guide_turning = ((1.0 if "a" in keys else 0.0)
+                                 - (1.0 if "d" in keys else 0.0))
+            command = heading.command(
+                episode.data.qpos[3:7], walking="w" in keys,
+                manual_yaw_rate=turn if steering else None)
             if server.paused:
-                # Freeze: no physics, no policy, no recorded tick. Keep the last
-                # picture and a heartbeat flowing so the page stays live and
-                # knows why nothing moves. The pacing clock is rebased every
-                # frame, so unpausing resumes at realtime instead of firing a
-                # catch-up burst of ticks for the paused wall seconds.
-                if latest_jpeg[0] is not None:
-                    server.broadcast(latest_jpeg[0])
+                # Freeze: no physics, no policy, no recorded tick. Keep a
+                # heartbeat flowing so the page stays live and knows why nothing
+                # moves -- it goes on drawing the last poses it has. The pacing
+                # clock is rebased every frame, so unpausing resumes at realtime
+                # instead of firing a catch-up burst of ticks for the paused
+                # wall seconds.
                 if latest_state[0] is not None:
                     server.broadcast(dict(latest_state[0], paused=True))
                 wall_start = time.time() - episode.tick / episode.control_hz
                 time.sleep(1.0 / PAUSED_BROADCAST_HZ)
                 continue
-            wind_velocity_world[:] = [server.knobs.get("wind_x", 0.0),
-                                      server.knobs.get("wind_y", 0.0)]
+            natural_wind.enabled = bool(server.knobs.get("wind_natural", 0.0))
+            wind_velocity_world[:] = natural_wind.step(
+                [server.knobs.get("wind_x", 0.0),
+                 server.knobs.get("wind_y", 0.0)],
+                1.0 / episode.control_hz, episode.tick / episode.control_hz)
+            # An older page still sends a `storm` 0/1 knob. `Server._handle`
+            # stores any name it is given, so that key simply sits in the dict
+            # unread -- accepted, ignored, and unable to crash this loop.
+            visibility_meters = server.knobs.get(
+                "visibility", storm_module.CLEAR_VISIBILITY_METERS)
+            # The battery model's wind chill is live: the dial is m/s, hers is
+            # km/h.
+            if episode.bms is not None:
+                # t_amb / soc0 come from the page; her plugin decides what a
+                # change means (a cold-soak jump for ambient, a full reset for
+                # soc0), so we just hand the knobs over every tick.
+                episode.bms.apply_knobs(server.knobs)
             friction = float(server.knobs.get("friction", applied_friction))
             if abs(friction - applied_friction) > 1e-9:
                 episode.set_foot_friction(friction)
                 applied_friction = friction
-            episode.bms.apply_knobs(server.knobs)
             if server.world_requested is not None:
                 requested, server.world_requested = server.world_requested, None
+                requested = worlds_module.resolve_world_name(requested)
                 if requested not in worlds_module.WORLD_DEFINITIONS:
                     print(f"[runtime] ignoring unknown world {requested!r}; have"
                           f" {worlds_module.world_names()}", flush=True)
@@ -636,17 +712,19 @@ def run(arguments) -> str:
                     # world at its own spawn in a fresh episode folder. Building
                     # a world for the first time blocks this loop (~1.6 s warm)
                     # -- `announce_build` warns the page first.
-                    recorder.finalize(episode_outcome(
-                        episode, realtime_factor, frames_rendered))
-                    episode, model, meta = open_world(requested)
-                    if not arguments.no_render and model is not rendered_model:
-                        # The GL context is NOT garbage collected, and it is
-                        # bound to the model it was made for. Two worlds that
-                        # share a model share the renderer; a different model
-                        # needs a new one.
-                        renderer.close()
-                        renderer = mujoco.Renderer(model, RENDER_HEIGHT, RENDER_WIDTH)
-                        rendered_model = model
+                    recorder.finalize(episode_outcome(episode, realtime_factor))
+                    episode, model, meta, scene = open_world(requested)
+                    # A new world is a new compiled model, so the eyes' renderer
+                    # and every id the guide cached belong to a model that is
+                    # gone. Build both again, and re-place the human 2.5 m ahead
+                    # of the new spawn.
+                    guide_system.close()
+                    guide_system, guide_gate = make_guide(scene, model, episode)
+                    # A new world is a new compiled model, so the head body id
+                    # the ears cached belongs to a model that is gone.
+                    hearing_system.bind(model)
+                    hearing_system.reset()
+                    touchdowns = make_snow(model, meta)
                     # The friction knob still reads the OLD world; re-sync it or
                     # the next tick paints the previous mu over the new map.
                     applied_friction = meta["foot_friction"]
@@ -655,18 +733,66 @@ def run(arguments) -> str:
                     recorder = Recorder(new_episode_directory(), header,
                                         control_hz=episode.control_hz)
                     last_logged_command = last_logged_wind = None
-                    frames_rendered = 0
                     wall_start = time.time()
                     continue
             if server.reset_requested:
                 server.reset_requested = False
                 episode.reset()
+                guide_system.place(episode.spawn_position_world)
+                hearing_system.reset()
                 wall_start = time.time()
                 continue
         else:
             command = np.array([
                 arguments.command_speed if arguments.hold_w else 0.0, 0.0, 0.0])
+            visibility_meters = starting_visibility
+            natural_wind.enabled = bool(arguments.wind_natural)
+            wind_velocity_world[:] = natural_wind.step(
+                arguments.wind, 1.0 / episode.control_hz,
+                episode.tick / episode.control_hz)
 
+        # VISIBILITY, before the guide: `degrade` has to know this tick's
+        # visibility before the eye cameras render, which happens inside
+        # `guide_system.update` on the next line. The white-out on the PAGE is
+        # the 3D view's own fog (render3d.html + three/world.js), driven from
+        # the same knob echoed back in the state message.
+        storm_vision.update(visibility_meters)
+
+        # THE GUIDE OWNS THE COMMAND WHILE IT IS ON. W/A/D stop steering the
+        # robot: W tells the HUMAN to walk, and what the robot does about that
+        # is the follower's business -- which is the whole point of the feature.
+        # The camera-follow controller is stood down too (its target is re-seated
+        # to the robot's actual yaw every tick, exactly as it is while A or D is
+        # held), so switching the guide off does not snap the robot back to a
+        # heading it drifted away from ten seconds ago.
+        guide_command = guide_system.update(
+            episode.data, episode.tick, guide_enabled, walking, backing,
+            guide_turning)
+        if guide_command is not None:
+            command = guide_command
+            heading.desired_heading_radians = root_yaw_radians(
+                episode.data.qpos[3:7])
+            heading.yaw_error_radians = 0.0
+
+        # THE EARS, AFTER THE EYES AND BEFORE THE GATE. They need this tick's
+        # vision verdict (that is what "if the eyes see her, vision drives"
+        # means) and they may hand back a different command, which the safety
+        # gate must then still be allowed to veto.
+        hearing_enabled = bool(arguments.hearing)
+        if server is not None:
+            hearing_enabled = bool(server.knobs.get("hearing", 0.0))
+            hearing_system.monitor_enabled = bool(
+                server.knobs.get("ear_monitor", 0.0))
+        hearing_command = hearing_system.update(
+            episode.data, episode.tick, hearing_enabled, guide_system,
+            guide_command, natural_wind.report()["wind_speed_mps"],
+            episode.tick / episode.control_hz)
+        if hearing_command is not None:
+            command = hearing_command
+
+        gate = guide_gate if guide_command is not None else human_gate
+        gate.update(episode.data, episode.tick / episode.control_hz)
+        command = gate.mask(command)
         row = episode.step(command, wind_velocity_world)
 
         if row["command"].tolist() != last_logged_command:
@@ -677,65 +803,125 @@ def run(arguments) -> str:
                 "ang_vel_yaw": float(row["command"][2])})
             last_logged_command = row["command"].tolist()
         wind_list = row["wind_velocity_world_meters_per_second"].tolist()
+        row.update(natural_wind.report())
         if wind_list != last_logged_wind:
             header["wind"].append({"time_seconds": row["time_seconds"],
                                    "wind_velocity_world_meters_per_second": wind_list})
             last_logged_wind = wind_list
-        recorder.append(**{k: v for k, v in row.items() if k != "observation"})
+        # TOUCHDOWNS. Read after the step, from the solver's own contacts: each
+        # landing counts a step and becomes one `foot_steps` event on the wire,
+        # which the page turns into a crunch and a decal. Reading contacts is
+        # microseconds; the expensive half of this feature -- stamping the print
+        # into the ground texture and re-uploading it to every GL context -- was
+        # deleted with the 2-D page.
+        foot_steps = []
+        if touchdowns is not None:
+            for landing in touchdowns.update(episode.data, 1.0 / episode.control_hz):
+                foot_steps.append({"foot": landing["foot"],
+                                   "impact_speed_mps": landing["impact_speed_mps"]})
 
-        jpeg = None
-        if renderer is not None:
-            renderer.update_scene(episode.data, camera.aim(
-                row["root_position_world"], azimuth_degrees, elevation_degrees))
-            jpeg = encode_jpeg(renderer.render())
-            latest_jpeg[0] = jpeg
-            if not arguments.live or frames_rendered < LIVE_MAXIMUM_RECORDED_FRAMES:
-                recorder.append_frame(jpeg)
-                frames_rendered += 1
-                if (arguments.live
-                        and frames_rendered == LIVE_MAXIMUM_RECORDED_FRAMES):
-                    print(f"[recorder] video cap reached"
-                          f" ({LIVE_MAXIMUM_RECORDED_FRAMES} frames ="
-                          f" {LIVE_MAXIMUM_RECORDED_FRAMES / episode.control_hz:.0f} s);"
-                          " numeric rows keep recording, episode.mp4 stops here",
-                          flush=True)
+        recorder.append(**{k: v for k, v in row.items() if k != "observation"})
+        recorder.append(**guide_system.recorded())
+        recorder.append(**hearing_system.recorded())
+        recorder.append(**storm_vision.recorded())
+        recorder.append(step_count=float(
+            touchdowns.step_count if touchdowns is not None else 0))
+        recorder.append_bms(episode.latest_bms)
 
         elapsed = max(time.time() - wall_start, 1e-9)
         realtime_factor = row["time_seconds"] / elapsed
 
         if server is not None:
-            if jpeg is not None:
-                server.broadcast(jpeg)
+            # The left eye, at the vision rate: the 4 bytes `EYE0` then a JPEG.
+            # This is the ROBOT'S SENSOR, not a view of the scene -- the only
+            # picture the server still encodes, and the page shows it as the
+            # guide card's PiP. Poses are broadcast from the physics hook
+            # (pose_stream.py), which is what the 3-D view is drawn from.
+            eye_jpeg = guide_system.take_eye_jpeg()
+            if eye_jpeg is not None:
+                server.broadcast(eye_jpeg)
+            # `EAR0` + int16 PCM: the front microphone's own signal, so the
+            # operator can listen to WHAT THE ROBOT HEARS rather than to what
+            # the room sounds like. Only while the page asks for it.
+            ear_pcm = hearing_system.take_ear_pcm()
+            if ear_pcm is not None:
+                server.broadcast(ear_pcm)
             latest_state[0] = {
                 "type": "state", "tick": episode.tick,
                 "time_seconds": row["time_seconds"],
                 "command": row["command"].tolist(),
                 "wind_velocity_world_meters_per_second": wind_list,
                 "wind_force_world_newtons": row["wind_force_world_newtons"].tolist(),
-                "wind_in_training": False,
+                "wind_in_training": meta.get("wind_in_training", False),
+                # INSTANTANEOUS, not the dial: with natural wind on these surge
+                # and swing with every gust, and the ribbons/sound follow them.
+                **natural_wind.report(),
+                # How far the ROBOT can see, in metres -- always a number, and
+                # the single field the page's fog, flakes and slider read.
+                **storm_vision.state(),
+                # Whichever gate is live -- the guide's vision while the guide
+                # is on, the sim oracle otherwise. One set of `human_*` fields
+                # either way, so the page needs no new case.
+                **gate.state(),
+                "guide": guide_system.state(),
+                "hearing": hearing_system.state(),
+                # Landings that happened on THIS tick (usually none), and the
+                # running total. The page plays one crunch per event, at a
+                # volume set by the impact speed.
+                "foot_steps": foot_steps,
+                "step_count": int(touchdowns.step_count) if touchdowns else 0,
                 "fell": bool(row["fell"]),
                 "fall_reason": episode.fall_reason,
                 "root_position_world": row["root_position_world"].tolist(),
                 "rope_travel_meters": row["rope_travel_meters"],
                 "climb_meters": row["climb_meters"],
+                "arclength_meters": row.get("arclength_meters"),
+                "rope_length_meters": meta.get("rope_length_meters"),
+                "world_kind": meta.get("kind", "legacy_climb_env"),
+                "terrain_in_training": meta.get("terrain_in_training", False),
                 "hand_height_on_line_meters": row["hand_height_on_line_meters"],
                 "hand_line_error_meters": row["hand_line_error_meters"],
                 "height_gained_meters": row["height_gained_meters"],
                 "rope_force_newtons": row["rope_force_newtons"],
                 "slope_degrees": episode.slope_degrees,
+                "robot": meta.get("robot", "bare"),
                 "realtime_factor": realtime_factor,
                 "heading_degrees": heading.desired_heading_degrees,
                 "world": episode.world_name,
                 "world_label": episode.definition["label"],
                 "rope_enabled": episode.rope_enabled,
+                # TRUE ON CHLOE'S WORLDS ONLY. The page reads it for one
+                # purpose: to say out loud that nothing steers this robot --
+                # W gates her policy, A/D and the mouse are dead, and the
+                # guide card's readouts are a measurement, not a control loop.
+                "autonomous": bool(getattr(episode, "autonomous", False)),
                 "paused": False,
                 "loading": False,
-                **episode.bms.state(),
+                # bms + actuator_names + r_int_curve, straight from her plugin.
+                **(episode.bms.state() if episode.bms else {}),
             }
             server.broadcast(latest_state[0])
             sleep_for = wall_start + episode.tick / episode.control_hz - time.time()
             if sleep_for > 0:
                 time.sleep(sleep_for)
+
+        if (hearing_system.enabled
+                and episode.tick % int(episode.control_hz) == 0):
+            # ONCE A SECOND, WHAT THE MICROPHONE ACTUALLY DELIVERED. The page is
+            # asked for no automatic gain control, so this number really is how
+            # loudly the person spoke -- and a shout is what carries through
+            # wind.
+            print(hearing_system.microphone.describe(), flush=True)
+            print(f"[hearing] {hearing_system.behaviour.mode}"
+                  f"  voice p={hearing_system.ears.voice_probability:.2f}"
+                  f"  heard={hearing_system.ears.heard}"
+                  f" ({hearing_system.ears.stop_confidence:.2f})"
+                  f"  bearing="
+                  + ("--" if hearing_system.ears.bearing_radians is None else
+                     f"{math.degrees(hearing_system.ears.bearing_radians):+.0f}°")
+                  + f" (conf {hearing_system.ears.bearing_confidence:.2f})"
+                  f"  ear level {hearing_system.ears.level_db:.0f} dBFS"
+                  f"  | {hearing_system.describe_cost()[10:]}", flush=True)
 
         if episode.tick % int(episode.control_hz) == 0:
             print(f"[runtime] {episode.world_name:<9}"
@@ -750,10 +936,9 @@ def run(arguments) -> str:
                   f"/{heading.desired_heading_degrees:6.1f} deg "
                   f" realtime x{realtime_factor:.2f}", flush=True)
 
-    outcome = episode_outcome(episode, realtime_factor, frames_rendered)
+    outcome = episode_outcome(episode, realtime_factor)
     recorder.finalize(outcome)
-    if renderer is not None:
-        renderer.close()
+    guide_system.close()
     print("[runtime] SUMMARY " + "  ".join(
         f"{k}={v}" for k, v in outcome.items()), flush=True)
     return recorder.output_directory
@@ -772,18 +957,113 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hold-w", action="store_true",
                         help="timed runs: hold the climb command the whole way")
     parser.add_argument("--world", default=worlds_module.DEFAULT_WORLD_NAME,
-                        choices=worlds_module.world_names(),
+                        choices=(worlds_module.world_names()
+                                 + list(worlds_module.WORLD_ALIASES)),
                         help="which world to start in (see app/harness/worlds.py)")
     parser.add_argument("--command-speed", type=float,
                         default=CLIMB_COMMAND_METERS_PER_SECOND,
                         help="lin_vel_x commanded while W is held, m/s"
                              " (their training range is [-1, 1])")
+    parser.add_argument("--plain-graphics", action="store_true",
+                        help="skip the alpine look (fog/sky/snow/sun). NOT"
+                             " cosmetic any more: the robot's eye cameras"
+                             " render through the same model, so this changes"
+                             " what the stereo follower SEES. Physics is"
+                             " identical either way.")
+    parser.add_argument("--bms", action="store_true",
+                        help="accepted and ignored: the BMS is always on now")
     parser.add_argument("--policy", default=None, help="path to a policy npz")
+    parser.add_argument("--chloe-policy", default=None,
+                        help="path to the ONNX rope-ascender policy the"
+                             " `chloe_*` worlds run. Defaults to"
+                             " rl/chloe/policies/g1_ascender_slope20_v3_*.onnx"
+                             " (chloe_policy.default_policy_path). Ignored by"
+                             " every other world.")
+    parser.add_argument("--chloe-hold-blend", type=float, default=0.0,
+                        help="seconds over which a STOPPED Chloe world eases"
+                             " its held PD targets toward the reset pose."
+                             " 0 (the default, measured sufficient) freezes"
+                             " them exactly where the policy left them.")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--randomise-reset-velocity", action="store_true",
                         help="reproduce their reset base-velocity draw U(-0.5, 0.5)")
-    parser.add_argument("--no-render", action="store_true")
+    parser.add_argument("--no-render", action="store_true",
+                        help="accepted and ignored: the harness renders no view"
+                             " of the scene at all now, so there is nothing to"
+                             " turn off. Kept because app/bms_ui/selftest.py"
+                             " passes it.")
+    parser.add_argument("--no-snow", action="store_true",
+                        help="skip the procedural snow texture. Physics is"
+                             " identical either way (PARITY.md has the"
+                             " same-seed diff), but the eye cameras lose the"
+                             " grain their block matcher matches on.")
+    parser.add_argument("--hearing", action="store_true",
+                        help="start with the EARS on: four virtual microphones"
+                             " on the robot's head hear the human's voice, and"
+                             " the robot comes when she calls and stops when"
+                             " she says stop. Live mode has the same thing as"
+                             " the `hearing` knob on the page. Needs the guide"
+                             " on. Sensor and command only; the physics is"
+                             " identical either way (test_hearing section 5).")
+    parser.add_argument("--inject-voice", action="append", default=[],
+                        metavar="PATH[@SECONDS]",
+                        help="play a wav into the microphone stream at that"
+                             " simulated time, as if someone had spoken it"
+                             " (repeatable). This is how the demo is driven"
+                             " with no microphone and how the screenshots are"
+                             " taken; it pushes into the SAME buffer the"
+                             " browser pushes into, so nothing downstream can"
+                             " tell the difference. Clips come from"
+                             " app.harness.hearing_corpus.")
+    parser.add_argument("--guide", action="store_true",
+                        help="start with the human guide ON: a guide walks the"
+                             " rope route and the robot follows it by stereo"
+                             " vision. Live mode has the same thing as the"
+                             " `guide` knob on the page.")
+    parser.add_argument("--visibility", type=float,
+                        default=storm_module.CLEAR_VISIBILITY_METERS,
+                        metavar="METRES",
+                        help="how far the robot can see, in metres."
+                             f" {storm_module.CLEAR_VISIBILITY_METERS:.0f}"
+                             " (the default) is CLEAR and the eye images are"
+                             " handed back untouched;"
+                             f" {storm_module.MINIMUM_VISIBILITY_METERS:.0f}"
+                             " is a white-out. Live mode has the same thing as"
+                             " the `visibility` slider on the page. Visual and"
+                             " sensor only; the physics is identical either"
+                             " way. Replaces --storm (user's ruling,"
+                             " 2026-08-30): visibility is its own dial and owes"
+                             " the wind nothing.")
+    parser.add_argument("--wind", type=float, nargs=2, default=(0.0, 0.0),
+                        metavar=("EAST", "NORTH"),
+                        help="headless only: the world-frame wind VELOCITY in"
+                             " m/s. Live mode takes it from the page's dial.")
+    parser.add_argument("--wind-natural", action="store_true",
+                        help="headless only: treat --wind as a target the"
+                             " gusting process wanders around, as the page's"
+                             " `natural` switch does.")
+    parser.add_argument("--no-guide-body", action="store_true",
+                        help="skip the guide's model surgery altogether, so the"
+                             " model carries no guide bodies, no walking hinges"
+                             " and no eye cameras. For the physics-parity diff"
+                             " only: the guide feature is unavailable with it.")
+    parser.add_argument("--human", type=float, action="append", default=[],
+                        help="spawn a virtual human this many metres ahead of"
+                             " the spawn point (repeatable)")
+    parser.add_argument("--human-range", type=float, default=2.0,
+                        help="gate range: a human closer than this blocks UP")
+    parser.add_argument("--human-clear-seconds", type=float, default=1.0,
+                        help="hysteresis: seconds without a detection before UP re-arms")
     parser.add_argument("--output-name", default=None)
+    parser.add_argument("--pose-stream", dest="pose_stream",
+                        action="store_true", default=True,
+                        help="broadcast per-body world poses for the WebGL page"
+                             " app/web/render3d.html. ON by default, and now"
+                             " the only thing the page can draw a scene from:"
+                             " with it off a browser gets telemetry and an"
+                             " empty stage.")
+    parser.add_argument("--no-pose-stream", dest="pose_stream",
+                        action="store_false")
     parser.add_argument("--port", type=int, default=8765)
     return parser
 

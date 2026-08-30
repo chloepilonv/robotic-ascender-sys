@@ -3972,5 +3972,6 @@
     "brax": "0.14.2",
     "mujoco_playground": "unknown",
     "numpy": "2.5.2"
-  }
+  },
+  "robot": "bare"
 }

@@ -1,2 +1,4 @@
 episodes/
 __pycache__/
+generated/
+hearing_corpus/

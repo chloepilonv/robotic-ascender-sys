@@ -10,13 +10,8 @@ and feed app/bms/sim/battery_model.py (MATH.md sections 3-6, jacket hardcoded):
     -> pack current, SOC, pack V (sag through R_int(T)), pack/motor temperature.
 Readout only: nothing is written back to the physics or the policy.
 
-Touch points in app/harness/runtime.py (each one line, grep "bms"):
-    self.bms = BmsPlugin(model, self.substeps)      Episode.__init__
-    self.bms.reset()                                Episode.reset
-    **self.bms.on_tick(self.data, time_seconds)     Episode.step return dict
-    episode.bms.apply_knobs(server.knobs)           live loop
-    **episode.bms.state()                           websocket state message
-Page: one <script src="/app/bms_ui/bms.js"> in app/web/index.html.
+Attached by app/harness/runtime.py `make_battery_plugin` (always on, best-effort);
+the page is the #bmsCard in app/web/render3d.html, painted from state["bms"].
 
 Standalone check (no browser):  python -m app.bms_ui.selftest
 """

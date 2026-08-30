@@ -1,4 +1,9 @@
-"""G1 fixed-line climbing task for MuJoCo Playground (MJX).
+"""G1 fixed-line climbing base env for MuJoCo Playground (MJX). NOT registered.
+
+This is the machinery parent of `climb_terrain_env.G1ClimbTerrain` (the
+registered `G1ClimbTerrain` env: the same task on the merged Lhotse terrain
+heightfield). It is intentionally NOT registered in the playground registry —
+importing `rl.environment` does not expose it; use `G1ClimbTerrain`.
 
 A Unitree G1 climbs a slope while its right hand is attached to a fixed
 line (a long thin cylinder) through an idealized ascender:
@@ -547,9 +552,3 @@ class G1ClimbAscender(g1_joystick.Joystick):
     return (palm - self._line_pt) @ self._slope_axis
 
 
-# Registered on import; see rl/environment/__init__.py.
-locomotion.register_environment(
-    "G1ClimbAscender",
-    functools.partial(G1ClimbAscender, task="flat_terrain"),
-    default_config,
-)
