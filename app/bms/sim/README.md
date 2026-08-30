@@ -5,10 +5,10 @@ Same output schema as `app/bms/real/log.jsonl`, plus sim-only keys (`base_pos_m`
 
 ## 1. Setup
     pip install mujoco numpy
-    git clone https://github.com/google-deepmind/mujoco_menagerie   # G1 MJCF: mujoco_menagerie/unitree_g1/g1.xml
+    python assets/robots/mujoco/build.py --fetch   # stock Unitree meshes for our G1 MJCF (see assets/robots/mujoco/README.md)
 
 ## 2. Run the demo (robot stands, swings arms; 30 s sim at 5,300 m in −19 °C, 30 km/h wind)
-    python app/bms/sim/mujoco_monitor.py --xml mujoco_menagerie/unitree_g1/g1.xml --seconds 30 --altitude 5300 --wind 30
+    python app/bms/sim/mujoco_monitor.py --xml assets/robots/mujoco/g1_unitree_ascender.xml --seconds 30 --altitude 5300 --wind 30
     python app/bms/sim/mujoco_monitor.py --xml ... --soc0 30          # start with a low pack
     python app/bms/sim/mujoco_monitor.py --xml ... --viewer           # open the MuJoCo window
 Writes `app/bms/sim/log.jsonl`, one line per sim second → point the app at that file.

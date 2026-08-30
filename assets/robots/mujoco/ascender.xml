@@ -1,0 +1,17 @@
+<mujoco model="ascender">
+  <compiler meshdir="." texturedir="."/>
+  <asset>
+    <mesh name="ascender_visual" file="meshes/ascender_visual.obj"/>
+    <mesh name="ascender_collision" file="meshes/ascender_collision.obj"/>
+    <texture name="ascender_basecolor" type="2d" file="meshes/ascender_basecolor.png"/>
+    <material name="ascender" texture="ascender_basecolor" specular="0.6" shininess="0.5"/>
+  </asset>
+  <worldbody>
+    <light pos="0 0 1"/>
+    <body name="ascender" pos="0 0 0.2">
+      <freejoint/>
+      <geom type="mesh" mesh="ascender_visual" material="ascender" contype="0" conaffinity="0" group="2"/>
+      <geom type="mesh" mesh="ascender_collision" mass="0.10000000149011612" group="3"/>
+    </body>
+  </worldbody>
+</mujoco>

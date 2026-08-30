@@ -64,3 +64,6 @@ The ascender is fixed to `right_wrist_yaw_link`, so its pose is entirely set by 
 tool frame `/G1/right_wrist_yaw_link/tool_ascender` (+Z = up through the cam head, rope runs along it):
 the "hand" now points +Z of the wrist instead of +X, i.e. roughly a **-90° wrist-pitch offset** vs. the stock hand,
 plus the +0.11 kg on the link. Add that offset to the wrist default / target joint positions in the env cfg.
+
+## MJCF (MuJoCo)
+See `../mujoco/README.md` — `g1_unitree.xml` / `g1_unitree_ascender.xml`, built by `../mujoco/build.py` from the same tables.
