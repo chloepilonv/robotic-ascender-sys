@@ -78,7 +78,7 @@ def fmt(s):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--xml", required=True, help="mujoco_menagerie/unitree_g1/g1.xml")
+    p.add_argument("--xml", required=True, help="assets/robots/g1_himalaya_ascender_scene.xml (must include a floor)")
     p.add_argument("--seconds", type=float, default=30.0)
     p.add_argument("--altitude", type=float, default=0.0); p.add_argument("--wind", type=float, default=0.0)
     p.add_argument("--t_sea", type=float, default=15.0); p.add_argument("--soc0", type=float, default=100.0)
