@@ -8,7 +8,7 @@
 
 import mjlab.scripts.play as mjlab_play
 
-import rl.chloe.ascender as ascender  # noqa: F401
+import rl.chloe.task as ascender  # noqa: F401
 
 mjlab_play.ManagerBasedRlEnv = ascender.RatchetEnv
 

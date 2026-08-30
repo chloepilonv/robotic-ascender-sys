@@ -19,7 +19,7 @@ import torch
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
 
-import rl.chloe.ascender as ascender
+import rl.chloe.task as ascender
 
 
 class _Actor(torch.nn.Module):

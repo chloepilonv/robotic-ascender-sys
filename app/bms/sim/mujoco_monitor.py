@@ -63,8 +63,8 @@ class SimMonitor:
                "contact_force_N": float(sum(np.linalg.norm(self._cf(data, i)[:3]) for i in range(data.ncon))),
                "time_to_empty_min": EnergyEstimator.time_to_empty_min(b["soc_pct"], e["power_avg_W"], self.bat.t_bat),
                **self.env.as_dict()}
-        if self.rope_joint is not None:  # ascender rail present (rl/chloe/ascender)
-            from rl.chloe.ascender.rope_state import rope_state
+        if self.rope_joint is not None:  # ascender rail present (rl/chloe/task)
+            from rl.chloe.task.rope_state import rope_state
             out.update(rope_state(self.m, data, prefix=self.rope_joint))
         if self.log:
             self.log.write(json.dumps(out) + "\n"); self.log.flush()

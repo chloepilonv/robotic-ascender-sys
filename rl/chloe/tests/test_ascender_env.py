@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 import numpy as np
 import torch
 
-import rl.chloe.ascender as A
+import rl.chloe.task as A
 
 
 def main() -> None:

@@ -14,7 +14,7 @@ Checkpoints: logs/rsl_rl/g1_ascender_slope<N>/<date>/model_<iter>.pt
 
 import mjlab.scripts.train as mjlab_train
 
-import rl.chloe.ascender as ascender  # noqa: F401  (registers the tasks)
+import rl.chloe.task as ascender  # noqa: F401  (registers the tasks)
 
 # mjlab's trainer instantiates ManagerBasedRlEnv by name; swap in the ratchet env.
 mjlab_train.ManagerBasedRlEnv = ascender.RatchetEnv

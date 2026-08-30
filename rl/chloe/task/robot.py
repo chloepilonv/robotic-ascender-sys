@@ -111,7 +111,7 @@ def get_spec(slope_deg: float = 0.0) -> mujoco.MjSpec:
     axis=[1, 0, 0],
     range=[-ROPE_LENGTH, ROPE_LENGTH],  # symmetric: mjlab soft limits (0.9) must include 0
     damping=2.0,
-    frictionloss=0.1,
+    frictionloss=3.0,  # cam drag on the rope, Petzl Basic ~2-5 N
   )
   carrier.add_geom(
     name="carrier_geom",
