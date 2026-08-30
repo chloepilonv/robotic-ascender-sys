@@ -64,5 +64,5 @@ fan speed `fan_state[6]` (rpm), board temps `temperature[6]` (°C).
 - Pack capacity 9 Ah / 48 V nominal is the G1 EDU spec; edit `derived.py` if the BMS reports another cell count.
 
 ## SIM (`app/bms/sim/`) — done, see `sim/README.md`
-MuJoCo gives τ, q̇, pose, contacts; `sim/battery_model.py` models battery/thermal/environment (MATH.md §3–5);
+MuJoCo gives τ, q̇, pose, contacts; `sim/battery_model.py` models battery/thermal/environment + hardcoded jacket insulation (MATH.md §3–6);
 `sim/mujoco_monitor.py` writes the same `log.jsonl` schema. Test the app against it before any robot time.

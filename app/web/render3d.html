@@ -226,6 +226,11 @@
   .bmsrows b em { font-style: normal; color: var(--ink-3); font-weight: 400; margin-left: 5px; }
   .bmsrows b.hot { color: var(--warn); }
   .bmsrows b.critical { color: var(--bad); }
+  .bms-i { cursor: help; color: var(--ink-3); font-style: normal; font-size: 9px; margin-left: 5px;
+           border: 1px solid var(--ink-3); border-radius: 50%; padding: 0 3.5px; }
+  #bmsJointsHead { cursor: pointer; user-select: none; color: var(--ink-3); }
+  #bmsJointsChart { display: none; width: 100%; height: 40px; }
+  #bmsJointsChart.open { display: block; }
   .bmsknobs { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);
               display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .bmsknobs .head { margin-bottom: 4px; }
@@ -372,10 +377,11 @@
       <span class="socline"><span id="bmsRuntime">—</span><output id="bmsSoc">—</output></span></div>
     <div class="bar bmsbar"><i id="bmsSocBar"></i></div>
     <div class="bmsrows">
-      <span id="bmsPackRow">Pack<b id="bmsPack">—</b></span>
-      <span id="bmsPowerRow">Power<b id="bmsPower">—</b></span>
-      <span id="bmsTempRow">Pack temp<b id="bmsTemp">—</b></span>
-      <span id="bmsWindingRow">Winding<b id="bmsWinding">—</b></span>
+      <span id="bmsPowerRow">Electrical power<i class="bms-i" title="P = Σ|τ·q̇|/η + copper I²R + 60 W idle — compute draws too (Jetson, boards, LiDAR, camera), not just joint force. η = 0.70, MATH.md §2. Real G1: YES — V×I from rt/lf/bmsstate.">i</i><b id="bmsPower">—</b></span>
+      <span id="bmsJointsHead" title="τ = actuator_force, q̇ = actuator_velocity — the only model inputs; everything else is derived. MATH.md §1. Real G1: YES — tau_est / dq in rt/lowstate at 500 Hz (τ estimated from motor current, no force sensor).">▸ Torque and velocity of joints<i class="bms-i">i</i></span>
+      <svg id="bmsJointsChart" viewBox="0 0 220 40" preserveAspectRatio="none"></svg>
+      <span id="bmsTempRow">Pack temperature<i class="bms-i" title="T_pack += dt/C · [I²·R_int (self-heat) − (T_pack − T_outside)/R_th (cold leak)]. The outside temperature pulls the pack down through the jacket (hardcoded 60 % insulation). MATH.md §4+§6. Real G1: YES — BmsState_.temperature (12 sensors).">i</i><b id="bmsTemp">—</b></span>
+      <span id="bmsSocRow">Battery life · SOC<i class="bms-i" title="SOC −= 100·I·dt / (3600 · 9 Ah · f(T_pack)); a cold pack (f < 1) drains faster. MATH.md §3. Real G1: YES — BmsState_.soc on rt/lf/bmsstate.">i</i><b id="bmsSocDetail">—</b></span>
     </div>
     <i id="bmsCutoffPill">Cutoff</i>
     <div class="bmsknobs">
@@ -547,32 +553,47 @@ function paintBatteryCard(frame) {
     : 'var(--good)';
   $('bmsRuntime').textContent = formatTimeToEmpty(bms.time_to_empty_min);
 
-  const packVolts = Number(bms.pack_V), packAmps = Number(bms.current_A);
-  setBatteryRow('bmsPackRow', 'bmsPack',
-    joinKnown([Number.isFinite(packVolts) ? packVolts.toFixed(1) + ' V' : null,
-               Number.isFinite(packAmps) ? packAmps.toFixed(1) + ' A' : null]));
   const power = Number(bms.power_W), mechanicalPower = Number(bms.mech_power_W);
   setBatteryRow('bmsPowerRow', 'bmsPower',
     Number.isFinite(power) ? power.toFixed(0) + ' W' : null,
     Number.isFinite(mechanicalPower) ? 'mech ' + mechanicalPower.toFixed(0) + ' W' : null);
   const packTemperature = Number(bms.t_bat_C);
   const ambientTemperature = Number(bms.t_amb_C !== undefined ? bms.t_amb_C : bms.T_amb_C);
+  const packValue = $('bmsTemp');
   setBatteryRow('bmsTempRow', 'bmsTemp',
-    joinKnown([Number.isFinite(packTemperature) ? packTemperature.toFixed(0) + ' °C' : null,
-               Number.isFinite(ambientTemperature) ? 'amb ' + ambientTemperature.toFixed(0) + ' °C' : null]));
-  const winding = Number(bms.max_temp_winding_C);
-  setBatteryRow('bmsWindingRow', 'bmsWinding',
-    Number.isFinite(winding) ? winding.toFixed(0) + ' °C' : null,
-    hotJointName(bms.hot_joint));
-  const windingValue = $('bmsWinding');
-  windingValue.classList.toggle('hot', Number.isFinite(winding) && winding >= 70 && winding < 90);
-  windingValue.classList.toggle('critical', Number.isFinite(winding) && winding >= 90);
+    joinKnown([Number.isFinite(packTemperature) ? packTemperature.toFixed(1) + ' °C' : null,
+               Number.isFinite(ambientTemperature) ? 'outside ' + ambientTemperature.toFixed(0) + ' °C' : null]));
+  packValue.classList.toggle('hot', Number.isFinite(packTemperature) && packTemperature < 0);
+  packValue.classList.toggle('critical', Number.isFinite(packTemperature) && packTemperature > 55);
+  setBatteryRow('bmsSocRow', 'bmsSocDetail',
+    stateOfChargeKnown ? stateOfCharge.toFixed(1) + ' %' : null,
+    formatTimeToEmpty(bms.time_to_empty_min) + ' left');
+  paintJointsChart(bms);
   const cutoff = Boolean(bms.bms_cutoff !== undefined ? bms.bms_cutoff
                        : bms.cutoff !== undefined ? bms.cutoff : frame.bms_cutoff);
   $('bmsCutoffPill').style.display = cutoff ? 'inline-block' : 'none';
   card.classList.toggle('cutoff', cutoff);
 }
 function joinKnown(parts) { const kept = parts.filter(Boolean); return kept.length ? kept.join(' · ') : null; }
+$('bmsJointsHead').addEventListener('click', () => {
+  const chart = $('bmsJointsChart'); chart.classList.toggle('open');
+  const head = $('bmsJointsHead');
+  head.firstChild.textContent = (chart.classList.contains('open') ? '▾' : '▸') + ' Torque and velocity of joints';
+});
+function paintJointsChart(bms) {
+  const chart = $('bmsJointsChart');
+  if (!chart.classList.contains('open') || !Array.isArray(bms.tau_Nm)) return;
+  const W = 220, H = 40, n = bms.tau_Nm.length, bw = W / n;
+  const tauMax = Math.max(40, ...bms.tau_Nm.map(Math.abs));
+  chart.innerHTML = bms.tau_Nm.map((tau, i) => {
+    const h = Math.abs(tau) / tauMax * (H - 2);
+    const c = i === bms.max_abs_tau_joint ? 'var(--bad)'
+            : (bms.joint_power_W && bms.joint_power_W[i] < 0) ? 'var(--ink-3)' : 'var(--good)';
+    const dq = bms.dq_radps ? bms.dq_radps[i] : NaN;
+    return `<rect x="${(i * bw + 0.5).toFixed(1)}" y="${(H - 1 - h).toFixed(1)}" width="${(bw - 1).toFixed(1)}" height="${h.toFixed(1)}" fill="${c}">` +
+           `<title>${hotJointName(i)}: τ ${tau.toFixed(1)} N·m · q̇ ${Number.isFinite(dq) ? dq.toFixed(2) : '—'} rad/s</title></rect>`;
+  }).join('');
+}
 function formatTimeToEmpty(minutes) {
   const value = Number(minutes);
   if (minutes === null || minutes === undefined || !Number.isFinite(value)) return '—';
