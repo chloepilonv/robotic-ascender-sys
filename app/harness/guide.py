@@ -63,36 +63,94 @@ Outputs : `Guide.state()` and `StereoEyes.look()` return named maps; the
 from __future__ import annotations
 
 import math
+import os
 
 import numpy as np
 
 # --------------------------------------------------------------- the body
 GUIDE_BODY_NAME = "guide"
-# Orange-red: chosen to be far from anything else in the scene (snow is a cool
-# blue-white, the rope is dark red 0.85/0.08/0.05, the robot is grey/black), so
-# the stand-in colour detector has an easy job and its failures are obviously
-# its own rather than the scene's.
-GUIDE_RGBA = (1.0, 0.27, 0.05, 1.0)
-GUIDE_HEAD_RGBA = (0.95, 0.42, 0.12, 1.0)
-# The body origin sits at hip height above the terrain; every geom below is an
-# offset from the hips, so "snap to the surface" is one number. The figure is
-# 1.75 m tall: legs 0.88 m, torso to the shoulders 0.55 m, head on top.
-HIP_HEIGHT_METERS = 0.90
-TORSO_RADIUS_METERS = 0.18
-TORSO_TOP_METERS = 0.55              # shoulders, relative to the hips
-LEG_RADIUS_METERS = 0.11
-LEG_BOTTOM_METERS = -0.88            # feet, i.e. the terrain surface
-HEAD_CENTRE_METERS = 0.72
-HEAD_RADIUS_METERS = 0.13
-# The point every TRUE range is measured to: chest height on the body axis,
-# which is about where the visible pixels' centroid lands. The range itself is
-# then this distance less TORSO_RADIUS_METERS, because a camera sees a person's
-# front, not their axis.
-REFERENCE_HEIGHT_METERS = 0.20
+# CHLOE'S HIKER IS THE GUIDE. `assets/humans/human.xml` is loaded, re-parented
+# into jointed limbs and baked to a neutral standing pose by `guide_skeleton()`
+# below; nothing about the figure is retyped here. Her geom names (`human_*`),
+# her group (2) and her collision-free flags are carried through unchanged, so
+# `human-safety/human_gate.py`'s segmentation gate still recognises the pixels.
+HUMAN_XML_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "assets", "humans", "human.xml")
+# Her root frame has z = 0 AT THE GROUND CONTACT (feet), not at the hips, so the
+# body origin is snapped straight onto the terrain surface -- less whatever the
+# current stride puts below zero (`Guide.root_world`).
+# The nearest ORANGE surface to a camera behind her: the jacket capsules are
+# radius 0.17-0.19 about the body axis. The backpack sticks out further (0.30)
+# but it is blue, so the colour detector masks it out and the matcher never
+# medians over it. Used only to print the like-for-like column in test_guide.
+TORSO_RADIUS_METERS = 0.19
+# The point every TRUE range is measured to, on the body axis: where the
+# visible ORANGE pixels' centroid lands seen from behind -- hips (0.90-1.05),
+# lower torso and shoulders, with the pack covering the middle of the back.
+REFERENCE_HEIGHT_METERS = 1.15
 
-GUIDE_SPEED_METERS_PER_SECOND = 0.5
+GUIDE_SPEED_METERS_PER_SECOND = 1.0  # W walks her forward, S walks her back
 GUIDE_LATERAL_METERS = 0.6           # left of the rope, looking uphill
 GUIDE_LEAD_METERS = 2.5              # where it is placed on reset
+
+# ------------------------------------------------------------------ the walk
+# SIX HINGES, all about the body's +y axis (her left), on child bodies of the
+# mocap root. A mocap body has no degrees of freedom, but its CHILDREN may, so
+# these are ordinary joints whose `qpos` the guide writes every tick; the
+# bodies carry `gravcomp=1` so they do not droop between writes.
+#
+#   positive hip      = that leg swings BACKWARD   (rotation about +y takes a
+#                       downward segment toward -x, and -x is behind her)
+#   positive knee     = flexion, the heel comes up behind
+#   positive shoulder = that arm swings BACKWARD
+#   negative elbow    = flexion, the hand comes forward -- the one sign that
+#                       reads backwards, because the elbow folds the other way
+#
+# ZERO IS A STANDING POSE, not the mid-stride she is authored in: every limb is
+# rotated back to vertical once, at surgery time, and the angles that were
+# subtracted are printed (`guide_skeleton()["bake_radians"]`).
+GUIDE_STRIDE_METERS = 0.70           # one full cycle = two steps of 0.35 m
+GUIDE_KNEE_SWING_RADIANS = 0.90      # peak knee flexion, mid-swing only
+GUIDE_SHOULDER_SWING_RADIANS = 0.35
+GUIDE_ELBOW_BEND_RADIANS = 0.25      # a walker's elbows are never straight
+GUIDE_ELBOW_SWING_RADIANS = 0.25
+# Standing still: a slow weight shift, so a stopped guide is not a statue.
+GUIDE_IDLE_PERIOD_SECONDS = 4.0
+GUIDE_IDLE_HIP_RADIANS = 0.03
+GUIDE_IDLE_SHOULDER_RADIANS = 0.05
+# How fast the figure crosses between the walk cycle and the idle sway.
+GUIDE_MOTION_BLEND_SECONDS = 0.35
+
+# The limbs, parents before children. `anchor_root` is the hinge's position in
+# HER OWN root frame (the numbers are read off human.xml's fromto endpoints:
+# the thigh tops, the thigh/shin junctions, the left shoulder sphere and the
+# left upper-arm/forearm junction). `align` names the capsule whose axis is
+# rotated to vertical to define this joint's zero; `level` names geoms whose
+# orientation is reset to flat afterwards, which is how the boots end up soles
+# down instead of inheriting the stride's ankle tilt.
+GUIDE_SEGMENTS = (
+    {"body": "guide_thigh_l", "parent": None, "joint": "hip_l",
+     "anchor_root": (0.00, 0.10, 0.92), "align": "human_thigh_l",
+     "geoms": ("human_thigh_l",), "level": ()},
+    {"body": "guide_shin_l", "parent": "guide_thigh_l", "joint": "knee_l",
+     "anchor_root": (0.16, 0.11, 0.50), "align": "human_shin_l",
+     "geoms": ("human_shin_l", "human_boot_l"), "level": ("human_boot_l",)},
+    {"body": "guide_thigh_r", "parent": None, "joint": "hip_r",
+     "anchor_root": (0.00, -0.10, 0.92), "align": "human_thigh_r",
+     "geoms": ("human_thigh_r",), "level": ()},
+    {"body": "guide_shin_r", "parent": "guide_thigh_r", "joint": "knee_r",
+     "anchor_root": (-0.14, -0.11, 0.52), "align": "human_shin_r",
+     "geoms": ("human_shin_r", "human_boot_r"), "level": ("human_boot_r",)},
+    {"body": "guide_upper_arm_l", "parent": None, "joint": "shoulder_l",
+     "anchor_root": (0.02, 0.22, 1.40), "align": "human_upper_arm_l",
+     "geoms": ("human_upper_arm_l",), "level": ()},
+    {"body": "guide_forearm_l", "parent": "guide_upper_arm_l", "joint": "elbow_l",
+     "anchor_root": (-0.06, 0.28, 1.12), "align": "human_forearm_l",
+     "geoms": ("human_forearm_l", "human_hand_l"), "level": ()},
+)
+GUIDE_JOINT_NAMES = tuple(segment["joint"] for segment in GUIDE_SEGMENTS)
+GUIDE_HINGE_AXIS = (0.0, 1.0, 0.0)
 
 # --------------------------------------------------------------- the eyes
 EYE_LEFT_CAMERA_NAME = "eye_left"
@@ -105,11 +163,25 @@ EYE_JPEG_QUALITY = 70
 EYE_MESSAGE_PREFIX = b"EYE0"         # 4 ASCII bytes, then the JPEG
 
 # The colour detector's gate, in OpenCV HSV (hue 0-179, sat/val 0-255).
-# MEASURED off a render, not guessed: the guide's lit pixels come back at hue
-# 5-12 with saturation ~241 and value ~236, while the ROPE -- the only other
-# strongly red thing in the scene -- sits at hue 0-1 and value ~56. A window of
-# 4-16 separates them with room on both sides.
-GUIDE_HUE_RANGE = (4, 16)
+# RE-MEASURED on Chloe's hiker, through the eye camera at 1/2/4/8 m, with a
+# SEGMENTATION render alongside the colour one so every pixel is attributed to
+# the geom it actually came from rather than eyeballed. Her jacket is a
+# different orange from the placeholder's and the figure brought new colours
+# with it, so both halves of the question were re-asked. Pooled over 21,240
+# jacket pixels her hue sits at 10-11 (1st-99th percentile), saturation at
+# 236+, value at 60+; everything else in the picture is far away --
+#
+#   jacket  hue 10-11  sat 236+        boots  hue 12-14  value median 49-74
+#   skin    hue  5-11  sat <= 97       pack   hue 109     pants  hue 109-113
+#   beanie  hue 176-178                snow   hue 109-112 sat <= 40
+#   rope    hue 1      sat 233+        glove  hue 113-120
+#
+# -- so the window below takes 97.8% of her jacket (the 2.2% it drops are
+# shadowed pixels under the value floor) and 0.0% of every other material in
+# the scene, measured. The low end moved 4 -> 6 so her SKIN has a second
+# barrier besides saturation; the high end 16 -> 15 leaves the boots at the
+# edge, and the value floor is what actually keeps them out.
+GUIDE_HUE_RANGE = (6, 15)
 GUIDE_MINIMUM_SATURATION = 120
 GUIDE_MINIMUM_VALUE = 80
 GUIDE_MINIMUM_PIXELS = 24            # below this it is noise, not a person
@@ -131,24 +203,31 @@ GUIDE_MODE_CODES = {"WAIT": 0, "FOLLOW": 1, "LOST": 2}
 NO_MEASUREMENT = -1.0
 
 # Everything a recompile of HIS spec must leave exactly where it was. nbody,
-# ngeom, nmocap and ncam are DELIBERATELY absent: those are the four the surgery
-# is supposed to change.
-STRUCTURAL_FIELDS = ("nq", "nv", "nu", "njnt", "neq", "nsite", "nsensor", "nkey")
+# ngeom, nmocap, ncam, nq, nv and njnt are DELIBERATELY absent: those are the
+# seven the surgery is supposed to change. The three state-vector counts joined
+# that list when the guide gained walking legs -- six hinges is six new degrees
+# of freedom -- and the check that replaces them is stricter than a count: every
+# joint that was already there must keep the SAME qpos and dof address, which is
+# what `body_limit`/`joint_limit` truncation below asks.
+STRUCTURAL_FIELDS = ("nu", "neq", "nsite", "nsensor", "nkey")
 
 
-def _structure(model, body_limit=None) -> dict:
+def _structure(model, body_limit=None, joint_limit=None) -> dict:
     """The fields a recompile must not move.
 
-    `body_limit` truncates the per-body list, because the surgery APPENDS one
-    body: comparing the full `body_mass` arrays would flag the intended change
-    and refuse every time. The point of the check is that the bodies that were
-    already there did not MOVE or change mass, and truncating to the old count
-    asks exactly that -- appended entries are invisible to it, a reordering or a
-    mass edit is not.
+    `body_limit` / `joint_limit` truncate the per-body and per-joint lists,
+    because the surgery APPENDS bodies and joints: comparing the full arrays
+    would flag the intended change and refuse every time. The point of the check
+    is that the bodies and joints that were already there did not MOVE, change
+    mass, or have their state-vector addresses shifted, and truncating to the
+    old counts asks exactly that -- appended entries are invisible to it, a
+    reordering or a mass edit is not.
     """
     signature = {name: int(getattr(model, name)) for name in STRUCTURAL_FIELDS}
-    signature["jnt_qposadr"] = model.jnt_qposadr.tolist()
-    signature["jnt_dofadr"] = model.jnt_dofadr.tolist()
+    joints = model.njnt if joint_limit is None else int(joint_limit)
+    joints = min(joints, model.njnt)
+    signature["jnt_qposadr"] = model.jnt_qposadr[:joints].tolist()
+    signature["jnt_dofadr"] = model.jnt_dofadr[:joints].tolist()
     signature["actuator_target"] = model.actuator_trnid[:, 0].tolist()
     limit = model.nbody if body_limit is None else int(body_limit)
     signature["body_mass"] = np.round(model.body_mass[:limit], 9).tolist()
@@ -158,50 +237,298 @@ def _structure(model, body_limit=None) -> dict:
 
 
 # ------------------------------------------------------------------ surgery
-def _add_guide_body(spec) -> None:
-    """Build the guide's body on the spec. THE PLACEHOLDER LIVES HERE.
+def _rotation_y(angle_radians) -> np.ndarray:
+    """Rotation about +y -- the axis every one of the guide's hinges turns on."""
+    cosine, sine = math.cos(angle_radians), math.sin(angle_radians)
+    return np.array([[cosine, 0.0, sine],
+                     [0.0, 1.0, 0.0],
+                     [-sine, 0.0, cosine]])
 
-    A capsule torso and a sphere head, in a colour nothing else in the scene
-    wears. Both geoms are `contype=0, conaffinity=0` -- no collision channel at
-    all -- and the body is a MOCAP body, so it has zero degrees of freedom and
-    adds nothing to nq/nv. The robot cannot bump into it and it cannot fall
-    over; its pose is written every tick from `Guide`.
 
-    Chloe: to swap in an animated human, replace the two `add_geom` calls with a
-    mesh (`spec.add_mesh(...)` for the asset, then `type=mjGEOM_MESH,
-    meshname=...`). Keep the body name, keep `mocap = True`, keep the geoms
-    collision-free, and keep something orange-red on the outside or the
-    stand-in colour detector stops seeing it.
+def _matrix_from_quaternion(quaternion) -> np.ndarray:
+    import mujoco
+    matrix = np.zeros(9)
+    mujoco.mju_quat2Mat(matrix, np.asarray(quaternion, dtype=float))
+    return matrix.reshape(3, 3)
+
+
+def _quaternion_from_matrix(matrix) -> np.ndarray:
+    import mujoco
+    quaternion = np.zeros(4)
+    mujoco.mju_mat2Quat(quaternion, np.asarray(matrix, dtype=float).reshape(9))
+    return quaternion
+
+
+def _pitch_to_vertical(direction) -> float:
+    """The +y rotation that points a segment straight DOWN. -> radians.
+
+    `direction` runs from the hinge toward the body of the limb it drives.
+    Rotating by this angle lands it on (0, 0, -length), so it is the angle
+    SUBTRACTED from her authored mid-stride pose to make that pose the joints'
+    zero -- one number per hinge, printed by `attach_guide`.
+    """
+    x, _y, z = [float(value) for value in direction]
+    return math.atan2(x, -z)
+
+
+def _compiled_hiker():
+    """`assets/humans/human.xml`, compiled. -> (geoms, materials), her frame.
+
+    Read off the COMPILED model rather than the spec, for the reason
+    `_add_eye_cameras` learned the hard way: MjSpec keeps an alternative
+    orientation (`euler`, `fromto`, `xyaxes`) in a side field and leaves `quat`
+    at identity, so a spec-level copy silently drops the right boot's 20 degree
+    tilt and every capsule's axis. `geom_pos` / `geom_quat` on the compiled
+    model are the compiler's own resolved answer, and because every geom hangs
+    off the one body `human` at the origin, they are already in her root frame
+    -- z = 0 at the ground contact.
     """
     import mujoco
 
-    body = spec.worldbody.add_body()
-    body.name = GUIDE_BODY_NAME
-    body.mocap = True
-    body.pos = [0.0, 0.0, -50.0]      # parked under the world until placed
+    model = mujoco.MjSpec.from_file(HUMAN_XML_PATH).compile()
+    geoms = {}
+    for geom_id in range(model.ngeom):
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
+        material_id = int(model.geom_matid[geom_id])
+        geoms[name] = {
+            "name": name,
+            "type": int(model.geom_type[geom_id]),
+            "size": np.asarray(model.geom_size[geom_id], dtype=float).copy(),
+            "pos": np.asarray(model.geom_pos[geom_id], dtype=float).copy(),
+            "quat": np.asarray(model.geom_quat[geom_id], dtype=float).copy(),
+            "group": int(model.geom_group[geom_id]),
+            "material": (mujoco.mj_id2name(
+                model, mujoco.mjtObj.mjOBJ_MATERIAL, material_id)
+                if material_id >= 0 else None),
+        }
+    materials = {}
+    for material_id in range(model.nmat):
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_MATERIAL, material_id)
+        materials[name] = {
+            "rgba": np.asarray(model.mat_rgba[material_id], dtype=float).copy(),
+            "specular": float(model.mat_specular[material_id]),
+            "shininess": float(model.mat_shininess[material_id]),
+        }
+    return geoms, materials
 
-    def add(name, geom_type, rgba, **fields):
+
+_SKELETON = None
+
+
+def guide_skeleton() -> dict:
+    """Chloe's hiker, re-parented into six hinged limbs and baked to standing.
+
+    Built once and cached: the surgery needs it to write the bodies, and
+    `Guide` needs the same numbers at runtime to know where the boots are.
+
+    Output (all lengths metres, all angles radians, all frames HERS -- x
+    forward, y left, z up, z = 0 at the ground contact):
+      `bake_radians`   joint name -> the angle subtracted from her authored
+                       mid-stride pose to make the joints' zero a standing one.
+      `root_geoms`     [geom map] the geoms that stay on the mocap root:
+                       torso, head, beanie, pack, collar, shoulders and the
+                       WHOLE RIGHT ARM, which is posed gripping the rope and
+                       must not swing.
+      `bodies`         [{name, parent, joint, pos_in_parent, geoms}] parents
+                       first, ready to write straight onto an MjSpec. Each
+                       geom map's `pos`/`quat` are already in ITS body frame.
+      `materials`      name -> {rgba, specular, shininess}, hers verbatim.
+      `legs`           side -> the forward kinematics constants the gait needs:
+                       `hip_anchor` (root frame), `knee_in_thigh`,
+                       `boot_in_shin`, `boot_half_extents`, and
+                       (`foot_radius`, `foot_phase`) -- the polar form of the
+                       hip-to-boot vector, which turns "put this foot that far
+                       forward" into a hip angle with one arcsine.
+    """
+    global _SKELETON
+    if _SKELETON is not None:
+        return _SKELETON
+
+    geoms, materials = _compiled_hiker()
+    by_body = {segment["body"]: segment for segment in GUIDE_SEGMENTS}
+
+    def chain_below(body_name):
+        """That segment and every segment hanging off it, in table order."""
+        below = []
+        for segment in GUIDE_SEGMENTS:
+            node = segment
+            while node is not None:
+                if node["body"] == body_name:
+                    below.append(segment)
+                    break
+                node = by_body.get(node["parent"]) if node["parent"] else None
+        return below
+
+    anchors = {segment["body"]: np.asarray(segment["anchor_root"], dtype=float)
+               for segment in GUIDE_SEGMENTS}
+    bake_radians, to_level = {}, []
+    for segment in GUIDE_SEGMENTS:
+        # From the hinge toward the middle of the segment it drives. NOT the
+        # capsule's own +z axis: MuJoCo's `fromto` compiler is free to point
+        # that either way along the segment, and picking the wrong end bakes
+        # the limb 160 degrees the wrong way -- which it did, once.
+        angle = _pitch_to_vertical(
+            geoms[segment["align"]]["pos"] - anchors[segment["body"]])
+        bake_radians[segment["joint"]] = angle
+        rotation = _rotation_y(angle)
+        anchor = anchors[segment["body"]].copy()
+        for follower in chain_below(segment["body"]):
+            for geom_name in follower["geoms"]:
+                geom = geoms[geom_name]
+                geom["pos"] = anchor + rotation @ (geom["pos"] - anchor)
+                geom["quat"] = _quaternion_from_matrix(
+                    rotation @ _matrix_from_quaternion(geom["quat"]))
+            if follower["body"] != segment["body"]:
+                anchors[follower["body"]] = (
+                    anchor + rotation @ (anchors[follower["body"]] - anchor))
+        to_level.extend(segment["level"])
+    # The boots ride the shin rigidly, so straightening the leg would tip them
+    # toe-up by the ankle angle her stride was drawn with. A standing pose has
+    # flat feet: their orientation is reset once, here, and nothing else about
+    # them moves.
+    for geom_name in to_level:
+        geoms[geom_name]["quat"] = np.array([1.0, 0.0, 0.0, 0.0])
+
+    # SYMMETRISE THE LEGS. She was drawn mid-stride by hand, and the two legs
+    # came out 2.7 cm different in length, with the knees 3.2 cm apart along
+    # the stride. A standing pose cannot be asymmetric or she limps: the lower
+    # foot is the planted one on every step, so one leg would carry the whole
+    # walk and the other would paw the air, and the swing clearances came out
+    # 7.6 cm against 5.1 cm. Both the knee anchor and the boot are nudged to
+    # the mean of the two sides in the sagittal plane -- 1.6 cm and 1.4 cm,
+    # half the difference each way, invisible on a 1.75 m figure. Left/right
+    # offsets in y are untouched: those are her stance width, not an error.
+    thigh_body = {"l": "guide_thigh_l", "r": "guide_thigh_r"}
+    shin_body = {"l": "guide_shin_l", "r": "guide_shin_r"}
+    boot_geom = {"l": "human_boot_l", "r": "human_boot_r"}
+
+    def sagittal(vector):
+        return np.array([vector[0], 0.0, vector[2]])
+
+    knee_target = 0.5 * sum(
+        sagittal(anchors[shin_body[side]] - anchors[thigh_body[side]])
+        for side in "lr")
+    boot_target = 0.5 * sum(
+        sagittal(geoms[boot_geom[side]]["pos"] - anchors[shin_body[side]])
+        for side in "lr")
+    leg_correction = {}
+    for side in "lr":
+        knee_shift = knee_target - sagittal(
+            anchors[shin_body[side]] - anchors[thigh_body[side]])
+        anchors[shin_body[side]] = anchors[shin_body[side]] + knee_shift
+        for geom_name in by_body[shin_body[side]]["geoms"]:
+            geoms[geom_name]["pos"] = geoms[geom_name]["pos"] + knee_shift
+        boot_shift = boot_target - sagittal(
+            geoms[boot_geom[side]]["pos"] - anchors[shin_body[side]])
+        geoms[boot_geom[side]]["pos"] = geoms[boot_geom[side]]["pos"] + boot_shift
+        leg_correction[side] = {"knee_meters": knee_shift, "boot_meters": boot_shift}
+
+    limb_geom_names = {name for segment in GUIDE_SEGMENTS
+                       for name in segment["geoms"]}
+    bodies = []
+    for segment in GUIDE_SEGMENTS:
+        anchor = anchors[segment["body"]]
+        parent_anchor = (anchors[segment["parent"]] if segment["parent"]
+                         else np.zeros(3))
+        bodies.append({
+            "name": segment["body"],
+            "parent": segment["parent"],
+            "joint": segment["joint"],
+            "pos_in_parent": anchor - parent_anchor,
+            "geoms": [dict(geoms[name], pos=geoms[name]["pos"] - anchor)
+                      for name in segment["geoms"]],
+        })
+
+    legs = {}
+    for side, thigh, shin, boot in (
+            ("l", "guide_thigh_l", "guide_shin_l", "human_boot_l"),
+            ("r", "guide_thigh_r", "guide_shin_r", "human_boot_r")):
+        knee_in_thigh = anchors[shin] - anchors[thigh]
+        boot_in_shin = geoms[boot]["pos"] - anchors[shin]
+        hip_to_boot = knee_in_thigh + boot_in_shin
+        legs[side] = {
+            "hip_anchor": anchors[thigh].copy(),
+            "knee_in_thigh": knee_in_thigh,
+            "boot_in_shin": boot_in_shin,
+            "boot_half_extents": geoms[boot]["size"][:3].copy(),
+            "foot_radius": float(math.hypot(hip_to_boot[0], hip_to_boot[2])),
+            "foot_phase": float(math.atan2(hip_to_boot[0], -hip_to_boot[2])),
+        }
+
+    _SKELETON = {
+        "bake_radians": bake_radians,
+        "leg_correction": leg_correction,
+        "root_geoms": [geoms[name] for name in geoms
+                       if name not in limb_geom_names],
+        "bodies": bodies,
+        "materials": materials,
+        "legs": legs,
+    }
+    return _SKELETON
+
+
+def _add_guide_body(spec) -> None:
+    """Build the guide's body on the spec. CHLOE'S HIKER LIVES HERE.
+
+    One mocap root carrying her torso, head, pack and rope-gripping right arm,
+    plus six child bodies -- thigh/shin either side and the left upper
+    arm/forearm -- each on a single +y hinge so the figure can walk. The mocap
+    root has no degrees of freedom and cannot be pushed; the six hinges DO have
+    degrees of freedom, but nothing ever integrates them anywhere: `Guide.write`
+    writes `qpos` and zeroes `qvel` every control tick, and the bodies carry
+    `gravcomp = 1` so they do not droop in between.
+
+    Every geom keeps her name (`human_*`), her group (2) and her
+    `contype = conaffinity = 0`, so `human-safety/human_gate.py`'s segmentation
+    gate sees exactly what it saw before and the robot still cannot touch her.
+    Her materials are copied across under a `guide_` prefix so a scene that also
+    calls `assets/humans/humans.py::attach_humans` cannot collide with them.
+    """
+    import mujoco
+
+    skeleton = guide_skeleton()
+    for name, material in skeleton["materials"].items():
+        added = spec.add_material()
+        added.name = f"guide_{name}"
+        added.rgba = [float(value) for value in material["rgba"]]
+        added.specular = material["specular"]
+        added.shininess = material["shininess"]
+
+    def add_geom(body, part):
         geom = body.add_geom()
-        geom.name = name
-        geom.type = geom_type
-        geom.rgba = list(rgba)
-        geom.contype = 0              # no collision channel at all: the robot
-        geom.conaffinity = 0          # cannot touch it and it cannot touch back
-        geom.group = 0                # MuJoCo's default view mask shows group 0
-        geom.mass = 1.0               # a mocap body's inertia is never integrated
-        for field, value in fields.items():
-            setattr(geom, field, value)
+        geom.name = part["name"]
+        geom.type = mujoco.mjtGeom(part["type"])
+        geom.size = [float(value) for value in part["size"]]
+        geom.pos = [float(value) for value in part["pos"]]
+        geom.quat = [float(value) for value in part["quat"]]
+        geom.group = int(part["group"])
+        geom.contype = 0
+        geom.conaffinity = 0
+        if part["material"]:
+            geom.material = f"guide_{part['material']}"
         return geom
 
-    add("guide_legs", mujoco.mjtGeom.mjGEOM_CAPSULE, GUIDE_RGBA,
-        fromto=[0.0, 0.0, LEG_BOTTOM_METERS, 0.0, 0.0, 0.0],
-        size=[LEG_RADIUS_METERS, 0.0, 0.0])
-    add("guide_torso", mujoco.mjtGeom.mjGEOM_CAPSULE, GUIDE_RGBA,
-        fromto=[0.0, 0.0, 0.0, 0.0, 0.0, TORSO_TOP_METERS],
-        size=[TORSO_RADIUS_METERS, 0.0, 0.0])
-    add("guide_head", mujoco.mjtGeom.mjGEOM_SPHERE, GUIDE_HEAD_RGBA,
-        pos=[0.0, 0.0, HEAD_CENTRE_METERS],
-        size=[HEAD_RADIUS_METERS, 0.0, 0.0])
+    root = spec.worldbody.add_body()
+    root.name = GUIDE_BODY_NAME
+    root.mocap = True
+    root.pos = [0.0, 0.0, -50.0]      # parked under the world until placed
+    for part in skeleton["root_geoms"]:
+        add_geom(root, part)
+
+    bodies = {None: root}
+    for description in skeleton["bodies"]:
+        body = bodies[description["parent"]].add_body()
+        body.name = description["name"]
+        body.pos = [float(value) for value in description["pos_in_parent"]]
+        body.gravcomp = 1.0
+        joint = body.add_joint()
+        joint.name = description["joint"]
+        joint.type = mujoco.mjtJoint.mjJNT_HINGE
+        joint.axis = list(GUIDE_HINGE_AXIS)
+        joint.pos = [0.0, 0.0, 0.0]
+        bodies[description["name"]] = body
+        for part in description["geoms"]:
+            add_geom(body, part)
 
 
 def _add_eye_cameras(spec, model, verbose=True) -> bool:
@@ -267,6 +594,23 @@ def _add_eye_cameras(spec, model, verbose=True) -> bool:
     return True
 
 
+def _extend_keyframes(spec, new_joint_count) -> None:
+    """Pad every keyframe by the joints the surgery is about to append.
+
+    A keyframe's `qpos` must be exactly `nq` long or the compiler rejects the
+    model outright -- so the moment the guide grew hinges, every `<key>` in
+    HIS spec became the wrong length. The guide's joints are appended after the
+    robot's, so the padding goes on the END and is zeros, which is the guide's
+    standing pose. Empty fields are left empty: MuJoCo fills those with the
+    model defaults, and writing them here would be inventing state.
+    """
+    for key in spec.keys:
+        for field in ("qpos", "qvel"):
+            values = list(getattr(key, field))
+            if values:
+                setattr(key, field, values + [0.0] * int(new_joint_count))
+
+
 def attach_guide(scene, verbose=True) -> bool:
     """Add the guide body and the two eyes to a built `ClimbScene`, in place.
 
@@ -289,14 +633,28 @@ def attach_guide(scene, verbose=True) -> bool:
         return True
 
     bodies_before = int(model.nbody)
-    before = _structure(model, body_limit=bodies_before)
+    joints_before = int(model.njnt)
+    coordinates_before, velocities_before = int(model.nq), int(model.nv)
+    before = _structure(model, body_limit=bodies_before, joint_limit=joints_before)
     if not _add_eye_cameras(scene.spec, model, verbose=verbose):
         return False
     _add_guide_body(scene.spec)
+    _extend_keyframes(scene.spec, len(GUIDE_JOINT_NAMES))
 
     recompiled = scene.spec.compile()
-    after = _structure(recompiled, body_limit=bodies_before)
+    after = _structure(recompiled, body_limit=bodies_before,
+                       joint_limit=joints_before)
     moved = [key for key in before if before[key] != after[key]]
+    # The six walking hinges are the ONLY thing allowed to grow the state
+    # vector, and they are appended after the robot's, so every existing
+    # address is unmoved (checked above). Anything else that moved nq or nv is
+    # a surprise and refuses like any other structural change.
+    expected = len(GUIDE_JOINT_NAMES)
+    for field, was, grew in (("nq", coordinates_before, int(recompiled.nq)),
+                             ("nv", velocities_before, int(recompiled.nv)),
+                             ("njnt", joints_before, int(recompiled.njnt))):
+        if grew - was != expected:
+            moved.append(f"{field} {was}->{grew} (expected +{expected})")
     if moved:
         print(f"[guide] REFUSED: recompiling moved {moved}. Keeping the"
               " original model; the guide stays off.", flush=True)
@@ -313,11 +671,18 @@ def attach_guide(scene, verbose=True) -> bool:
     scene.ascender.bind(recompiled, mujoco)
     scene.reset()
     if verbose:
+        baked = guide_skeleton()["bake_radians"]
         print(f"[guide] attached: bodies {before_after(model, recompiled, 'nbody')},"
               f" geoms {before_after(model, recompiled, 'ngeom')},"
               f" cameras {before_after(model, recompiled, 'ncam')},"
-              f" mocap {before_after(model, recompiled, 'nmocap')};"
+              f" mocap {before_after(model, recompiled, 'nmocap')},"
+              f" joints {before_after(model, recompiled, 'njnt')},"
+              f" nq {before_after(model, recompiled, 'nq')},"
+              f" nv {before_after(model, recompiled, 'nv')};"
               f" all {len(before)} structural fields unchanged", flush=True)
+        print("[guide] neutral pose baked out of her mid-stride, degrees: "
+              + ", ".join(f"{name} {math.degrees(angle):+.1f}"
+                          for name, angle in baked.items()), flush=True)
     return True
 
 
@@ -327,18 +692,34 @@ def before_after(old, new, field) -> str:
 
 # -------------------------------------------------------------- the human
 class Guide:
-    """Where the human is. Kinematic: an arc length along the rope route.
+    """Where the human is, and what her legs are doing. Kinematic throughout.
 
     The route is the same polyline the ascender rides (`RopeRoute`), so the
     guide walks the line the robot is climbing, offset `GUIDE_LATERAL_METERS`
     to its LEFT looking uphill -- close enough to lead, far enough not to be
-    walked into. Height is snapped to the terrain surface every tick, so it
-    cannot sink into a slope or float over a dip, and it has no velocity state
-    to be disturbed: it either advances or it does not.
+    walked into. Height is snapped to the terrain surface every tick, so she
+    cannot sink into a slope or float over a dip, and she has no velocity state
+    to be disturbed: she either advances, retreats, or stands.
 
-    Inputs  : dt seconds, and whether the human was told to walk.
-    Outputs : `state()` -- progress along the route in metres, world position
-              of the torso centre, and whether it has run out of rope.
+    THE WALK IS DISTANCE-LOCKED, which is the whole trick to feet that do not
+    skate. The cycle phase is `2 pi * travel / GUIDE_STRIDE_METERS` -- a
+    function of how far she has WALKED, never of the clock -- so one stride of
+    ground covers exactly one stride of animation whatever the speed, and
+    walking backwards (S) runs the same cycle in reverse. Within a cycle the
+    stance foot is placed by the same arithmetic in the other direction: the
+    foot's offset from the hip is a straight ramp from +stride/4 to -stride/4
+    while the root advances stride/2, so the two cancel and the planted boot
+    holds still in the world. The swing half returns it on a raised cosine.
+
+    Because the stance leg is straight, the hip drops by
+    `leg * (1 - cos(hip))` as it swings out -- the walking bob, about +/-2 cm,
+    which the root-z snapping produces for free rather than adding by hand: the
+    root is placed so the LOWEST boot corner of either leg sits on the surface.
+
+    Inputs  : dt seconds, and whether she was told to walk forwards or back.
+    Outputs : `state()` -- progress along the route in metres and whether she
+              has run out of rope; `limb_angles()` -- the six hinge angles;
+              `write()` puts both into `MjData`.
     """
 
     def __init__(self, route, terrain, model=None):
@@ -348,6 +729,13 @@ class Guide:
         self.enabled = False
         self.body_id = -1
         self.mocap_id = -1
+        # 1 while she is walking, 0 while she stands; crossfades between the
+        # walk cycle and the idle sway so a stop is not a freeze-frame.
+        self.motion_blend = 0.0
+        self.idle_seconds = 0.0
+        self.direction = 0.0
+        self.joint_addresses = {}
+        self.skeleton = guide_skeleton()
         if model is not None:
             self.bind(model)
 
@@ -357,6 +745,12 @@ class Guide:
             model, mujoco.mjtObj.mjOBJ_BODY, GUIDE_BODY_NAME)
         self.mocap_id = (int(model.body_mocapid[self.body_id])
                          if self.body_id >= 0 else -1)
+        self.joint_addresses = {}
+        for name in GUIDE_JOINT_NAMES:
+            joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+            if joint_id >= 0:
+                self.joint_addresses[name] = (int(model.jnt_qposadr[joint_id]),
+                                              int(model.jnt_dofadr[joint_id]))
 
     def place_ahead_of(self, position_world, lead_meters=GUIDE_LEAD_METERS) -> None:
         """Put the human `lead_meters` further up the route than a given point."""
@@ -364,20 +758,112 @@ class Guide:
         self.arclength_meters = float(np.clip(
             start + lead_meters, 0.0, self.route.length))
 
-    def advance(self, dt_seconds: float, walking: bool) -> None:
-        if walking:
-            self.arclength_meters = float(min(
-                self.arclength_meters
-                + GUIDE_SPEED_METERS_PER_SECOND * float(dt_seconds),
-                self.route.length))
+    def advance(self, dt_seconds: float, walking: bool, backing: bool = False) -> None:
+        """W walks her up the rope, S walks her back down it, both held = stop.
+
+        Backwards is a real retreat, not a turn: the yaw still comes from the
+        route tangent, so she keeps facing uphill and steps backwards down the
+        slope, the way a guide backs toward the person behind them. The gait
+        follows, because the phase is distance-locked and the distance goes
+        down.
+        """
+        dt_seconds = float(dt_seconds)
+        self.direction = (1.0 if walking else 0.0) - (1.0 if backing else 0.0)
+        self.arclength_meters = float(np.clip(
+            self.arclength_meters
+            + GUIDE_SPEED_METERS_PER_SECOND * dt_seconds * self.direction,
+            0.0, self.route.length))
+        self.idle_seconds += dt_seconds
+        target = 1.0 if self.direction != 0.0 else 0.0
+        rate = 1.0 - math.exp(-dt_seconds / GUIDE_MOTION_BLEND_SECONDS)
+        self.motion_blend += (target - self.motion_blend) * rate
 
     @property
     def at_rope_end(self) -> bool:
         return self.arclength_meters >= self.route.length - 1e-6
 
-    def hips_world(self) -> np.ndarray:
-        """World position of the body origin: on the route, offset left, on the
-        surface. This is the pose written to `mocap_pos`."""
+    @property
+    def at_rope_start(self) -> bool:
+        return self.arclength_meters <= 1e-6
+
+    # ------------------------------------------------------------- the gait
+    def phase_radians(self) -> float:
+        """One full cycle -- two steps -- per `GUIDE_STRIDE_METERS` of ground."""
+        return 2.0 * math.pi * self.arclength_meters / GUIDE_STRIDE_METERS
+
+    def _hip_for_foot_offset(self, side, offset_meters) -> float:
+        """The hip angle that puts that boot `offset_meters` in front. -> radians.
+
+        With the knee straight the hip-to-boot vector is rigid, so its x
+        component is `radius * sin(phase - hip)` and the inverse is one arcsine.
+        This is where the no-skate property is actually enforced.
+        """
+        leg = self.skeleton["legs"][side]
+        ratio = float(np.clip(offset_meters / leg["foot_radius"], -1.0, 1.0))
+        return leg["foot_phase"] - math.asin(ratio)
+
+    def limb_angles(self) -> dict:
+        """The six hinge angles for the current travel. -> name -> radians."""
+        phase = self.phase_radians() % (2.0 * math.pi)
+        half_step = 0.25 * GUIDE_STRIDE_METERS
+
+        def foot_offset(leg_phase):
+            """Ahead of the hip, metres: a linear stance ramp, cosine swing."""
+            leg_phase %= 2.0 * math.pi
+            if leg_phase < math.pi:                       # planted: rides back
+                return half_step * (1.0 - 2.0 * leg_phase / math.pi)
+            return -half_step * math.cos(leg_phase - math.pi)   # swinging home
+
+        walk = {
+            "hip_l": self._hip_for_foot_offset("l", foot_offset(phase)),
+            "hip_r": self._hip_for_foot_offset("r", foot_offset(phase + math.pi)),
+            "knee_l": GUIDE_KNEE_SWING_RADIANS * max(0.0, -math.sin(phase)),
+            "knee_r": GUIDE_KNEE_SWING_RADIANS * max(0.0, math.sin(phase)),
+            # The left arm answers the left leg: leg forward, arm back.
+            "shoulder_l": GUIDE_SHOULDER_SWING_RADIANS * math.cos(phase),
+            "elbow_l": -(GUIDE_ELBOW_BEND_RADIANS
+                         + GUIDE_ELBOW_SWING_RADIANS * max(0.0, -math.cos(phase))),
+        }
+        sway = math.sin(2.0 * math.pi * self.idle_seconds / GUIDE_IDLE_PERIOD_SECONDS)
+        idle = {
+            "hip_l": GUIDE_IDLE_HIP_RADIANS * sway,
+            "hip_r": -GUIDE_IDLE_HIP_RADIANS * sway,
+            "knee_l": 0.0,
+            "knee_r": 0.0,
+            "shoulder_l": GUIDE_IDLE_SHOULDER_RADIANS * sway,
+            "elbow_l": -GUIDE_ELBOW_BEND_RADIANS,
+        }
+        blend = float(np.clip(self.motion_blend, 0.0, 1.0))
+        return {name: blend * walk[name] + (1.0 - blend) * idle[name]
+                for name in GUIDE_JOINT_NAMES}
+
+    def _boot_lowest_offset(self, angles) -> float:
+        """How far the lowest boot corner sits below the root. -> metres (<= 0).
+
+        Forward kinematics of two hinges and a box, done here rather than read
+        out of `MjData`, because the root's height has to be known BEFORE the
+        pose is written -- MuJoCo has not computed anything yet at that point.
+        """
+        lowest = 0.0
+        for side, hip_name, knee_name in (("l", "hip_l", "knee_l"),
+                                          ("r", "hip_r", "knee_r")):
+            leg = self.skeleton["legs"][side]
+            thigh_rotation = _rotation_y(angles[hip_name])
+            shin_rotation = _rotation_y(angles[hip_name] + angles[knee_name])
+            knee = leg["hip_anchor"] + thigh_rotation @ leg["knee_in_thigh"]
+            centre = knee + shin_rotation @ leg["boot_in_shin"]
+            half = leg["boot_half_extents"]
+            for sign_x in (-1.0, 1.0):
+                for sign_y in (-1.0, 1.0):
+                    for sign_z in (-1.0, 1.0):
+                        corner = centre + shin_rotation @ np.array(
+                            [sign_x * half[0], sign_y * half[1], sign_z * half[2]])
+                        lowest = min(lowest, float(corner[2]))
+        return lowest
+
+    # ------------------------------------------------------------ the pose
+    def ground_position_world(self) -> np.ndarray:
+        """Where she stands: on the route, offset left, on the surface."""
         on_rope = self.route.point_at(self.arclength_meters)
         tangent = self.route.tangent_at(self.arclength_meters)
         # Left of the direction of travel, on the ground plane.
@@ -385,33 +871,55 @@ class Guide:
         norm = float(np.linalg.norm(left))
         left = left / norm if norm > 1e-9 else np.array([0.0, 1.0, 0.0])
         x, y = (on_rope[:2] + GUIDE_LATERAL_METERS * left[:2])
-        z = float(self.terrain.surface_z(x, y)) + HIP_HEIGHT_METERS
-        return np.array([float(x), float(y), z])
+        return np.array([float(x), float(y),
+                         float(self.terrain.surface_z(x, y))])
+
+    def root_world(self, angles=None) -> np.ndarray:
+        """World position of the body origin -- the pose written to `mocap_pos`.
+
+        Her root frame has z = 0 at the ground contact, so the origin would sit
+        exactly on the surface if her feet were flat. Mid-stride they are not:
+        the root is lifted by however far the lowest boot corner hangs below
+        zero, which is what keeps the planted foot ON the snow through the whole
+        cycle instead of sinking into it at the ends.
+        """
+        position = self.ground_position_world()
+        position[2] -= self._boot_lowest_offset(
+            self.limb_angles() if angles is None else angles)
+        return position
 
     def reference_point_world(self) -> np.ndarray:
         """Chest height on the body axis -- what a TRUE range is measured to."""
-        hips = self.hips_world()
-        hips[2] += REFERENCE_HEIGHT_METERS
-        return hips
+        point = self.root_world()
+        point[2] += REFERENCE_HEIGHT_METERS
+        return point
 
     def yaw_radians(self) -> float:
         tangent = self.route.tangent_at(self.arclength_meters)
         return math.atan2(float(tangent[1]), float(tangent[0]))
 
     def write(self, model, data) -> None:
-        """Write the pose into `mocap_pos`/`mocap_quat`, or park it out of sight.
+        """Write the pose into `mocap_pos`/`mocap_quat` + the six hinge `qpos`.
 
-        A mocap body has no degrees of freedom, so this is the whole of its
-        physics: MuJoCo reads these two arrays during the forward kinematics and
-        nothing ever writes back to them. `mj_resetData` parks mocap bodies at
-        their model pose, so this runs every tick rather than once.
+        The root is a MOCAP body: it has no degrees of freedom, MuJoCo reads
+        those two arrays during the forward kinematics and nothing ever writes
+        back to them. The six limb hinges DO have degrees of freedom, so their
+        `qpos` is written and their `qvel` zeroed every control tick -- the
+        figure is driven, not simulated, and `gravcomp = 1` on the limb bodies
+        stops gravity nudging them between writes. `mj_resetData` parks mocap
+        bodies at their model pose and zeroes qpos, so this runs every tick
+        rather than once.
         """
         if self.mocap_id < 0:
             return
+        angles = self.limb_angles()
+        for name, (qpos_address, dof_address) in self.joint_addresses.items():
+            data.qpos[qpos_address] = angles[name]
+            data.qvel[dof_address] = 0.0
         if not self.enabled:
             data.mocap_pos[self.mocap_id] = (0.0, 0.0, -50.0)
             return
-        data.mocap_pos[self.mocap_id] = self.hips_world()
+        data.mocap_pos[self.mocap_id] = self.root_world(angles)
         half = 0.5 * self.yaw_radians()
         data.mocap_quat[self.mocap_id] = (math.cos(half), 0.0, 0.0, math.sin(half))
 
@@ -843,12 +1351,18 @@ class GuideSystem:
                      + data.cam_xpos[self._eye_camera_ids[1]])
         return float(np.linalg.norm(self.guide.reference_point_world() - eye))
 
-    def update(self, data, tick: int, enabled: bool, walking: bool) -> np.ndarray | None:
+    def update(self, data, tick: int, enabled: bool, walking: bool,
+               backing: bool = False) -> np.ndarray | None:
         """One control tick. -> the command to fly, or None if the guide is off.
 
         Order matters: the human moves, its body is written, and only THEN are
         the cameras rendered, so the robot sees where the human is now rather
         than where it was a tick ago.
+
+        `walking` is W and `backing` is S, and they are the HUMAN's keys, not
+        the robot's: W sends her up the rope, S brings her back down it, both
+        together stop her. What the robot does about either is the follower's
+        business.
         """
         if not self.available:
             return None
@@ -863,7 +1377,7 @@ class GuideSystem:
             self.place(np.asarray(data.qpos[0:3]))
             self.guide.enabled = True
 
-        self.guide.advance(self.dt_seconds, walking)
+        self.guide.advance(self.dt_seconds, walking, backing)
         self.guide.write(self.model, data)
         # `mocap_pos` is an INPUT to the forward kinematics, not a pose: nothing
         # in `data` moves until something recomputes frames from it, and the

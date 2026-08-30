@@ -551,7 +551,8 @@ def run(arguments) -> str:
     print(f"[guide] {'available' if guide_system.available else 'NOT available'}"
           f" in world {episode.world_name};"
           f" starts {'ON' if arguments.guide else 'OFF'}"
-          f" (knob `guide`, W drives the human)", flush=True)
+          f" (knob `guide`, W walks the human up the rope, S back down it)",
+          flush=True)
 
     renderer = None
     render_size = (RENDER_WIDTH, RENDER_HEIGHT)   # follows the browser viewport in live mode
@@ -607,10 +608,14 @@ def run(arguments) -> str:
         azimuth_degrees = elevation_degrees = None
         guide_enabled = bool(arguments.guide)
         walking = bool(arguments.hold_w)
+        backing = False
         if server is not None:
             latest = server.latest_input
             keys = set(latest.get("keys", []))
             walking = "w" in keys
+            # S walks the HUMAN back down the rope toward the robot. Only the
+            # human: the robot's own command still comes from the follower.
+            backing = "s" in keys
             guide_enabled = bool(server.knobs.get("guide", 0.0))
             browser_camera = latest.get("camera") or {}
             azimuth_degrees = browser_camera.get("azimuth_degrees")
@@ -714,7 +719,7 @@ def run(arguments) -> str:
         # held), so switching the guide off does not snap the robot back to a
         # heading it drifted away from ten seconds ago.
         guide_command = guide_system.update(
-            episode.data, episode.tick, guide_enabled, walking)
+            episode.data, episode.tick, guide_enabled, walking, backing)
         if guide_command is not None:
             command = guide_command
             heading.desired_heading_radians = root_yaw_radians(
