@@ -41,7 +41,7 @@ assert DEFAULT_POSE.shape == (N_JOINTS,)
 
 ACTION_SCALE = 0.5      # motor_target = DEFAULT_POSE + ACTION_SCALE * action
 CTRL_DT = 0.02          # 50 Hz policy
-LOWSTATE_HZ = 500.0     # rt/lowstate publish rate
+LOWSTATE_HZ = 1050.0    # MEASURED on the robot; docs claim 500.
 DECIMATION = int(round(LOWSTATE_HZ * CTRL_DT))  # 10 lowstate samples per policy step
 
 # Gait clock. Trained with freq ~ U(1.25, 1.5) Hz sampled per episode; we hold a

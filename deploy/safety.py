@@ -23,7 +23,7 @@ from . import constants as C
 
 # Zero position/velocity gain, small damping: joints go slack and the harness
 # takes the weight. This is the state `robot dev-mode` leaves the robot in.
-DAMP_KD = 2.0
+DAMP_KD = 8.0          # per the access doc: kp=0, kd~8 on all 29 joints.
 
 # Damp if lowstate goes stale or a control step overruns badly.
 STALE_TIMEOUT_S = 0.10   # 5 missed policy steps at 50 Hz

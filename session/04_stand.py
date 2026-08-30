@@ -37,7 +37,7 @@ from deploy.observation import ObservationBuilder       # noqa: E402
 from deploy.policy import Policy                        # noqa: E402
 
 RAMP_GAINS_S, RAMP_POSE_S, RAMP_ACTION_S = 2.0, 3.0, 2.0
-DAMP_KD = 2.0
+DAMP_KD = 8.0          # per the access doc: kp=0, kd~8 on all 29 joints.
 MAX_TARGET_STEP = 0.05     # rad per control step; refuse bigger jumps
 
 

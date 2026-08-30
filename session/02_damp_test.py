@@ -34,7 +34,7 @@ import sys
 import time
 
 N_MOTORS = 29
-DAMP_KD = 2.0          # small damping; joints go slack, harness takes the load
+DAMP_KD = 8.0          # per the access doc: kp=0, kd~8 on all 29 joints.
 CTRL_HZ = 50.0
 
 
