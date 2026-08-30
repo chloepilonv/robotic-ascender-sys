@@ -39,6 +39,14 @@ ROPE_TAIL = 1.0  # m downhill of the start
 ROPE_RADIUS = 0.0055  # 11 mm static rope (Petzl Basic: 8-13 mm)
 CARRIER_MASS = 0.05
 CAM_FRICTION_N = 3.0  # push needed to slide the cam up the rope
+# The rope channel (Petzl: rope groove) measured on meshes/ascender_visual.obj:
+# a Ø16 mm bore along the tool's long axis, centre x=-21 mm, y=-1 mm (tool
+# frame), axis pitched -6 deg about tool y. (The collision mesh is a convex
+# hull, so its centre is NOT the channel.)
+CHANNEL_CENTRE_TOOL = (-0.0213, -0.0012, 0.055)  # m, tool frame (z = mid-tool)
+CHANNEL_PITCH_DEG = -6.4
+ROPE_HEIGHT = 0.60  # m above the ground at reset (arm pose is solved for it)
+RIGHT_ARM_IK = ("right_shoulder_pitch_joint", "right_elbow_joint") + RIGHT_WRIST
 
 
 def ascender_channel(model: mujoco.MjModel) -> tuple[np.ndarray, np.ndarray]:
@@ -50,14 +58,12 @@ def ascender_channel(model: mujoco.MjModel) -> tuple[np.ndarray, np.ndarray]:
     and model.geom_type[i] == mujoco.mjtGeom.mjGEOM_MESH
     and "ascender_collision" in model.mesh(model.geom_dataid[i]).name
   )
-  verts = np.array(
-    [list(map(float, l.split()[1:4])) for l in open(ASCENDER_MESH) if l.startswith("v ")]
-  )
-  centre_mesh = (verts.min(0) + verts.max(0)) / 2
   rot = np.zeros(9)
   mujoco.mju_quat2Mat(rot, model.geom_quat[gid])
   rot = rot.reshape(3, 3)
-  return model.geom_pos[gid] + rot @ centre_mesh, rot @ np.array([0.0, 0.0, 1.0])
+  a = np.radians(CHANNEL_PITCH_DEG)
+  axis_tool = np.array([np.sin(a), 0.0, np.cos(a)])  # tool Z pitched about tool y
+  return model.geom_pos[gid] + rot @ np.array(CHANNEL_CENTRE_TOOL), rot @ axis_tool
 
 
 def set_pose(model, data, root_pos, root_quat, joint_pos: dict) -> None:
@@ -74,28 +80,34 @@ def set_pose(model, data, root_pos, root_quat, joint_pos: dict) -> None:
   mujoco.mj_forward(model, data)
 
 
-def solve_wrist(model, data) -> dict:
-  """Wrist roll/pitch/yaw (from the current pose) that make the channel axis parallel to +x."""
+def solve_wrist(model, data, rope_height: float = ROPE_HEIGHT) -> dict:
+  """Right shoulder-pitch/elbow/wrist angles that put the channel parallel to +x
+  at `rope_height` above the ground (starting from the current pose)."""
   from scipy.optimize import minimize
 
   wb = model.body(WRIST_BODY).id
-  _, axis_link = ascender_channel(model)
-  adr = [model.jnt_qposadr[model.joint(n).id] for n in RIGHT_WRIST]
-  bounds = [tuple(model.jnt_range[model.joint(n).id] * 0.9) for n in RIGHT_WRIST]
+  grip_link, axis_link = ascender_channel(model)
+  adr = [model.jnt_qposadr[model.joint(n).id] for n in RIGHT_ARM_IK]
+  bounds = [tuple(model.jnt_range[model.joint(n).id] * 0.9) for n in RIGHT_ARM_IK]
+  q0 = data.qpos[adr].copy()
 
   def cost(q):
     data.qpos[adr] = q
     mujoco.mj_forward(model, data)
-    axis_w = data.xmat[wb].reshape(3, 3) @ axis_link
-    return (1.0 - axis_w[0]) + 0.02 * float(np.sum(q**2))
+    rot = data.xmat[wb].reshape(3, 3)
+    axis_w = rot @ axis_link
+    z = (data.xpos[wb] + rot @ grip_link)[2]
+    return 5.0 * (1.0 - axis_w[0]) + 20.0 * (z - rope_height) ** 2 + 0.02 * float(np.sum((q - q0) ** 2))
 
-  res = minimize(cost, np.zeros(3), bounds=bounds, method="L-BFGS-B")
+  res = minimize(cost, q0, bounds=bounds, method="L-BFGS-B")
   data.qpos[adr] = res.x
   mujoco.mj_forward(model, data)
-  return {n: float(v) for n, v in zip(RIGHT_WRIST, res.x)}
+  return {n: float(v) for n, v in zip(RIGHT_ARM_IK, res.x)}
 
 
-def add_rope_rail(spec: mujoco.MjSpec, root_pos, root_quat, joint_pos: dict) -> dict:
+def add_rope_rail(
+  spec: mujoco.MjSpec, root_pos, root_quat, joint_pos: dict, rope_height: float = ROPE_HEIGHT
+) -> dict:
   """Add rope + carriage + weld to `spec`, sized for the given reset pose.
 
   `joint_pos` may omit the wrist: it is solved here so the channel is parallel
@@ -104,13 +116,14 @@ def add_rope_rail(spec: mujoco.MjSpec, root_pos, root_quat, joint_pos: dict) -> 
   model = spec.compile()
   data = mujoco.MjData(model)
   set_pose(model, data, root_pos, root_quat, joint_pos)
-  wrist_q = solve_wrist(model, data)
+  wrist_q = solve_wrist(model, data, rope_height)
   wb = model.body(WRIST_BODY).id
   grip_link, axis_link = ascender_channel(model)
   rot = data.xmat[wb].reshape(3, 3)
   grip_w = data.xpos[wb] + rot @ grip_link
   axis_w = rot @ axis_link
-  assert axis_w[0] > 0.99, f"ascender channel not aligned with the rope: {axis_w}"
+  assert axis_w[0] > 0.98, f"ascender channel not aligned with the rope: {axis_w}"
+  print(f"[rope_rail] channel at z={grip_w[2]:.3f} m (target {rope_height}), axis·x={axis_w[0]:.3f}")
 
   wrist = spec.body(WRIST_BODY)
   wrist.add_site(name="ascender_anchor", pos=grip_link.tolist(), group=5)

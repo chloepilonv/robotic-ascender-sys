@@ -55,9 +55,14 @@ def main() -> None:
   p.add_argument("--slope", type=float, default=20.0)
   p.add_argument("--wind", type=float, default=0.0, help="m/s along -x (downhill headwind)")
   p.add_argument("--headless", action="store_true")
+  p.add_argument("--channel-pitch", type=float, default=None,
+                 help="deg, overrides rope_rail.CHANNEL_PITCH_DEG (tune the tool angle on the rope by eye)")
   p.add_argument("--seconds", type=float, default=15.0)
   args = p.parse_args()
 
+  if args.channel_pitch is not None:
+    import rl.chloe.task.robot as _r
+    _r.rail.CHANNEL_PITCH_DEG = args.channel_pitch
   m, jnames, scale, offset, qpos0 = build(args.slope)
   d = mujoco.MjData(m)
   d.qpos[:] = qpos0
