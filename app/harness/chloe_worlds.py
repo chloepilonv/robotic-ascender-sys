@@ -79,6 +79,7 @@ import os
 import numpy as np
 
 from app.harness import chloe_policy
+from app.harness import scripted_ascender
 
 _HARNESS_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 REPOSITORY_ROOT = os.path.dirname(os.path.dirname(_HARNESS_DIRECTORY))
@@ -158,6 +159,18 @@ CHLOE_POLICY_VERSIONS = {
         "trained_slope_degrees": 20.0,
         "note": "her run v3 of 2026-08-30 04:35; mjlab PPO, 96-d obs, no command",
     },
+    "v2": {
+        "relative_path": os.path.join(
+            "rl", "chloe", "policies",
+            "g1_ascender_slope20_v7_2026-08-30_17-16-35.onnx"),
+        "trained_slope_degrees": 20.0,
+        "note": "her run v7 of 2026-08-30 17:16; 97-d obs = v3's + the WALK/SLIDE"
+                " mode bit driven by the climb-mode FSM; final rope_rail."
+                " MEASURED 2026-08-30: stands still at 10/20/30 deg, either"
+                " start mode -- the loophole her v8 run is fixing. Shipped so"
+                " the team can see it; not the default.",
+        "slopes": (20,),
+    },
 }
 CURRENT_CHLOE_VERSION = "v1"
 
@@ -196,10 +209,46 @@ def _versioned_definition(version, slope):
 CHLOE_WORLD_DEFINITIONS = dict([
     _versioned_definition(version, slope)
     for version in CHLOE_POLICY_VERSIONS
-    for slope in CHLOE_SLOPE_LADDER_DEGREES
+    for slope in CHLOE_POLICY_VERSIONS[version].get(
+        "slopes", CHLOE_SLOPE_LADDER_DEGREES)
 ])
 
 DEFAULT_CHLOE_WORLD = f"chloe_{CURRENT_CHLOE_VERSION}_20"
+
+
+# --------------------------------------------------- the scripted-gait ladder
+# THE SAME PLANT, NO NETWORK (user ruling 2026-08-30: "a default deterministic
+# non-ML walking policy on the rope ... right foot, left foot, right hand
+# slides up"). Same flat slope, same one straight rope 0.60 m up, same weld and
+# same ratchet -- the only differences are the controller
+# (`scripted_ascender.ScriptedAscenderController`) and stiffer leg gains, which
+# a script may have because no network was trained around the soft ones.
+SCRIPTED_SLOPE_LADDER_DEGREES = (0, 10, 20, 30)
+SCRIPTED_POLICY_VERSION = "scripted"
+
+
+def _scripted_definition(slope):
+    name, definition = _definition(
+        f"scripted_{slope:g}", float(slope),
+        f"Scripted · {slope:g}° · rope",
+        "A hand-written quasi-static climbing gait -- no network anywhere."
+        " The ascender is welded to the rope, so the right wrist is pinned to a"
+        " straight line; with both feet down that is a three-point support, and"
+        " a gait that lifts only one foot at a time never needs to catch"
+        f" itself. Right foot, left foot, right hand slides up, on a {slope:g}"
+        " degree slope. W gates it; nothing steers it.")
+    definition["policy_version"] = SCRIPTED_POLICY_VERSION
+    definition["policy_relative_path"] = None
+    definition["slope_provenance"] = "chosen for the demo (nothing was trained)"
+    return name, definition
+
+
+SCRIPTED_WORLD_DEFINITIONS = dict([
+    _scripted_definition(slope) for slope in SCRIPTED_SLOPE_LADDER_DEGREES])
+
+CHLOE_WORLD_DEFINITIONS.update(SCRIPTED_WORLD_DEFINITIONS)
+
+DEFAULT_SCRIPTED_WORLD = "scripted_20"
 
 
 # --------------------------------------------------------------- the frames
@@ -402,7 +451,8 @@ class ChloeScene:
     the storm and the walking hiker all work here with no special case.
     """
 
-    def __init__(self, slope_degrees, frame="tilted_plane", verbose=True):
+    def __init__(self, slope_degrees, frame="tilted_plane", verbose=True,
+                 gain_scale=None, warn_outside_band=True):
         import mujoco
         rope_rail = chloe_policy.rope_rail_module()
 
@@ -410,8 +460,14 @@ class ChloeScene:
         self._rope_rail = rope_rail
         self.slope_degrees = float(slope_degrees)
         self.frame = frame
+        # OPTIONAL STIFFER ACTUATORS, for a controller that is not a network.
+        # `gain_scale` maps a joint-name suffix (the `G1_ARTICULATION` keys) to
+        # (stiffness multiplier, damping multiplier). None -- the default --
+        # leaves the mjlab row exactly as her policy was trained with, so every
+        # existing world is bit-identical to before this argument existed.
+        self.gain_scale = dict(gain_scale) if gain_scale else {}
         low, high = SLOPE_BAND_DEGREES
-        if not low - 1e-9 <= self.slope_degrees <= high + 1e-9:
+        if warn_outside_band and not low - 1e-9 <= self.slope_degrees <= high + 1e-9:
             print(f"[chloe] WARNING slope {self.slope_degrees} deg is outside the"
                   f" measured {low:g}-{high:g} deg band this policy climbs in",
                   flush=True)
@@ -434,6 +490,11 @@ class ChloeScene:
                   if j.type == mujoco.mjtJoint.mjJNT_HINGE]
         for joint in hinges:
             stiffness, damping, armature, _scale = chloe_policy.articulation_for(joint.name)
+            for suffix, (stiffness_multiplier, damping_multiplier) in self.gain_scale.items():
+                if joint.name.endswith(suffix + "_joint"):
+                    stiffness *= float(stiffness_multiplier)
+                    damping *= float(damping_multiplier)
+                    break
             joint.armature = armature
             joint.damping = [0.0, 0.0, 0.0]
             joint.frictionloss = 0.0
@@ -696,7 +757,11 @@ class ChloeSceneLibrary:
     def load(self, name, on_build_start=None):
         import time
         definition = CHLOE_WORLD_DEFINITIONS[name]
-        key = (definition["slope_degrees"], self.frame)
+        # THE GAINS ARE PART OF THE PLANT, so they are part of the cache key: a
+        # scripted world and one of hers at the same slope are two different
+        # compiled models, and handing one the other's would be silent.
+        scripted = definition.get("policy_version") == SCRIPTED_POLICY_VERSION
+        key = (definition["slope_degrees"], self.frame, scripted)
         if key not in self._scenes:
             if on_build_start is not None:
                 on_build_start()
@@ -704,8 +769,12 @@ class ChloeSceneLibrary:
             print(f"[chloe] building {name}: slope"
                   f" {definition['slope_degrees']:.1f} deg, frame {self.frame}",
                   flush=True)
-            scene = ChloeScene(definition["slope_degrees"], frame=self.frame,
-                               verbose=self.verbose)
+            scene = ChloeScene(
+                definition["slope_degrees"], frame=self.frame,
+                verbose=self.verbose,
+                gain_scale=(scripted_ascender.SCRIPTED_GAIN_SCALE
+                            if scripted else None),
+                warn_outside_band=not scripted)
             self._scenes[key] = (scene, describe_chloe_scene(scene, definition))
             print(f"[chloe] built {name} in {time.time() - started:.2f} s",
                   flush=True)
@@ -757,13 +826,26 @@ class ChloeAscenderEpisode:
         self.imu_torso_site_id = meta["imu_torso_site_id"]
         self.grip_equality_id = meta["grip_equality_id"]
 
-        if policy_path is None and definition.get("policy_relative_path"):
-            policy_path = os.path.join(
-                chloe_policy.REPOSITORY_ROOT, definition["policy_relative_path"])
-        self.controller = chloe_policy.AscenderController(
-            self.model, scene.default_joint_positions, policy_path=policy_path,
-            control_dt_seconds=meta["control_dt_seconds"],
-            hold_blend_seconds=hold_blend_seconds)
+        # ONE EPISODE CLASS, TWO CONTROLLERS. The plant, the rope, the ratchet,
+        # the telemetry and the go/stop gate are identical; the only thing a
+        # `scripted_*` world changes is who writes `data.ctrl`.
+        self.policy_version = definition.get("policy_version")
+        self.scripted = self.policy_version == SCRIPTED_POLICY_VERSION
+        if self.scripted:
+            self.controller = scripted_ascender.ScriptedAscenderController(
+                self.model, scene.default_joint_positions,
+                slope_degrees=meta["slope_degrees"],
+                control_dt_seconds=meta["control_dt_seconds"])
+        else:
+            if policy_path is None and definition.get("policy_relative_path"):
+                policy_path = os.path.join(
+                    chloe_policy.REPOSITORY_ROOT,
+                    definition["policy_relative_path"])
+            self.controller = chloe_policy.AscenderController(
+                self.model, scene.default_joint_positions,
+                policy_path=policy_path,
+                control_dt_seconds=meta["control_dt_seconds"],
+                hold_blend_seconds=hold_blend_seconds)
         self.applied_friction = meta["foot_friction"]
 
         self.physics_step_hooks = []

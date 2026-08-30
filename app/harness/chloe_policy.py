@@ -193,10 +193,17 @@ class AscenderController:
             self.policy_path, providers=["CPUExecutionProvider"])
         input_shape = self.session.get_inputs()[0].shape
         self.input_name = self.session.get_inputs()[0].name
-        if int(input_shape[-1]) != OBSERVATION_SIZE:
+        self.observation_size = int(input_shape[-1])
+        if self.observation_size not in (OBSERVATION_SIZE, OBSERVATION_SIZE + 1):
             raise ValueError(
                 f"{self.policy_path} takes {input_shape}, not (batch,"
-                f" {OBSERVATION_SIZE}). This is not the ascender policy.")
+                f" {OBSERVATION_SIZE}) or (batch, {OBSERVATION_SIZE + 1})."
+                " This is not the ascender policy.")
+        # v4+ (her v7 onward in the app) carries ONE extra input: the climb
+        # MODE bit, WALK 0 / SLIDE 1, flipped by the runtime from rope
+        # progress and the ascender-to-pelvis gap (rl/chloe/task/climb_mode.py;
+        # re-implemented below in numpy because hers is torch).
+        self.has_mode_bit = self.observation_size == OBSERVATION_SIZE + 1
 
         # --- the 29 actuated joints, in declaration order ------------------
         names = [mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, j)
@@ -226,6 +233,8 @@ class AscenderController:
 
         # --- the world -----------------------------------------------------
         self.carriage_body_id = int(model.body("rope_carriage").id)
+        self.slide_joint_id = int(model.joint("rope_slide").id)
+        self.slide_qpos_address = int(model.jnt_qposadr[self.slide_joint_id])
         gravity = np.asarray(model.opt.gravity, dtype=float)
         self.gravity_direction = gravity / np.linalg.norm(gravity)
 
@@ -242,10 +251,12 @@ class AscenderController:
         self.substep_counter = 0
         self.hold_seconds = 0.0
         self.evaluations = 0
+        self._reset_mode()
 
         if verbose:
             print(f"[chloe] policy {os.path.basename(self.policy_path)}:"
-                  f" obs {OBSERVATION_SIZE} -> action {ACTION_SIZE},"
+                  f" obs {self.observation_size} -> action {ACTION_SIZE},"
+                  f"{' mode bit (WALK/SLIDE FSM),' if self.has_mode_bit else ''}"
                   f" decimation {self.decimation}"
                   f" ({1.0 / self.control_dt_seconds:.0f} Hz over a"
                   f" {model.opt.timestep * 1000:.0f} ms step)", flush=True)
@@ -262,12 +273,62 @@ class AscenderController:
         self.substep_counter = 0
         self.hold_seconds = 0.0
         self.evaluations = 0
+        self._reset_mode()
+
+    # ------------------------------------------------- the climb-mode FSM
+    # rl/chloe/task/climb_mode.py, in numpy. SLIDE: push the ascender
+    # STROKE_M up the rope with the feet still; WALK: walk until the ascender
+    # is within CATCH_UP_M (along the rope) of the pelvis; a SLIDE that has
+    # not moved the stroke by SLIDE_TIMEOUT_S ends anyway. Constants copied
+    # from her file (it imports torch, which this venv does not have).
+    MODE_WALK, MODE_SLIDE = 0.0, 1.0
+    STROKE_METERS = 0.5
+    CATCH_UP_METERS = 0.30
+    SLIDE_TIMEOUT_SECONDS = 3.0
+
+    def _reset_mode(self) -> None:
+        # Start in WALK: if the ascender is already within reach the FSM
+        # flips to SLIDE on the first tick, so this is the safe default.
+        self.mode = self.MODE_WALK
+        self.slide_at_switch = 0.0
+        self.phase_seconds = 0.0
+        self.mode_switches = 0
+
+    def _update_mode(self, data) -> None:
+        slide_q = float(data.qpos[self.slide_qpos_address])
+        # The ascender-to-pelvis gap ALONG THE ROPE, which is her world +x
+        # (tilted gravity, flat floor) and the slide joint's world axis in
+        # either of our frames.
+        axis = np.asarray(data.xaxis[self.slide_joint_id], dtype=float)
+        gap = np.asarray(data.xpos[self.carriage_body_id], dtype=float) \
+            - np.asarray(data.qpos[0:3], dtype=float)
+        relative_along_rope = float(np.dot(gap, axis))
+        self.phase_seconds += self.control_dt_seconds
+        done_slide = (self.mode == self.MODE_SLIDE and (
+            slide_q - self.slide_at_switch >= self.STROKE_METERS
+            or self.phase_seconds >= self.SLIDE_TIMEOUT_SECONDS))
+        done_walk = (self.mode == self.MODE_WALK
+                     and relative_along_rope <= self.CATCH_UP_METERS)
+        if done_slide or done_walk:
+            self.mode = self.MODE_WALK if done_slide else self.MODE_SLIDE
+            self.slide_at_switch = slide_q
+            self.phase_seconds = 0.0
+            self.mode_switches += 1
+
+    @property
+    def mode_name(self) -> str:
+        if not self.has_mode_bit:
+            return "free"
+        return "slide" if self.mode == self.MODE_SLIDE else "walk"
 
     def observe(self, data) -> np.ndarray:
-        """(96,) float32, exactly the layout in the module docstring."""
+        """(96,) or (97,) float32, exactly the layout in the module docstring
+        (+ the mode bit last, for policies that take one)."""
         quaternion = data.qpos[3:7]
         carriage_offset = np.asarray(data.xpos[self.carriage_body_id], dtype=float) \
             - np.asarray(data.qpos[0:3], dtype=float)
+        if self.has_mode_bit:
+            self._update_mode(data)
         return np.concatenate([
             np.asarray(data.qvel[3:6], dtype=float),                        # 3
             quaternion_inverse_rotate(quaternion, self.gravity_direction),  # 3
@@ -276,7 +337,7 @@ class AscenderController:
             np.asarray(data.qvel[self.joint_dof_addresses], dtype=float),   # 29
             np.asarray(self.last_action, dtype=float),                      # 29
             quaternion_inverse_rotate(quaternion, carriage_offset),         # 3
-        ]).astype(np.float32)
+        ] + ([np.array([self.mode])] if self.has_mode_bit else [])).astype(np.float32)
 
     def act(self, data) -> np.ndarray:
         """One network evaluation. -> the raw (29,) action, also stored."""
@@ -324,7 +385,7 @@ class AscenderController:
 
     def describe(self) -> str:
         return (f"[chloe] AscenderController {os.path.basename(self.policy_path)}"
-                f" {OBSERVATION_SIZE}->{ACTION_SIZE}, decimation"
+                f" {self.observation_size}->{ACTION_SIZE}, decimation"
                 f" {self.decimation}, hold-pose stop"
                 f" (blend {self.hold_blend_seconds:.2f} s)")
 
