@@ -126,6 +126,18 @@ as three phantom joints.
 `sc.ascender.progress` is arc length climbed since reset: the natural progress
 reward.
 
+**If the hand looks stuck, it probably is not.** The walking policy cannot climb:
+on a slope it sags onto the rope and hangs, so the hand legitimately stays put.
+`--haul N` applies a force up the fall line so you can watch the ascender slide.
+The robot weighs 338 N, so on patch B (38.6 deg) about 211 N just holds station;
+230-300 N climbs smoothly with the hand staying within 4 mm of the rope, and
+400 N tears the grip open.
+
+```bash
+python -m rl.scripts.climb_scene --patch B --haul 260 --view   # ascender rides up
+python -m rl.scripts.climb_scene --patch B_slope0 --view       # walking drags it ~1.5 m / 10 s
+```
+
 Verified: hauling the robot up the fall line advances the ascender 15 m and it
 clamps at the rope's end; roped it sags 0.8 m and holds; unroped it falls off the
 face. Ratchet backsliding over 2000 steps is exactly 0, and the hand stays within

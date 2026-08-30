@@ -59,6 +59,25 @@ def build(a) -> CS.ClimbScene:
     )
 
 
+def haul_force(sc: CS.ClimbScene, newtons: float):
+    """A force up the fall line, to demonstrate the ascender sliding.
+
+    The walking policy cannot climb -- on a slope it sags onto the rope and the
+    hand legitimately stays put, which looks identical to a seized ascender.
+    Hauling the base up the line drives the hand along the rope so the mechanism
+    is visible.
+    """
+    if not newtons:
+        return None
+    pelvis = sc.model.body("pelvis").id
+
+    def apply(data):
+        tangent = sc.route.tangent_at(sc.ascender.s)
+        data.xfrc_applied[pelvis, :3] = newtons * tangent
+
+    return apply
+
+
 def make_controller(sc: CS.ClimbScene, a):
     """The mels walking policy, or None to hold the keyframe pose open-loop.
 
@@ -71,11 +90,13 @@ def make_controller(sc: CS.ClimbScene, a):
     return WP.WalkController(sc.model, command=(a.cmd_x, a.cmd_y, a.cmd_yaw))
 
 
-def apply_control(sc: CS.ClimbScene, ctl, keyframe_ctrl) -> None:
+def apply_control(sc: CS.ClimbScene, ctl, keyframe_ctrl, haul=None) -> None:
     if ctl is None:
         sc.data.ctrl[:] = keyframe_ctrl
     else:
         ctl.substep(sc.data)
+    if haul is not None:
+        haul(sc.data)
 
 
 def describe(sc: CS.ClimbScene) -> None:
@@ -118,7 +139,7 @@ def describe(sc: CS.ClimbScene) -> None:
           f"limit {np.degrees(CS.ANKLE_PITCH_MIN):.0f})")
 
 
-def simulate(sc: CS.ClimbScene, secs: float, wind: CS.WindParams, grip=True, ctl=None):
+def simulate(sc: CS.ClimbScene, secs: float, wind: CS.WindParams, grip=True, ctl=None, haul=None):
     m, d = sc.model, sc.data
     if not grip:
         m.eq_active0[m.equality("ascender_grip").id] = 0
@@ -128,7 +149,7 @@ def simulate(sc: CS.ClimbScene, secs: float, wind: CS.WindParams, grip=True, ctl
     ctrl = m.key(sc.key_id).ctrl.copy()
     z0, s0 = float(d.qpos[2]), sc.ascender.s
     for _ in range(int(secs / m.opt.timestep)):
-        apply_control(sc, ctl, ctrl)
+        apply_control(sc, ctl, ctrl, haul)
         sc.step(wind)
     upright = float(d.site_xmat[m.site("imu_in_pelvis").id].reshape(3, 3)[2, 2])
     return dict(
@@ -321,7 +342,7 @@ def render(sc: CS.ClimbScene, prefix: str, wind: CS.WindParams, ctl=None) -> Non
         print(f"   {path}  (camera clearance {clear:+.1f} m){flag}")
 
 
-def view(sc: CS.ClimbScene, wind: CS.WindParams, ctl=None, passive: bool = False) -> int:
+def view(sc: CS.ClimbScene, wind: CS.WindParams, ctl=None, passive: bool = False, haul=None) -> int:
     """Open the interactive viewer with the ascender ratchet running.
 
     macOS makes this awkward. `launch_passive` hands control back to the caller
@@ -347,13 +368,13 @@ def view(sc: CS.ClimbScene, wind: CS.WindParams, ctl=None, passive: bool = False
     if passive:
         with mj_viewer.launch_passive(m, d) as v:
             while v.is_running():
-                apply_control(sc, ctl, ctrl)
+                apply_control(sc, ctl, ctrl, haul)
                 sc.step(wind)
                 v.sync()
         return 0
 
     def control_cb(model, data):
-        apply_control(sc, ctl, ctrl)
+        apply_control(sc, ctl, ctrl, haul)
         if wind.speed:
             rel = wind.velocity - data.cvel[sc.torso_body_id, 3:5]
             data.xfrc_applied[sc.torso_body_id, :] = 0.0
@@ -523,6 +544,11 @@ def main(argv=None) -> int:
                    choices=("himalaya", "himalaya-bare", "playground"),
                    help="himalaya = assets/robots/mujoco (jacket, boots, ascender); "
                         "playground = the model the mels policy was trained in")
+    p.add_argument("--haul", type=float, default=0.0, metavar="N",
+                   help="force up the fall line, newtons. The walking policy cannot "
+                        "climb, so use this to see the ascender slide. The robot "
+                        "weighs 338 N, so ~211 N is needed just to hold station on "
+                        "patch B; 230-300 climbs smoothly, 400+ tears the grip open.")
     p.add_argument("--lean-frac", type=float, default=None,
                    help="base lean as a fraction of the slope angle; default is the "
                         "smallest lean that keeps the ankles inside their travel")
@@ -571,11 +597,12 @@ def main(argv=None) -> int:
         render(sc, a.render, wind, ctl=make_controller(sc, a))
 
     if a.view:
-        return view(sc, wind, ctl=make_controller(sc, a), passive=a.passive)
+        return view(sc, wind, ctl=make_controller(sc, a),
+                    passive=a.passive, haul=haul_force(sc, a.haul))
 
     ctl = make_controller(sc, a)
     label = "keyframe hold (NO policy)" if ctl is None else "mels walking policy"
-    r = simulate(sc, a.seconds, wind, ctl=ctl)
+    r = simulate(sc, a.seconds, wind, ctl=ctl, haul=haul_force(sc, a.haul))
     print(
         f"\n{a.seconds:.0f} s, {label}:  base dz={r['dz']:+.2f} m   upright={r['upright']:+.2f}   "
         f"ascender ds={r['ds']:+.2f} m   hand-rope gap={r['gap']:.2e} m   "
