@@ -17,7 +17,7 @@ through the mount pose (assets/ascender/MOUNT.md: the cam head is centred on
 the wrist joint). `solve_wrist()` finds wrist angles that put the channel
 parallel to the rope for the reset pose.
 
-Used by rl/chloe/task/robot.py (mjlab training) and usable by app/harness.
+Used by rl/task/robot.py (mjlab training) and usable by app/harness.
 """
 
 from __future__ import annotations

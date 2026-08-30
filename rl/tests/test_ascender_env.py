@@ -1,6 +1,6 @@
 """Headless smoke test for the mjlab ascender env (CPU, 2 envs, ~1 min).
 
-    .venv-mjlab/bin/python rl/chloe/tests/test_ascender_env.py
+    .venv-mjlab/bin/python rl/tests/test_ascender_env.py
 
 Checks: env builds, obs/action dims, the rope ratchet (slide qpos never
 decreases even when the arm pushes down), and the wrist stays on the rope.
@@ -9,12 +9,12 @@ decreases even when the arm pushes down), and the wrist stays on the rope.
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import numpy as np
 import torch
 
-import rl.chloe.task as A
+import rl.task as A
 
 
 def main() -> None:

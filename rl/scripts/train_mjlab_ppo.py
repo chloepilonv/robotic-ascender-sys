@@ -1,12 +1,12 @@
 """Train the G1 ascender-climb policy with mjlab + rsl_rl PPO.
 
-    python -m rl.chloe.scripts.train_mjlab_ppo Himalayas-Ascender-Slope20-G1 \
+    python -m rl.scripts.train_mjlab_ppo Himalayas-Ascender-Slope20-G1 \
         --env.scene.num-envs 4096 --agent.max-iterations 5000
 
 Resume from a checkpoint by passing the .pt path directly:
 
-    python -m rl.chloe.scripts.train_mjlab_ppo Himalayas-Ascender-Slope30-G1 \
-        --checkpoint rl/chloe/policies/g1_ascender_slope20_v3_2026-08-30_04-35-59.pt \
+    python -m rl.scripts.train_mjlab_ppo Himalayas-Ascender-Slope30-G1 \
+        --checkpoint rl/policies/g1_ascender_slope20_v3_2026-08-30_04-35-59.pt \
         --env.scene.num-envs 512 --agent.max-iterations 5000
 
 Any mjlab `train` flag works after the task id (`--help` lists them).
@@ -21,7 +21,7 @@ import mjlab
 import mjlab.scripts.train as mjlab_train
 import tyro
 
-import rl.chloe.task as ascender  # noqa: F401  (registers the tasks)
+import rl.task as ascender  # noqa: F401  (registers the tasks)
 
 # mjlab's trainer instantiates ManagerBasedRlEnv by name; swap in the ratchet env.
 mjlab_train.ManagerBasedRlEnv = ascender.RatchetEnv

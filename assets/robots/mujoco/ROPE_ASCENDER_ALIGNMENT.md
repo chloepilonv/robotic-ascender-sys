@@ -15,13 +15,13 @@ policy (training *and* deployment) must go through it. Do not hand-place a rope.
 | Mechanism | `rope_carriage`: ONE slide joint `rope_slide` along +x, **welded** to the wrist so the channel axis = rope axis | `add_rope_rail` |
 | Cam (up only) | slide's lower limit = highest point reached (`ratchet()` before every `mj_step`) | never overwrite qpos |
 | Cam drag | `CAM_FRICTION_N = 3` N | |
-| Slope | tilt **gravity** `(-g sin s, 0, -g cos s)`, keep the floor flat and the rope on +x | `rl/chloe/task/robot.py` |
+| Slope | tilt **gravity** `(-g sin s, 0, -g cos s)`, keep the floor flat and the rope on +x | `rl/task/robot.py` |
 
 ## Rules
 1. A policy is valid only with the `rope_rail.py` values it was trained with. Change a value → retrain.
 2. Inside mjlab the names are prefixed: `robot/rope_slide`, `robot/rope_carriage`, `robot/ascender_anchor`.
 3. Check before you use it: `python assets/robots/mujoco/rope_rail_check.py` (prints the numbers, fails if misaligned).
-4. To tune the bend: `mjpython -m rl.chloe.scripts.sim2sim <policy.onnx> --channel-pitch <deg>`, then write the value into `CHANNEL_PITCH_DEG`.
+4. To tune the bend: `mjpython -m rl.scripts.sim2sim <policy.onnx> --channel-pitch <deg>`, then write the value into `CHANNEL_PITCH_DEG`.
 
 ## Frames, in words
 Rope = x axis. The tool's channel (green cylinder in the viewer) is welded onto that axis at the

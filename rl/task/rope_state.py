@@ -3,5 +3,5 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "assets/robots/mujoco"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "assets/robots/mujoco"))
 from rope_rail import rope_state  # noqa: E402,F401

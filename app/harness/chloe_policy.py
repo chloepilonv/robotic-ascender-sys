@@ -1,10 +1,10 @@
 """Chloe's mjlab-trained rope-ascender policy, driven from plain MuJoCo.
 
-    rl/chloe/policies/g1_ascender_slope20_v3_2026-08-30_04-35-59.onnx
+    rl/policies/g1_ascender_slope20_v3_2026-08-30_04-35-59.onnx
 
-This is the harness-side counterpart of `rl/chloe/scripts/sim2sim.py`: the same
+This is the harness-side counterpart of `rl/scripts/sim2sim.py`: the same
 observation, the same action decode, the same 50 Hz decimation, but reading a
-plain `mujoco.MjData` instead of an mjlab environment. `rl/chloe/` stays the
+plain `mujoco.MjData` instead of an mjlab environment. `rl/` stays the
 source of truth; nothing here re-derives a number that lives there, and the
 contract below was verified by a from-scratch reproduction before a line of
 this file was written.
@@ -78,14 +78,14 @@ import numpy as np
 
 _HARNESS_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 REPOSITORY_ROOT = os.path.dirname(os.path.dirname(_HARNESS_DIRECTORY))
-# `assets/` is a directory of programs, not a package -- `rl/chloe/task/robot.py`
+# `assets/` is a directory of programs, not a package -- `rl/task/robot.py`
 # reaches `rope_rail` the same way, by putting its directory on the path. One
 # helper so the two lines are written once.
 ROPE_RAIL_DIRECTORY = os.path.join(REPOSITORY_ROOT, "assets", "robots", "mujoco")
 
 
 def rope_rail_module():
-    """`assets/robots/mujoco/rope_rail.py`, imported the way rl/chloe does."""
+    """`assets/robots/mujoco/rope_rail.py`, imported the way rl does."""
     if ROPE_RAIL_DIRECTORY not in sys.path:
         sys.path.insert(0, ROPE_RAIL_DIRECTORY)
     import rope_rail
@@ -201,7 +201,7 @@ class AscenderController:
                 " This is not the ascender policy.")
         # v4+ (her v7 onward in the app) carries ONE extra input: the climb
         # MODE bit, WALK 0 / SLIDE 1, flipped by the runtime from rope
-        # progress and the ascender-to-pelvis gap (rl/chloe/task/climb_mode.py;
+        # progress and the ascender-to-pelvis gap (rl/task/climb_mode.py;
         # re-implemented below in numpy because hers is torch).
         self.has_mode_bit = self.observation_size == OBSERVATION_SIZE + 1
 
@@ -276,7 +276,7 @@ class AscenderController:
         self._reset_mode()
 
     # ------------------------------------------------- the climb-mode FSM
-    # rl/chloe/task/climb_mode.py, in numpy. SLIDE: push the ascender
+    # rl/task/climb_mode.py, in numpy. SLIDE: push the ascender
     # STROKE_M up the rope with the feet still; WALK: walk until the ascender
     # is within CATCH_UP_M (along the rope) of the pelvis; a SLIDE that has
     # not moved the stroke by SLIDE_TIMEOUT_S ends anyway. Constants copied

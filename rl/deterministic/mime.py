@@ -1,7 +1,7 @@
 """Climb mime on the real Unitree G1 (29 DoF): built-in locomotion + scripted right arm.
 
-    python -m rl.chloe.deterministic.mime <network_iface>            # e.g. eth0
-    python -m rl.chloe.deterministic.mime <iface> --cycles 5 --no-walk
+    python -m rl.deterministic.mime <network_iface>            # e.g. eth0
+    python -m rl.deterministic.mime <iface> --cycles 5 --no-walk
 
 Robot must be standing in the built-in balance controller (R1+X / app) first.
 Arm goes through `rt/arm_sdk` (Unitree's arm overlay: the loco controller keeps
@@ -20,7 +20,7 @@ import time
 
 import numpy as np
 
-from rl.chloe.deterministic import choreo
+from rl.deterministic import choreo
 
 # SDK joint indices for the right arm (unitree_sdk2 G1JointIndex).
 RIGHT_ARM_IDX = [22, 23, 24, 25, 26, 27, 28]

@@ -1559,7 +1559,7 @@ Every parity claim above this line is about ONE plant: `climb_scene.build_scene`
 with the walking policy on it. `chloe_v1_20` / `chloe_v1_25` are a second plant and a
 second brain, built in `app/harness/chloe_worlds.py` around
 `assets/robots/mujoco/rope_rail.py` and driven by
-`rl/chloe/policies/g1_ascender_slope20_v3_2026-08-30_04-35-59.onnx`. They exist
+`rl/policies/g1_ascender_slope20_v3_2026-08-30_04-35-59.onnx`. They exist
 because her policy CANNOT be run on the plant above — measured, both directions,
 below.
 
@@ -1699,7 +1699,7 @@ SLIDE/WALK mode bit is the shape that would fix it.
 
 **This bites the guide switch too, and a demo operator should know.** With
 `guide` ON the follower owns the command, so it owns the gate. v3 walks uphill
-*backwards* (no heading term in its reward — `rl/chloe/README.md` says so), the
+*backwards* (no heading term in its reward — `rl/README.md` says so), the
 human ends up behind the cameras within about three seconds, the follower drops
 to WAIT/LOST and commands zero, and the gate closes. Measured on `chloe_v1_20`,
 guide ON, W held: 0.83 m of rope by t = 3 s and then flat to the end of the run,

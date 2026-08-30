@@ -770,7 +770,7 @@ then open **http://localhost:8766/** and hold **W**.
     python -m app.harness.chloe_worlds --matrix                  # slope x wind, and stop/go
 
 `--chloe-policy PATH` swaps the ONNX (the default is
-`rl/chloe/policies/g1_ascender_slope20_v3_2026-08-30_04-35-59.onnx`);
+`rl/policies/g1_ascender_slope20_v3_2026-08-30_04-35-59.onnx`);
 `--chloe-hold-blend SECONDS` is the one knob on the stop behaviour, below.
 `--policy` is the WALKING policy's npz and does nothing here.
 
@@ -825,7 +825,7 @@ it falls in under two seconds; give it a flat 0.5 action scale and it falls in
 under two seconds. The usable slope band is 10–30°, which is why there are two
 worlds and not six.
 
-### The frame — why the slope is a slope here and a gravity vector in `rl/chloe`
+### The frame — why the slope is a slope here and a gravity vector in `rl`
 
 She trained on a FLAT plane with GRAVITY TILTED by the slope. That reproduces
 exactly (`--frame tilted_gravity`) and it looks wrong: level ground, a
@@ -849,7 +849,7 @@ That claim is measured, not asserted:
 
 ### Honesty notes
 
-* **The policy is hers and the plant is hers.** `rl/chloe/` is the source of
+* **The policy is hers and the plant is hers.** `rl/` is the source of
   truth for both; `app/harness/chloe_policy.py` is a re-implementation of the
   sim2sim loop against a plain `MjData`, and `chloe_worlds.py` rebuilds the
   plant around `rope_rail.py`. Nothing here re-derives a number that lives

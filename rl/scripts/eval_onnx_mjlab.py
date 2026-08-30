@@ -2,7 +2,7 @@
 for sim2sim: if it climbs here but not in sim2sim.py, the deploy loop is wrong;
 if it fails in both, the model/policy is the problem.
 
-    .venv-mjlab/bin/python -m rl.chloe.scripts.eval_onnx_mjlab rl/chloe/policies/g1_ascender_slope20_v1.onnx --slope 20
+    .venv-mjlab/bin/python -m rl.scripts.eval_onnx_mjlab rl/policies/g1_ascender_slope20_v1.onnx --slope 20
 """
 
 import argparse
@@ -11,7 +11,7 @@ import numpy as np
 import onnxruntime as ort
 import torch
 
-import rl.chloe.task as A
+import rl.task as A
 
 
 def main() -> None:

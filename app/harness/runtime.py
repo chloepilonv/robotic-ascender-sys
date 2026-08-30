@@ -1069,7 +1069,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chloe-policy", default=None,
                         help="path to the ONNX rope-ascender policy the"
                              " `chloe_*` worlds run. Defaults to"
-                             " rl/chloe/policies/g1_ascender_slope20_v3_*.onnx"
+                             " rl/policies/g1_ascender_slope20_v3_*.onnx"
                              " (chloe_policy.default_policy_path). Ignored by"
                              " every other world.")
     parser.add_argument("--chloe-hold-blend", type=float, default=0.0,

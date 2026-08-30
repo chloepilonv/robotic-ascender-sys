@@ -5,7 +5,7 @@ targets and ratchet are re-implemented by hand on `mujoco.MjModel/MjData`, the
 way the Jetson deployment will do it. If the policy behaves the same here as in
 `play_mjlab.py`, the export + obs pipeline is right.
 
-    .venv-mjlab/bin/mjpython -m rl.chloe.scripts.sim2sim rl/chloe/policies/g1_ascender_slope20.onnx   # mjpython on macOS (python on Linux)
+    .venv-mjlab/bin/mjpython -m rl.scripts.sim2sim rl/policies/g1_ascender_slope20.onnx   # mjpython on macOS (python on Linux)
     ... --headless --seconds 10 --slope 20 --wind 5
 """
 
@@ -21,7 +21,7 @@ import numpy as np
 import onnxruntime as ort
 import torch
 
-from rl.chloe.task import climb_mode as CM
+from rl.task import climb_mode as CM
 
 
 def quat_inv_rotate(q: np.ndarray, v: np.ndarray) -> np.ndarray:
@@ -34,7 +34,7 @@ def quat_inv_rotate(q: np.ndarray, v: np.ndarray) -> np.ndarray:
 
 def build(slope_deg: float):
   """Compile the training scene once through mjlab; return plain-MuJoCo pieces."""
-  import rl.chloe.task as A
+  import rl.task as A
 
   cfg = A.make_env_cfg(slope_deg, play=True)
   cfg.scene.num_envs = 1
@@ -64,10 +64,10 @@ def main() -> None:
   args = p.parse_args()
 
   if args.channel_pitch is not None:
-    import rl.chloe.task.robot as _r
+    import rl.task.robot as _r
     _r.rail.CHANNEL_PITCH_DEG = args.channel_pitch
   m, jnames, scale, offset, qpos0 = build(args.slope)
-  import rl.chloe.task.robot as _r
+  import rl.task.robot as _r
   rail = _r.rail
   d = mujoco.MjData(m)
   d.qpos[:] = qpos0

@@ -11,10 +11,10 @@ session a single scalar `|q - target|max` produced two confident and completely 
 diagnoses before per-joint reporting made the answer obvious in one run.
 
     # what the policy saw (widths only)
-    python -m rl.chloe.scripts.obs_ood rl/chloe/policies/<policy>.pt
+    python -m rl.scripts.obs_ood rl/policies/<policy>.pt
 
     # how far a real/synthetic observation falls outside it
-    python -m rl.chloe.scripts.obs_ood <policy>.pt --obs telemetry.csv
+    python -m rl.scripts.obs_ood <policy>.pt --obs telemetry.csv
 
 `--obs` takes a CSV of raw actor observations, one row of 96 floats per control step.
 Pure stdlib: reads the checkpoint zip directly, so it runs on a laptop.
@@ -78,7 +78,7 @@ def read_normalizer(path: str) -> tuple[list[float], list[float]]:
 
 def main() -> int:
   ap = argparse.ArgumentParser(description=__doc__)
-  ap.add_argument("checkpoint", help="a .pt from rl/chloe/policies/")
+  ap.add_argument("checkpoint", help="a .pt from rl/policies/")
   ap.add_argument("--obs", help="CSV of raw actor observations, 96 floats per row")
   ap.add_argument("--sigma", type=float, default=3.0, help="OOD threshold (default 3)")
   args = ap.parse_args()

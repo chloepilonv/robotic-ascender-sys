@@ -1,199 +1,137 @@
-# rl/ — reinforcement learning for the G1 project
+# rl — mjlab ascender climb (PPO)
 
-Everything RL lives here: MuJoCo Playground env registrations, the PPO
-trainer, the interactive viewer, saved policy weights, and headless smoke
-tests. Run everything from the repo root in the `everest` conda env
-(`/home/mrinal/miniconda3/envs/everest/bin/python`).
+## What we did (2026-08-29/30, hackathon)
 
-## Envs
+Goal: a Unitree G1 that climbs a Himalayan slope on a fixed rope with the ascender on its
+right wrist — walk, push the ascender up, walk, push — and stays up in wind and on ice.
 
-All envs are registered into `mujoco_playground.registry` on import
-(`import rl.environment` is enough) and share the G1Joystick obs/action
-layout (103-dim `state`, 216-dim `privileged_state`, 29 actions), so the
-pretrained mels policy loads into all of them:
+1. **The ascender on the rope, as a real mechanism** — `assets/robots/mujoco/rope_rail.py`
+   (shared, plain MuJoCo, see `ROPE_ASCENDER_ALIGNMENT.md` there). The rope passes through the
+   tool's channel (measured on the mesh); the tool is welded to a carriage that has ONE prismatic
+   joint along the rope; the cam = the joint's lower limit follows the highest point reached, so
+   it never goes back down. Rigid to 0.1 mm, verified by `rope_rail_check.py`.
+2. **An RL task on top of it** (`task/`): mjlab (MuJoCo Warp, 4096 robots on one GPU) + rsl_rl PPO.
+   Observations = what the real G1 measures (IMU, encoders, last action, wrist position from FK).
+   Rewards: go uphill, push the ascender up, stay upright, stay on one side of the rope, keep the
+   ascender ahead of the hips. Slope = tilted gravity (one task per slope, 0/10/20/30/40°).
+3. **Domain randomisation for robustness and sim-to-real**: wind 0–15 m/s random heading,
+   foot friction 0.4–0.9 (snow → crampons), PD gains ±20 %, torso mass ±10 %, CoM ±3 cm,
+   action delay 0–2 steps.
+4. **Training on HF Jobs** (`scripts/hf_job.sh`): clone → install → train → export ONNX → upload to
+   `iteratehack/g1-ascender`. Final run (`Slope20`, v3, 3000 it, ~1 h on an A10G): full-length
+   episodes, uphill speed at target, ascender progressing; verified in plain MuJoCo (sim2sim).
+5. **Deployment path**: `scripts/export_onnx.py` (obs → 29 joint targets, 50 Hz) and
+   `scripts/sim2sim.py` (runs the ONNX in plain CPU MuJoCo with hand-written obs/PD/ratchet — the
+   same loop the Jetson will run).
+6. **Climb mime for the real robot today** (`deterministic/`): RL walking policy + scripted
+   right-arm reach/pull cycle, MuJoCo twin and Unitree-SDK runner (arm_sdk + LocoClient).
 
-- `G1JoystickWalkDR` (`walk_dr_env.py`) — **the fine-tuning env for the
-  walking policy**. Upstream G1 joystick task with domain randomization:
-  launch-time per-env slopes (default 0–40°, `dr_config.slope_min_deg` /
-  `slope_max_deg`), the upstream G1 dynamics recipe (floor/foot friction
-  U(0.4, 1.0), frictionloss ×U(0.5, 2), armature ×U(1.0, 1.05), link
-  masses ×U(0.9, 1.1), torso mass ±1 kg, qpos0 jitter ±0.05), and
-  realistic wind (per-episode baseline up to 150 km/h with smooth
-  Ornstein–Uhlenbeck gusts/heading wander; same quadratic drag as
-  `wind_env`). Slope-aware internals (reset pose, termination,
-  terrain-relative gravity obs). `--domain_randomization` uses the
-  registered randomizer.
-- `climb_terrain_env.py` — `G1ClimbTerrain`: the **ascender climb task on
-  the merged Lhotse terrain** (`climb_scene.py`'s merged model: measured
-  Lhotse heightfield patches, draped rope, single-slide ascender carrier
-  with the jit-safe ratchet). `terrain_config.patch` selects the patch
-  (`A`–`D` measured; `B_flat0`, `B_slope25..50` synthetic curriculum).
-  `climb_env.py` is its unregistered machinery base (do not use directly).
-- `wind_env.py` — `G1JoystickWindFlatTerrain` / `G1JoystickWindRoughTerrain`:
-  upstream G1 joystick task + a quadratic-drag wind force on the torso,
-  written to `xfrc_applied` each control step.
+What is *not* done: per-env slope, gait-quality rewards, hardware deployment of the climb policy.
+See `ROADMAP.md`.
 
-`terrain.py` / `ascender.py` are plain numpy (scene building, viewing,
-CPU validation) and import without jax; the playground-backed envs import
-best-effort (`rl.environment.PLAYGROUND_IMPORT_ERROR` records why on a
-machine without jax).
 
-## Training (GPU)
+## Training recipe per policy (what each network was rewarded for)
 
-`rl/scripts/train_gpu.py` — PPO with all envs in parallel on the GPU via
-MJX/brax (no CPU env loop). Asserts CUDA visibility at startup, caps XLA
-memory allocation for a shared laptop GPU, and wraps every flag of the
-vendored `train_jax_ppo.py` (env registration, `--init_from_policy` npz
-fine-tune seeding, domain randomization, TensorBoard/W&B logging,
-checkpoints, rollout videos).
+Common to all: mjlab + rsl_rl PPO, 4096 envs, 24 steps/env per update, 3000 iterations (~1 h on an
+A10G), 50 Hz control, 15 s episodes, slope 20° (tilted gravity). Obs = base ang. vel (3), projected
+gravity (3), joint pos (29), joint vel (29), last action (29), ascender position in the pelvis frame (3)
+[+ mode bit from v4]. Randomisation: wind 0–15 m/s random heading, foot friction 0.4–0.9, PD gains ±20 %,
+torso mass ±10 %, CoM ±3 cm, action delay 0–2 steps. Terminations: tilt > 60°, pelvis < 0.35 m, time-out
+[+ facing > 90° from uphill from v4].
 
-CUDA setup (one-time): `pip install -r requirements.txt` (jax 0.11.1 +
-CUDA 12 plugin). The trainer preloads the pip NVIDIA wheels itself — no
-`LD_LIBRARY_PATH` needed.
+### v3 — `g1_ascender_slope20_v3_2026-08-30_04-35-59` (climbs, faces any direction)
+Rope model: channel at the mesh-hull centre, weld, qpos-clamp ratchet (superseded).
 
-### The standard fine-tune run
+| reward | weight | meaning |
+|---|---|---|
+| uphill_velocity | +2 | base velocity along +x tracks 0.3 m/s |
+| ascender_progress | +1 | ascender sliding up (≤ 1 m/s) |
+| upright | +1 | torso not tilted |
+| alive | +0.5 | |
+| rope_side | −5 | pelvis stays on its side of the rope (10 cm margin) |
+| hand_behind | −2 | ascender must stay uphill of the pelvis |
+| dof_pos_limits / action_rate_l2 / joint_torques_l2 | −1 / −0.1 / −1e-5 | limits, smoothness, effort |
 
-Domain-randomized slope + wind walk, fine-tuned from the pretrained mels
-policy, W&B logging to `project-yeti/ascender-rl` with eval videos:
+Result: +12 m in 30 s in sim2sim, no falls — but walks uphill *backwards* (no heading term), and
+slides + walks at the same time (no rhythm).
 
-```bash
-python rl/scripts/train_gpu.py \
-  --env_name G1JoystickWalkDR \
-  --domain_randomization \
-  --init_from_policy mels \
-  --num_envs 2048 \
-  --num_timesteps 100_000_000 \
-  --use_tb --use_wandb \
-  --wandb_entity project-yeti --wandb_project ascender-rl \
-  --wandb_eval_videos 1
-```
+### v7 — training now (`g1_ascender_slope20_v7_<timestamp>` when it lands)
+Rope model: **final** `rope_rail.py` (channel x=+15 mm, pitch +5°, rigid weld, limit-based ratchet, 3 N drag).
+Adds a **mode command** in the obs: SLIDE (push the ascender 0.5 m, feet still) → WALK (walk until the
+ascender is within 0.3 m of the pelvis) → repeat; random start mode. `sim2sim.py` runs the same FSM.
 
-Domain-randomization ranges live in `dr_config` and are overridden as
-dotted keys:
+| reward | weight | meaning |
+|---|---|---|
+| uphill_velocity | +2 | WALK: track 0.3 m/s uphill; SLIDE: stand still |
+| ascender_progress | +1 | SLIDE: ascender sliding up; WALK: penalise moving it (rope = support, not propulsion) |
+| rope_tension | +0.5 | rope tension inside 20–150 N (moderate, continuous) |
+| rope_jerk | −0.002 | |Δtension| per step — no sudden pulling |
+| face_uphill | +1 | cosine(torso forward, uphill): +1 facing up, −1 facing down |
+| hiking_posture | +0.5 | hips −0.45, knees 0.85, waist lean 0.15 rad (std 0.4) |
+| upright | +1 | torso not tilted |
+| alive | +0.5 | |
+| stillness | −0.02 | joint speed² while in SLIDE (no jiggling) |
+| rope_side | −5 | pelvis stays on its side of the rope |
+| hand_behind | −2 | ascender stays uphill of the pelvis |
+| dof_pos_limits / action_rate_l2 / joint_torques_l2 | −1 / −0.2 / −1e-5 | limits, smoothness (doubled), effort |
 
-- slopes 0–15 deg: `{"dr_config.slope_min_deg": 0.0, "dr_config.slope_max_deg": 15.0}`
-- max wind 10 m/s: `dr_config.wind_max_speed_kmph` is in **km/h** — 10 m/s
-  = `36.0` (gusts go ±`gust_fraction` = ±25% beyond the baseline)
-- fixed foot friction 1.0: `"dr_config.friction_range": [1.0, 1.0]`
+v4 (heading + mode, old tool angle), v5/v6 (cancelled: geometry changed mid-run) are not kept.
+The exact code is `task/env_cfg.py` (weights) and `task/mdp.py` (functions); `task/climb_mode.py` (rhythm).
 
-Full example:
+Files:
+- `robot.py` — `assets/robots/mujoco/g1_unitree_ascender.xml` as an mjlab entity, plus a
+  `rope` (visual cylinder along world +x) and an `rope_carriage` body with one slide
+  joint, welded (site connect) to the wrist origin — the rope axis per `assets/ascender/MOUNT.md`.
+- `env_cfg.py` — `RatchetEnv` (after every physics substep the slide velocity is clamped
+  ≥ 0: the cam), observations / rewards / terminations / domain randomisation, PPO config.
+- `mdp.py` — task terms: `ascender_pos_b` obs, `uphill_velocity`, `ascender_progress`,
+  `rope_side`, `hand_behind_pelvis` rewards, `wind_on_torso` event.
+- `__init__.py` — registers `Himalayas-Ascender-Slope{0,10,20,30,40}-G1`.
 
-```bash
-python rl/scripts/train_gpu.py \
-  --env_name G1JoystickWalkDR \
-  --domain_randomization --init_from_policy mels \
-  --num_envs 2048 \
-  --num_timesteps 100_000_000 \
-  --use_tb --use_wandb \
-  --wandb_entity project-yeti --wandb_project ascender-rl \
-  --wandb_eval_videos 1 \
-  --playground_config_overrides \
-  '{"dr_config.slope_min_deg": 0.0, "dr_config.slope_max_deg": 15.0, "dr_config.wind_max_speed_kmph": 36.0, "dr_config.friction_range": [1.0, 1.0]}'
-```
+Slope is done by **tilting gravity** (world +x = uphill), not the floor, so the rope is a
+plain +x line. Gravity is a global MuJoCo option, so slope is fixed per run; wind
+(0–30 m/s, random heading, per episode) and foot friction (0.05 ice … 0.9 crampons,
+per env) are randomised inside a run.
 
-Notes:
-
-- **Intermediate evals are on by default** (`--run_evals true`): every
-  `num_timesteps / num_evals` steps (G1 recipe: `num_evals=20`), 128
-  dedicated eval envs roll out the deterministic policy; the reward is
-  logged (`eval/episode_reward`) and a checkpoint saved at every eval
-  point (`logs/<exp>/checkpoints/<step>`).
-- `--wandb_eval_videos 1` renders a rollout of the current policy at
-  every eval point and logs it to W&B as `eval/video` (env must render,
-  i.e. EGL available).
-- W&B entity/project: `--wandb_entity project-yeti --wandb_project
-  ascender-rl` (defaults: entity = your account, project `mjxrl`).
-- VRAM sizing (8 GB laptop GPU): 512 envs fits comfortably; try 2048 for
-  throughput. OOM → drop `--num_envs` to 1024 or `--unroll_length` to 10.
-- `--init_from_policy mels` resolves to `rl/policies/mels_g1_joystick.npz`
-  (or pass a path / any brax-layout npz). Mutually exclusive with
-  `--load_checkpoint_path`.
-
-### Terrain climb training
+Train / play / export (GPU box; `--gpu-ids None` for a CPU dry run):
 
 ```bash
-python rl/scripts/train_gpu.py --env_name G1ClimbTerrain \
-  --num_timesteps 100_000_000 --use_tb \
-  --wandb_entity project-yeti --wandb_project ascender-rl --wandb_eval_videos 1 \
-  --playground_config_overrides '{"terrain_config.patch": "B"}'
+.venv-mjlab/bin/python -m rl.scripts.train_mjlab_ppo Himalayas-Ascender-Slope10-G1
+.venv-mjlab/bin/python -m rl.scripts.train_mjlab_ppo Himalayas-Ascender-Slope20-G1 \
+    --agent.resume --agent.load-run logs/rsl_rl/g1_ascender_slope10/<run>   # curriculum
+.venv-mjlab/bin/python -m rl.scripts.play_mjlab Himalayas-Ascender-Slope20-G1 \
+    --checkpoint-file logs/rsl_rl/g1_ascender_slope20/<run>/model_5000.pt
+.venv-mjlab/bin/python -m rl.scripts.export_onnx Himalayas-Ascender-Slope20-G1 \
+    logs/rsl_rl/g1_ascender_slope20/<run>/model_5000.pt policy.onnx
 ```
 
-`terrain_config.patch` selects the terrain: measured Lhotse patches
-`A`–`D` (33.7–38.6°), `B_flat0` (flat reference), `B_slope25/30/35/45/50`
-(curriculum). Same obs layout as G1Joystick → `--init_from_policy mels`
-works.
+Policy I/O (50 Hz): obs = ang_vel(3) + projected_gravity(3) + joint_pos(29) +
+joint_vel(29) + last_action(29) + ascender_pos_in_pelvis_frame(3) = 96;
+action = 29 joint-position offsets (`default + action * G1_ACTION_SCALE`).
+Everything in the obs is available on the real G1 (IMU, encoders, wrist FK).
 
-### Other envs
+Next steps: see `ROADMAP.md`.
 
-```bash
-python rl/scripts/train_gpu.py --env_name G1JoystickWindFlatTerrain ...   # flat + wind
-python rl/scripts/train_gpu.py --env_name G1JoystickWindRoughTerrain ...  # rough + wind
-```
+## Policies (`rl/policies/`) — read this before using one
 
-## Previewing an env with the base policy
+Each policy = `.onnx` (deploy / sim2sim, obs → 29 joint targets at 50 Hz) + `.pt` (resume training).
+Name = `<task>_<version>_<HF run timestamp>`; the timestamp is the run folder on https://huggingface.co/iteratehack/g1-ascender.
 
-```bash
-python rl/scripts/viewer.py --policy mels --env_name G1JoystickWindFlatTerrain
-python rl/scripts/viewer.py --policy mels --env_name G1JoystickWalkDR
-```
+| File | Trained | Rope model it was trained on | Behaviour | Use it for |
+|---|---|---|---|---|
+| `g1_ascender_slope20_SMOKE_2026-08-30_02-46-13` | 20 iterations | old | random, falls | plumbing tests only |
+| `g1_ascender_slope20_v1_2026-08-30_02-47-06` | 3000 iterations | **old** (rope at the wrist joint, soft attachment) | climbed in its own world; **falls on the fixed rope** | record only — do not demo |
+| **`g1_ascender_slope20_v3_2026-08-30_04-35-59`** | 3000 iterations | **final** = `assets/robots/mujoco/rope_rail.py` | climbs: ~0.3 m/s uphill, ascender pushed 3–4 m in 10 s, no falls (4/4 envs with wind+ice DR); sim2sim +4.4 m in 12 s, standing | **the demo policy** → `sim2sim.py`, deployment |
 
-WASD/QE drive the joystick command, `X` stops, `R` toggles 2x speed;
-arrow keys set wind on the wind envs (red arrow in-scene), `0` wind off.
-`G1JoystickWalkDR` samples wind per episode from `dr_config` (arrow keys
-don't apply); `G1ClimbTerrain` has no live knobs — set the patch when
-loading. Without `--policy` the robot sags and falls (no policy). First
-launch JIT-compiles (~1 min for the climb env) before the window opens.
+**Rule: a policy is only valid with the rope model it was trained on.** The network's inputs (wrist
+position, joint angles) change meaning when the rope/anchor moves, so any change to `rope_rail.py`
+(see `assets/robots/mujoco/ROPE_ASCENDER_ALIGNMENT.md`) requires retraining. v2 was trained on an
+intermediate rope and crashed; nothing kept.
 
-Trained checkpoints: `python rl/scripts/viewer.py --policy
-logs/<exp>/checkpoints`.
+How to check a policy: `python -m rl.scripts.eval_onnx_mjlab <policy.onnx>` (inside the training
+env, the reference) and `mjpython -m rl.scripts.sim2sim <policy.onnx>` (plain MuJoCo, like the
+Jetson). If both fall the policy is wrong; if only sim2sim falls the deploy loop is wrong.
 
-The browser harness (teammate's interactive climber) previews the merged
-scene with the same policy: `python -m app.harness.runtime --live --world
-lhotse_B` (see `app/harness/README.md`).
-
-## Layout
-
-- `environment/` — envs registered into `mujoco_playground.registry` on
-  import (`import rl.environment` is enough):
-  - `walk_dr_env.py` — `G1JoystickWalkDR` (fine-tuning env; see above)
-  - `climb_terrain_env.py` — `G1ClimbTerrain`: the ascender climb task on
-    the merged Lhotse terrain (via `climb_scene.build_scene`)
-  - `climb_env.py` — unregistered machinery base for the terrain env
-  - `wind_env.py` — `G1JoystickWind{Flat,Rough}Terrain`
-  - `climb_scene.py`, `terrain.py`, `ascender.py`, `robot.py` — the
-    merged-scene builder and its numpy support (terrain patches, rope
-    route, carrier); `climb_terrain_env` composes them
-  - `walk_policy.py` — numpy reproduction of the mels policy + gait
-    clock, used by the scene viewer
-- `scripts/` — entry points (run from the repo root):
-  - `train_gpu.py` — GPU trainer (see above)
-  - `train_jax_ppo.py` — the underlying trainer (same flags; CPU
-    fallback if no GPU is visible)
-  - `viewer.py` — interactive WASD viewer with live wind:
-    `python rl/scripts/viewer.py --policy mels --env_name G1JoystickWindFlatTerrain`
-  - `climb_scene.py` — build/inspect/export/view the merged scene
-    (`python -m rl.scripts.climb_scene --list`)
-- `policies/` — `mels_g1_joystick.npz`, the pretrained baseline
-  (`--policy mels` in the viewer, `--init_from_policy mels` for
-  fine-tuning). PPO checkpoints land in `logs/<exp>/checkpoints/<step>`
-  (repo root, gitignored).
-- `tests/` — headless smoke tests, plain scripts:
-  `python rl/tests/test_walk_dr_env.py`,
-  `python rl/tests/test_climb_scene.py`,
-  `python rl/tests/test_wind_env.py`,
-  `python rl/tests/test_viewer_internals.py [CKPT_DIR]`.
-
-## Importing the envs
-
-```python
-import rl.environment  # registers the envs
-from mujoco_playground import registry
-env = registry.load("G1JoystickWalkDR")
-```
-
-`rl/scripts/train_jax_ppo.py` does this bootstrap itself when `--env_name`
-starts with `G1JoystickWind`, `G1JoystickWalkDR`, or `G1Climb`.
-
-## `chloe/` — mjlab ascender climb (PPO)
-
-See `rl/chloe/README.md`.
+Also here: `rl/policies/mels_g1_joystick.npz` — colleagues' pretrained G1 walker (JAX), legs of the
+climb mime (`deterministic/`). Full runs + all checkpoints: https://huggingface.co/iteratehack/g1-ascender
+(org members). ONNX I/O and obs order: `scripts/export_onnx.py` docstring.

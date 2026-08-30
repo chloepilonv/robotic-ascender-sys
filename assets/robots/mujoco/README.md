@@ -62,7 +62,7 @@ print(rail.rope_state(model, data))      # {"rope_progress_m", "tension_N", "eng
 - `add_rope_rail` sizes the rope from the reset pose you give it and returns the joint dict
   **including the solved wrist angles** (channel parallel to the rope) — use that dict for the reset.
 - Slope: tilt gravity (`model.opt.gravity = (-g sin s, 0, -g cos s)`, +x uphill) rather than the floor;
-  the rope stays a +x line. This is what the RL task does (`rl/chloe/task/robot.py`).
+  the rope stays a +x line. This is what the RL task does (`rl/task/robot.py`).
 - Inside mjlab the names are prefixed: `robot/rope_slide` etc. (`prefix="robot/"` in `ratchet`/`rope_state`).
 - The cam is a **moving lower joint limit** (never overwrite qpos: that fights the solver and the
   weld drifts by centimetres). Cam friction 3 N, rope Ø11 mm; MuJoCo `njmax` ≥ ~1000 or the weld drops.

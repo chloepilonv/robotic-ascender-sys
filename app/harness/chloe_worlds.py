@@ -29,7 +29,7 @@ She trained on a FLAT plane with GRAVITY TILTED by the slope: world +x is
 "uphill" because that is the direction gravity does not pull, and the robot's
 spawn attitude is a rotation about +y by the slope angle, which puts its
 projected gravity at exactly (0, 0, -1). That is `frame="tilted_gravity"`, and
-it reproduces `rl/chloe/scripts/sim2sim.py` exactly.
+it reproduces `rl/scripts/sim2sim.py` exactly.
 
 It also LOOKS wrong: on the 3-D page the ground is level, the rope is
 horizontal, the robot leans 20 degrees backwards, and "height gained" reads
@@ -94,7 +94,7 @@ SOLVER_LINE_SEARCH_ITERATIONS = 20
 GRAVITY_MAGNITUDE = 9.81
 CONTROL_DT_SECONDS = chloe_policy.CONTROL_DT_SECONDS
 
-# Her reset pose (rl/chloe/task/robot.py BASE_JOINT_POS), as the mjlab
+# Her reset pose (rl/task/robot.py BASE_JOINT_POS), as the mjlab
 # regex->radians map `rope_rail.set_pose` consumes.
 BASE_JOINT_POSITIONS_RADIANS = {
     ".*_hip_pitch_joint": -0.312,

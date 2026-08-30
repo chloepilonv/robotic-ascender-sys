@@ -16,7 +16,7 @@ import mujoco
 from mjlab.asset_zoo.robots.unitree_g1 import g1_constants as g1
 from mjlab.entity import EntityCfg
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "assets/robots/mujoco"))
 import rope_rail as rail  # noqa: E402  (shared, mujoco-only)
 
