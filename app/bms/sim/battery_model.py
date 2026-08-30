@@ -18,6 +18,7 @@ N_CELLS, V_CELL_MIN, V_CELL_MAX, R_INT_25 = 13, 3.0, 4.2, 0.08
 # --- thermal ---
 C_TH_MOTOR, R_TH_MOTOR = 50.0, 2.0       # J/K, K/W
 C_TH_BAT, R_TH_BAT = 2000.0, 1.5
+CUTOFF_DELAY_S = 0.5      # BMS trips only after sustained under-voltage (real BMS debounce), not on one spike
 
 
 class Environment:
@@ -49,6 +50,7 @@ class BatteryThermalModel:
         self.t_motor = np.full(n_motors, env.t_amb if t_motor0 is None else t_motor0)
         self.wh_used = 0.0
         self.cutoff = False
+        self.undervoltage_s = 0.0
 
     @staticmethod
     def v_ocv(soc): return N_CELLS * (V_CELL_MIN + (V_CELL_MAX - V_CELL_MIN) * soc / 100.0)
@@ -70,7 +72,11 @@ class BatteryThermalModel:
             self.soc -= 100.0 * i_pack * dt / (3600.0 * PACK_CAPACITY_AH * f_t)
         self.soc = max(self.soc, 0.0)
         self.wh_used += p_elec * dt / 3600.0
-        if v_pack < N_CELLS * V_CELL_MIN or self.soc <= 0 or f_t == 0:
+        if v_pack < N_CELLS * V_CELL_MIN:
+            self.undervoltage_s += dt
+        else:
+            self.undervoltage_s = 0.0
+        if self.undervoltage_s >= CUTOFF_DELAY_S or self.soc <= 0 or f_t == 0:
             self.cutoff = True
         # thermal (first order), thinner air -> worse cooling
         rth_m, rth_b = R_TH_MOTOR * self.env.cooling_scale, R_TH_BAT * self.env.cooling_scale
