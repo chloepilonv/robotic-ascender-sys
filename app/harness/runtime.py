@@ -66,6 +66,8 @@ from app.harness import worlds as worlds_module  # noqa: E402
 from app.harness import climb_worlds as climb_worlds_module  # noqa: E402
 from app.harness import graphics as graphics_module  # noqa: E402
 from app.harness.natural_wind import NaturalWind  # noqa: E402
+from app.safety.human_gate import (  # noqa: E402
+    HumanGate, HumanWorld, VirtualFrustumDetector)
 
 RENDER_WIDTH, RENDER_HEIGHT = 960, 540    # 16:9 -- the page fills the viewport with it
 RENDER_MAXIMUM_WIDTH, RENDER_MAXIMUM_HEIGHT = 1920, 1080   # native-resolution cap (F = fullscreen in the page)
@@ -716,6 +718,19 @@ def run(arguments) -> str:
     if server is not None:
         server.knobs["friction"] = meta["foot_friction"]
 
+    # HUMAN GATE (app/safety/human_gate.py). Deterministic, outside the policy:
+    # the forward (= up-rope) command is clamped to <= 0 while a human is in the
+    # d435i frustum. Humans are virtual (no physics; THEIR model is untouched).
+    human_world = HumanWorld.from_model(model)   # virtual unless the model has human_* bodies
+    human_gate = HumanGate(
+        VirtualFrustumDetector(model, human_world, arguments.human_range),
+        clear_after_seconds=arguments.human_clear_seconds)
+    for distance in arguments.human:
+        human_world.spawn_ahead_of(
+            episode.spawn_position_world, root_yaw_radians(episode.data.qpos[3:7]),
+            distance)
+        print(f"[safety] human spawned {distance:.1f} m ahead", flush=True)
+
     renderer = None
     render_size = (RENDER_WIDTH, RENDER_HEIGHT)   # follows the browser viewport in live mode
     camera = ChaseCamera()
@@ -855,6 +870,8 @@ def run(arguments) -> str:
             command = np.array([
                 arguments.command_speed if arguments.hold_w else 0.0, 0.0, 0.0])
 
+        human_gate.update(episode.data, episode.tick / episode.control_hz)
+        command = human_gate.mask(command)
         row = episode.step(command, wind_velocity_world)
 
         if row["command"].tolist() != last_logged_command:
@@ -887,6 +904,7 @@ def run(arguments) -> str:
         if renderer is not None:
             renderer.update_scene(episode.data, camera.aim(
                 row["root_position_world"], azimuth_degrees, elevation_degrees))
+            human_world.draw(renderer.scene)
             jpeg = encode_jpeg(renderer.render())
             latest_jpeg[0] = jpeg
             if not arguments.live or frames_rendered < LIVE_MAXIMUM_RECORDED_FRAMES:
@@ -916,6 +934,7 @@ def run(arguments) -> str:
                 # INSTANTANEOUS, not the dial: with natural wind on these surge
                 # and swing with every gust, and the ribbons/sound follow them.
                 **natural_wind.report(),
+                **human_gate.state(),
                 "fell": bool(row["fell"]),
                 "fall_reason": episode.fall_reason,
                 "root_position_world": row["root_position_world"].tolist(),
@@ -1001,6 +1020,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--randomise-reset-velocity", action="store_true",
                         help="reproduce their reset base-velocity draw U(-0.5, 0.5)")
     parser.add_argument("--no-render", action="store_true")
+    parser.add_argument("--human", type=float, action="append", default=[],
+                        help="spawn a virtual human this many metres ahead of"
+                             " the spawn point (repeatable)")
+    parser.add_argument("--human-range", type=float, default=2.0,
+                        help="gate range: a human closer than this blocks UP")
+    parser.add_argument("--human-clear-seconds", type=float, default=1.0,
+                        help="hysteresis: seconds without a detection before UP re-arms")
     parser.add_argument("--output-name", default=None)
     parser.add_argument("--port", type=int, default=8765)
     return parser
