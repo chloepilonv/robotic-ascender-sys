@@ -64,13 +64,25 @@ Everything in the obs is available on the real G1 (IMU, encoders, wrist FK).
 
 Next steps: see `ROADMAP.md`.
 
-## Policies (`rl/chloe/policies/`)
-| File | What |
-|---|---|
-| `rl/policies/mels_g1_joystick.npz` | colleagues' pretrained G1 walker (JAX) — legs of the climb mime |
-| `g1_ascender_slope20_SMOKE.{pt,onnx}` | climb policy, **20 iterations only** (pipeline test, does not climb) — same I/O as the real one |
-| `g1_ascender_slope20.{pt,onnx}` | the trained climb policy — lands here when the HF job finishes |
+## Policies (`rl/chloe/policies/`) — read this before using one
 
-Full runs + checkpoints: https://huggingface.co/iteratehack/g1-ascender (org members only).
-ONNX I/O: input `obs` float32 [1, 96], output `action` float32 [1, 29] (see `scripts/export_onnx.py` docstring for the obs order).
-Load in Python: `onnxruntime.InferenceSession("rl/chloe/policies/g1_ascender_slope20_SMOKE.onnx").run(None, {"obs": obs})[0]`
+Each policy = `.onnx` (deploy / sim2sim, 96 obs → 29 joint targets at 50 Hz) + `.pt` (resume training).
+
+| File | Trained | Rope model it was trained on | Behaviour | Use it for |
+|---|---|---|---|---|
+| `g1_ascender_slope20_SMOKE` | 20 iterations | old | random, falls | plumbing tests only |
+| `g1_ascender_slope20_v1` | 3000 iterations | **old** (rope at the wrist joint, soft attachment) | climbed in its own world; **falls on the fixed rope** | record only — do not demo |
+| `g1_ascender_slope20` (v3) | 3000 iterations | **final** = `assets/robots/mujoco/rope_rail.py` | the demo policy | `sim2sim.py`, deployment |
+
+**Rule: a policy is only valid with the rope model it was trained on.** The network's inputs (wrist
+position, joint angles) change meaning when the rope/anchor moves, so any change to `rope_rail.py`
+(see `assets/robots/mujoco/ROPE_ASCENDER_ALIGNMENT.md`) requires retraining. v2 was trained on an
+intermediate rope and crashed; nothing kept.
+
+How to check a policy: `python -m rl.chloe.scripts.eval_onnx_mjlab <policy.onnx>` (inside the training
+env, the reference) and `mjpython -m rl.chloe.scripts.sim2sim <policy.onnx>` (plain MuJoCo, like the
+Jetson). If both fall the policy is wrong; if only sim2sim falls the deploy loop is wrong.
+
+Also here: `rl/policies/mels_g1_joystick.npz` — colleagues' pretrained G1 walker (JAX), legs of the
+climb mime (`deterministic/`). Full runs + all checkpoints: https://huggingface.co/iteratehack/g1-ascender
+(org members). ONNX I/O and obs order: `scripts/export_onnx.py` docstring.
