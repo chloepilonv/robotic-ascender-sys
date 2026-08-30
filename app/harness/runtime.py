@@ -460,10 +460,12 @@ def run(arguments) -> str:
     # instead of a second oracle detector disagreeing with it. Its own
     # hysteresis is off (0.0) because the follower already has two -- the
     # 1.0/1.3 m bands and the 1 s LOST timeout.
-    # THE STORM, as the robot experiences it (app/harness/storm.py). The page's
-    # `storm` knob closes the model's fog with the INSTANTANEOUS wind speed and
-    # paints blowing snow into the eye images between the render and the block
-    # matcher. Visual and sensor only: PARITY.md has the same-seed diff.
+    # VISIBILITY, as the robot experiences it (app/harness/storm.py). The page's
+    # `visibility` knob is a DISTANCE IN METRES, derived from nothing (user's
+    # ruling, 2026-08-30 -- it replaced a `storm` switch whose thickness came
+    # out of the wind speed). A fog is composited into the eye images between
+    # the render and the block matcher. Visual and sensor only: PARITY.md has
+    # the same-seed diff.
     storm_vision = storm_module.StormVision(seed=arguments.seed)
 
     def make_guide(current_scene, current_model, current_episode):
@@ -515,12 +517,16 @@ def run(arguments) -> str:
           f" starts {'ON' if arguments.guide else 'OFF'}"
           f" (knob `guide`, W walks the human up the rope, S back down it)",
           flush=True)
-    print(f"[storm] starts {'ON' if arguments.storm else 'OFF'} (knob `storm`):"
-          f" a WHITE-OUT -- visibility"
-          f" {storm_module.CLEAR_VISIBILITY_METERS:.0f} m *"
-          f" exp(-wind / {storm_module.VISIBILITY_DECAY_MPS:.0f}), composited"
-          f" from the eye renderer's depth buffer before the matcher"
-          f" ({', '.join(f'{s:.0f} m/s -> {storm_module.visibility_meters(s):.1f} m' for s in (6, 12, 20))})",
+    starting_visibility = storm_module.clamp_visibility_meters(
+        arguments.visibility)
+    print(f"[visibility] starts at {starting_visibility:.1f} m"
+          f" (knob `visibility`, metres;"
+          f" {storm_module.CLEAR_VISIBILITY_METERS:.0f} m = clear, the eyes"
+          f" untouched;"
+          f" {storm_module.MINIMUM_VISIBILITY_METERS:.0f} m = white-out)."
+          f" A fog composited from the eye renderer's depth buffer before the"
+          f" matcher; white-out share"
+          f" {', '.join(f'{v:.0f} m -> {storm_module.whiteout_share(v):.2f}' for v in (100, 30, 10, 3))}",
           flush=True)
 
     heading = HeadingController(arguments.command_speed)
@@ -604,7 +610,11 @@ def run(arguments) -> str:
                 [server.knobs.get("wind_x", 0.0),
                  server.knobs.get("wind_y", 0.0)],
                 1.0 / episode.control_hz, episode.tick / episode.control_hz)
-            storm_enabled = bool(server.knobs.get("storm", 0.0))
+            # An older page still sends a `storm` 0/1 knob. `Server._handle`
+            # stores any name it is given, so that key simply sits in the dict
+            # unread -- accepted, ignored, and unable to crash this loop.
+            visibility_meters = server.knobs.get(
+                "visibility", storm_module.CLEAR_VISIBILITY_METERS)
             # The battery model's wind chill is live: the dial is m/s, hers is
             # km/h.
             if episode.bms is not None:
@@ -655,19 +665,18 @@ def run(arguments) -> str:
         else:
             command = np.array([
                 arguments.command_speed if arguments.hold_w else 0.0, 0.0, 0.0])
-            storm_enabled = bool(arguments.storm)
+            visibility_meters = starting_visibility
             natural_wind.enabled = bool(arguments.wind_natural)
             wind_velocity_world[:] = natural_wind.step(
                 arguments.wind, 1.0 / episode.control_hz,
                 episode.tick / episode.control_hz)
 
-        # THE STORM, before the guide: `degrade` has to know this tick's wind
-        # speed before the eye cameras render, which happens inside
+        # VISIBILITY, before the guide: `degrade` has to know this tick's
+        # visibility before the eye cameras render, which happens inside
         # `guide_system.update` on the next line. The white-out on the PAGE is
-        # the 3D view's own fog (app/web/three/world.js), driven from the same
-        # `storm` knob and the same instantaneous speed in the state message.
-        storm_vision.update(storm_enabled,
-                            natural_wind.report()["wind_speed_mps"])
+        # the 3D view's own fog (render3d.html + three/world.js), driven from
+        # the same knob echoed back in the state message.
+        storm_vision.update(visibility_meters)
 
         # THE GUIDE OWNS THE COMMAND WHILE IT IS ON. W/A/D stop steering the
         # robot: W tells the HUMAN to walk, and what the robot does about that
@@ -743,8 +752,8 @@ def run(arguments) -> str:
                 # INSTANTANEOUS, not the dial: with natural wind on these surge
                 # and swing with every gust, and the ribbons/sound follow them.
                 **natural_wind.report(),
-                # The storm the ROBOT is in: whether it is on, and how far it
-                # can see. `visibility_meters` is null when the storm is off.
+                # How far the ROBOT can see, in metres -- always a number, and
+                # the single field the page's fog, flakes and slider read.
                 **storm_vision.state(),
                 # Whichever gate is live -- the guide's vision while the guide
                 # is on, the sim oracle otherwise. One set of `human_*` fields
@@ -854,13 +863,20 @@ def build_argument_parser() -> argparse.ArgumentParser:
                              " rope route and the robot follows it by stereo"
                              " vision. Live mode has the same thing as the"
                              " `guide` knob on the page.")
-    parser.add_argument("--storm", action="store_true",
-                        help="start with the STORM on: fog closes with the"
-                             " instantaneous wind speed and blowing snow is"
-                             " painted into the eye images before the block"
-                             " matcher. Live mode has the same thing as the"
-                             " `storm` knob on the page. Visual and sensor"
-                             " only; the physics is identical either way.")
+    parser.add_argument("--visibility", type=float,
+                        default=storm_module.CLEAR_VISIBILITY_METERS,
+                        metavar="METRES",
+                        help="how far the robot can see, in metres."
+                             f" {storm_module.CLEAR_VISIBILITY_METERS:.0f}"
+                             " (the default) is CLEAR and the eye images are"
+                             " handed back untouched;"
+                             f" {storm_module.MINIMUM_VISIBILITY_METERS:.0f}"
+                             " is a white-out. Live mode has the same thing as"
+                             " the `visibility` slider on the page. Visual and"
+                             " sensor only; the physics is identical either"
+                             " way. Replaces --storm (user's ruling,"
+                             " 2026-08-30): visibility is its own dial and owes"
+                             " the wind nothing.")
     parser.add_argument("--wind", type=float, nargs=2, default=(0.0, 0.0),
                         metavar=("EAST", "NORTH"),
                         help="headless only: the world-frame wind VELOCITY in"

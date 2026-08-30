@@ -125,6 +125,9 @@
   input[type=range]::-moz-range-thumb { width: 13px; height: 13px; border-radius: 50%;
     background: var(--ink); border: none; }
 
+  .rangeends { display: flex; justify-content: space-between; margin-top: 3px;
+               font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
+               color: var(--ink-3); }
   .windtools { display: flex; align-items: center; gap: 7px; }
   .windswitches { display: flex; align-items: center; justify-content: space-between;
                   gap: 10px; margin-top: 8px; }
@@ -267,8 +270,17 @@
       <input type="range" id="windStrength" min="0" max="25" step="0.5" value="0">
       <div class="windswitches">
         <button class="switchrow" id="naturalSwitch" role="switch" aria-checked="false">natural<i class="switch"></i></button>
-        <button class="switchrow" id="stormSwitch" role="switch" aria-checked="false">storm<i class="switch"></i></button>
       </div>
+    </section>
+
+    <!-- VISIBILITY is its own card because it is its own thing (user's ruling,
+         2026-08-30): it used to be a `storm` switch inside Wind whose thickness
+         came from the wind speed, and it is now a plain distance dial that the
+         wind has nothing to do with. Left is clear, right is a white-out. -->
+    <section class="card">
+      <div class="head"><h2>Visibility</h2><output id="visibilityOut">100 m</output></div>
+      <input type="range" id="visibility" min="0" max="1000" step="1" value="0">
+      <div class="rangeends"><span>clear</span><span>white-out</span></div>
     </section>
 
     <section class="card">
@@ -343,7 +355,8 @@
 </script>
 <script type="module">
 import { Stage } from '/app/web/three/stage.js';
-import { fnv1a32 } from '/app/web/three/world.js';
+import { fnv1a32, whiteoutShare, CLEAR_VISIBILITY_METERS,
+         MINIMUM_VISIBILITY_METERS } from '/app/web/three/world.js';
 
 const $ = id => document.getElementById(id);
 const canvas = $('canvas'), stage = new Stage(canvas);
@@ -386,7 +399,7 @@ function paintHud(frame) {
                     east: windVelocity[0], north: windVelocity[1] };
   paintWindReadout();
   noteWindSpeed(state.windNow.speed);
-  noteStorm(frame.storm);
+  noteVisibility(frame.visibility_meters);
   paintBatteryCard(frame);
   paintGuideCard(frame);
   const climbing = Number(command[0]) > 0;
@@ -524,6 +537,11 @@ function paintGuideSwitch() {
   // keycap appears with the guide and A/D keep turning the robot either way
   $('backKey').style.display = guideState.on ? '' : 'none';
   $('climbLabel').textContent = guideState.on ? ' move the guide ' : ' climb ';
+  // THE CAMERA GOES WITH THE SUBJECT (user's ruling, 2026-08-30): guide on, the
+  // boom and the first-person eye are HERS; guide off, they are the robot's again.
+  // Set here rather than in the click handler so the runtime's own echo moves the
+  // camera too -- a run started with `--guide` opens framed on the hiker.
+  stage.setFollowGuide(guideState.on);
   paintEyeViewVisibility();
 }
 $('guideSwitch').addEventListener('click', () => {
@@ -643,14 +661,12 @@ function updateWindRibbons(elapsedSeconds, widthPixels, heightPixels) {
     }
   }
 }
-// The same visibility veil the 2-D page draws. The 3-D fog only tints GEOMETRY, and on a
-// close, dark slope very little of it accumulates -- so the whiteout that sells a storm
-// comes from this white haze over the whole frame, thickest in the distance.
+// A white haze over the whole frame, thickest in the distance. The 3-D fog only tints
+// GEOMETRY, and on a close, dark slope very little of it accumulates -- so this is what
+// sells the white-out. It follows the VISIBILITY dial and nothing else.
 const VEIL_MAXIMUM_ALPHA = 0.35;
 function drawVisibilityVeil(widthPixels, heightPixels) {
-  if (!stormState.on) return;
-  const alpha = Math.min(VEIL_MAXIMUM_ALPHA,
-    windScreen.speed / BLIZZARD_METERS_PER_SECOND * VEIL_MAXIMUM_ALPHA * 1.25);
+  const alpha = VEIL_MAXIMUM_ALPHA * whiteoutShare(visibilityState.meters);
   if (alpha < 0.003) return;
   const gradient = snowContext.createRadialGradient(
     widthPixels * 0.5, heightPixels * 0.44, 0,
@@ -712,8 +728,6 @@ const WIND_SOUND_SILENT_METERS_PER_SECOND = 1.0;
 const WIND_SOUND_FULL_METERS_PER_SECOND = 20.0;
 const WIND_GAIN_TIME_CONSTANT_SECONDS = 0.15;
 const WIND_SOUND_UPDATE_INTERVAL_MILLISECONDS = 60;
-const STORM_GAIN_MULTIPLIER = 1.25;                 // +25% while the storm blows
-const STORM_LOW_PASS_MULTIPLIER = 0.8;              // and a duller top end
 const windSound = { context: null, master: null, bandPass: null, lowPass: null, muted: false, speed: 0 };
 function readWindSoundMuted() {
   try { return localStorage.getItem('windSoundMuted') === '1'; } catch { return false; }
@@ -770,14 +784,16 @@ function updateWindSound() {
     (WIND_SOUND_FULL_METERS_PER_SECOND - WIND_SOUND_SILENT_METERS_PER_SECOND)));
   const silent = windSound.muted || weatherIsFrozen() || share <= 0;
   const now = context.currentTime;
-  // a storm is the same wind heard through falling snow: louder, and duller on top
-  const stormGain = stormState.on ? STORM_GAIN_MULTIPLIER : 1;
-  const stormTone = stormState.on ? STORM_LOW_PASS_MULTIPLIER : 1;
-  const gain = silent ? 0 : Math.min(0.95, 0.9 * Math.pow(share, 1.5) * stormGain);
+  // THE SOUND IS THE WIND'S, AND ONLY THE WIND'S (user's ruling, 2026-08-30). It used
+  // to gain +25% and lose its top end while the `storm` switch was on -- "the same wind
+  // heard through falling snow". With visibility split off into its own dial, wind keeps
+  // doing what wind does and visibility does only visibility, so those two multipliers
+  // are gone rather than re-pointed at the new knob.
+  const gain = silent ? 0 : Math.min(0.95, 0.9 * Math.pow(share, 1.5));
   windSound.master.gain.setTargetAtTime(gain, now, WIND_GAIN_TIME_CONSTANT_SECONDS);
   windSound.bandPass.frequency.setTargetAtTime(300 + 1100 * share, now, 0.25);
   windSound.bandPass.Q.setTargetAtTime(0.7 + 2.3 * share, now, 0.25);
-  windSound.lowPass.frequency.setTargetAtTime((700 + 5200 * share) * stormTone, now, 0.25);
+  windSound.lowPass.frequency.setTargetAtTime(700 + 5200 * share, now, 0.25);
 }
 let lastWindSoundMilliseconds = 0;
 function noteWindSpeed(speedMetersPerSecond) {
@@ -1003,26 +1019,57 @@ function paintWindReadout() {
     : wind.strength.toFixed(1) + ' m/s · '
       + compassPointName(wind.strength * Math.cos(wind.angle), wind.strength * Math.sin(wind.angle));
 }
-// The snow storm. Like the guide switch this is an INTENT: the click sends the knob and
-// the runtime's own `storm` echo is what the switch then displays.
-const stormState = { on: false };
-function paintStormSwitch() {
-  $('stormSwitch').setAttribute('aria-checked', String(stormState.on));
+// VISIBILITY -- HOW FAR YOU CAN SEE, IN METRES (user's ruling, 2026-08-30). A plain
+// knob, not a mode: it is sent as `{type:'knob', name:'visibility', value:<metres>}` and
+// it is derived from NOTHING. The wind dial beside it does not touch it, and it does not
+// touch the wind.
+//
+// THE SLIDER IS LOG-SCALED, left CLEAR to right WHITE-OUT, because visibility is: 100 m
+// to 50 m is barely a haze and 6 m to 3 m is the difference between navigating and not.
+// Position 0-1000 maps onto `whiteoutShare` (three/world.js) so the slider, the page's
+// fog, the far-field flakes and the robot's eyes are all reading one curve; its centre
+// is sqrt(100 x 3) = 17.3 m.
+const visibilityState = { meters: CLEAR_VISIBILITY_METERS, dragging: false };
+const VISIBILITY_SLIDER_STEPS = 1000;
+const VISIBILITY_LOG_SPAN = Math.log(CLEAR_VISIBILITY_METERS
+                                     / MINIMUM_VISIBILITY_METERS);
+function visibilityFromSlider(position) {
+  return CLEAR_VISIBILITY_METERS
+    * Math.exp(-VISIBILITY_LOG_SPAN * position / VISIBILITY_SLIDER_STEPS);
 }
-$('stormSwitch').addEventListener('click', () => {
-  stormState.on = !stormState.on;
-  paintStormSwitch();
-  send({ type: 'knob', name: 'storm', value: stormState.on ? 1 : 0 });
-  updateWindSound();               // the air thickens the moment it is switched on
+function sliderFromVisibility(meters) {
+  const clamped = Math.max(MINIMUM_VISIBILITY_METERS,
+                           Math.min(CLEAR_VISIBILITY_METERS, meters));
+  return Math.round(VISIBILITY_SLIDER_STEPS
+    * Math.log(CLEAR_VISIBILITY_METERS / clamped) / VISIBILITY_LOG_SPAN);
+}
+// Metres, and the precision is the reading's own: 3 m either side of a doorway matters
+// and 3 m either side of 100 does not.
+function formatVisibility(meters) {
+  return (meters >= 20 ? meters.toFixed(0) : meters.toFixed(1)) + ' m';
+}
+function paintVisibility() {
+  $('visibilityOut').textContent = formatVisibility(visibilityState.meters);
+  paintSliderFill($('visibility'));
+}
+$('visibility').addEventListener('input', event => {
+  visibilityState.dragging = true;
+  visibilityState.meters = visibilityFromSlider(Number(event.target.value));
+  paintVisibility();
+  send({ type: 'knob', name: 'visibility', value: visibilityState.meters });
 });
-// the runtime says whether the storm is really blowing
-function noteStorm(value) {
-  if (value === undefined || value === null) return;
-  const on = Boolean(value);
-  if (on === stormState.on) return;
-  stormState.on = on;
-  paintStormSwitch();
-  updateWindSound();
+$('visibility').addEventListener('change', () => { visibilityState.dragging = false; });
+// The runtime echoes back the visibility the ROBOT is actually in, and that echo is what
+// the page draws -- so a run started with `--visibility 8` shows 8 m without being told
+// twice. It is ignored mid-drag: a state message in flight is older than the thumb.
+function noteVisibility(value) {
+  if (value === undefined || value === null || visibilityState.dragging) return;
+  const meters = Number(value);
+  if (!Number.isFinite(meters)) return;
+  if (Math.abs(meters - visibilityState.meters) < 0.02 * visibilityState.meters) return;
+  visibilityState.meters = meters;
+  $('visibility').value = String(sliderFromVisibility(meters));
+  paintVisibility();
 }
 $('naturalSwitch').addEventListener('click', () => {
   naturalWind.on = !naturalWind.on;
@@ -1128,84 +1175,81 @@ $('worldSelect').addEventListener('change', event => {
 // ---------- THE FRAME LOOP ----------
 let lastAnimationMilliseconds = performance.now();
 let lastResizeCheck = 0, lastCanvasWidth = 0, lastCanvasHeight = 0;
-// THE STORM IS FOG (user's ruling, 2026-08-29). Not a snow shower: a whiteout takes
+// THE WEATHER IS FOG (user's ruling, 2026-08-29). Not a snow shower: a whiteout takes
 // DISTANCE away. The far slope dissolves into white first, then the middle distance, and
-// at the top of the dial you cannot see the hiker four metres away. The flakes in
+// at the far end of the dial you cannot see the hiker three metres away. The flakes in
 // three/world.js stay, sparse and far-field -- never on the lens.
 //
-// ONE CURVE, TWO PLACES. This visibility law is the same one the ROBOT'S EYES use in
-// app/harness/storm.py (CLEAR_VISIBILITY_METERS, VISIBILITY_DECAY_MPS). If one moves,
-// move the other, or the picture and the robot stop being in the same weather.
+// AND IT IS ITS OWN DIAL (user's ruling, 2026-08-30). What used to compute a visibility
+// from the WIND SPEED -- `100 m * exp(-speed / 6)` -- now simply reads the VISIBILITY
+// knob, in metres. Wind does force, flag, sound and gusting; visibility does visibility.
 //
-//   visibility = 100 m * exp(-speed / 6)   ->  100 / 37 / 14 / 3.6 m at 0 / 6 / 12 / 20
+// ONE CURVE, THREE PLACES. `whiteoutShare` in three/world.js is the shared law, and
+// app/harness/storm.py holds the same two endpoints for the ROBOT'S EYES. If one moves,
+// move the others, or the picture and the robot stop being in the same weather.
 //
 // THREE's FogExp2 factor is 1 - exp(-(density*distance)^2), which reaches 95% at
 // distance = 1.73 / density, so a visibility of v metres is a density of 1.73 / v.
-const STORM_CLEAR_VISIBILITY_METERS = 100.0;
-const STORM_VISIBILITY_DECAY_MPS = 6.0;
-const STORM_MINIMUM_VISIBILITY_METERS = 1.5;
 const FOG_EXP2_95_PERCENT = 1.73;
-const STORM_WHITEOUT_FULL_AT_MPS = 8.0;   // the fog colour is fully white by here
 const FOG_WHITEOUT_COLOUR = 0xf7fafd;     // snow-and-sky white, not the clear blue-grey
 // HDR HEADROOM, and it is not a fudge. The renderer tone-maps ACES-filmic at
 // exposure 0.92, and ACES deliberately rolls off: a colour of 1.0 comes out of it at
 // about 0.77, so a fog painted at "white" renders as a MID GREY. Measured on the first
-// build of this whiteout: a full 20 m/s frame came back at RGB 150, not 250 -- a
+// build of this whiteout: a full white-out frame came back at RGB 150, not 250 -- a
 // convincing erasure of the mountain in a colour nobody would call snow. A whiteout is
 // BRIGHT, so it is given the linear headroom a bright thing has and the tone mapper
 // takes it to white on its own.
-const STORM_FOG_EXPOSURE_HEADROOM = 2.6;
-function stormVisibilityMeters(speed) {
-  return Math.max(STORM_MINIMUM_VISIBILITY_METERS,
-                  STORM_CLEAR_VISIBILITY_METERS
-                    * Math.exp(-speed / STORM_VISIBILITY_DECAY_MPS));
-}
-const stormFog = { baseDensity: null, baseColour: null, whiteout: null,
-                   lastWritten: null, background: null };
-function applySnowStorm() {
+const FOG_WHITEOUT_EXPOSURE_HEADROOM = 2.6;
+const whiteoutFog = { baseDensity: null, baseColour: null, whiteout: null,
+                      lastWritten: null, background: null };
+function applyVisibility() {
   if (!stage || !stage.world) return;
-  stage.world.stormEnabled = stormState.on;
+  stage.world.visibilityMeters = visibilityState.meters;
   const fog = stage.scene && stage.scene.fog;
   if (!fog) return;
   // Stage re-derives the fog density from the scene's size on every world load, so the
   // base is re-read whenever it changed underneath us instead of being cached once and
   // then silently fought with.
-  if (stormFog.lastWritten === null || Math.abs(fog.density - stormFog.lastWritten) > 1e-9) {
-    stormFog.baseDensity = fog.density;
-    stormFog.baseColour = fog.color.clone();
+  if (whiteoutFog.lastWritten === null || Math.abs(fog.density - whiteoutFog.lastWritten) > 1e-9) {
+    whiteoutFog.baseDensity = fog.density;
+    whiteoutFog.baseColour = fog.color.clone();
     // THREE itself is not imported on this page, so the whiteout target is cloned off the
     // fog's own colour rather than constructed
-    stormFog.whiteout = fog.color.clone().setHex(FOG_WHITEOUT_COLOUR);
+    whiteoutFog.whiteout = fog.color.clone().setHex(FOG_WHITEOUT_COLOUR);
   }
-  const speed = stormState.on ? windScreen.speed : 0;
-  if (!stormState.on) {
-    fog.density = stormFog.baseDensity;
-    fog.color.copy(stormFog.baseColour);
+  // THE WHITENESS RAMPS WITH THE SHARE, not with a second law. It used to reach full
+  // white at 8 m/s of wind; it now reaches it at the white-out end of the slider, and
+  // the two-thirds point of the log share is where the fog stops being blue-grey haze
+  // and starts being snow-and-sky white.
+  const share = whiteoutShare(visibilityState.meters);
+  if (share <= 0) {
+    fog.density = whiteoutFog.baseDensity;
+    fog.color.copy(whiteoutFog.baseColour);
   } else {
-    // Never CLEARER than clear weather, however light the wind.
-    const whiteness = Math.min(1, speed / STORM_WHITEOUT_FULL_AT_MPS);
-    fog.density = Math.max(stormFog.baseDensity,
-                           FOG_EXP2_95_PERCENT / stormVisibilityMeters(speed));
-    fog.color.copy(stormFog.baseColour).lerp(stormFog.whiteout, whiteness)
-      .multiplyScalar(1 + (STORM_FOG_EXPOSURE_HEADROOM - 1) * whiteness);
+    // Never CLEARER than clear weather, however open the dial.
+    const whiteness = Math.min(1, share / 0.66);
+    fog.density = Math.max(whiteoutFog.baseDensity,
+                           FOG_EXP2_95_PERCENT / visibilityState.meters);
+    fog.color.copy(whiteoutFog.baseColour).lerp(whiteoutFog.whiteout, whiteness)
+      .multiplyScalar(1 + (FOG_WHITEOUT_EXPOSURE_HEADROOM - 1) * whiteness);
   }
-  stormFog.lastWritten = fog.density;
+  whiteoutFog.lastWritten = fog.density;
   // THE SKY HAS TO GO WITH IT. A scene BACKGROUND is never fogged -- neither the
   // Everest panorama stage.js loads nor a plain colour -- so a whiteout that only
   // fogged the GEOMETRY leaves a crisp sky sitting on top of an erased mountain,
-  // which is the one thing that reads instantly as fake. While the storm blows, the
-  // background IS the fog colour and there is no horizon at all.
+  // which is the one thing that reads instantly as fake. Once the dial is off its
+  // clear end the background IS the fog colour and there is no horizon at all.
   //
   // AND IT IS PUT BACK, not nulled. The panorama arrives ASYNCHRONOUSLY into
-  // `scene.background`; blanking it on storm-off would delete the sky for the rest of
-  // the session. So whatever is there is remembered the moment we take it over -- and
-  // because the test is "is this our own fog colour", a panorama that finishes loading
-  // DURING a storm is picked up on the next frame instead of being lost.
-  if (stormState.on) {
-    if (stage.scene.background !== fog.color) stormFog.background = stage.scene.background;
+  // `scene.background`; blanking it on the way back to clear would delete the sky for
+  // the rest of the session. So whatever is there is remembered the moment we take it
+  // over -- and because the test is "is this our own fog colour", a panorama that
+  // finishes loading DURING a white-out is picked up on the next frame, not lost.
+  if (share > 0) {
+    if (stage.scene.background !== fog.color) whiteoutFog.background = stage.scene.background;
     stage.scene.background = fog.color;
   } else if (stage.scene.background === fog.color) {
-    stage.scene.background = stormFog.background ?? null;
+    stage.scene.background = whiteoutFog.background ?? null;
   }
   // the flakes are lit by the same fog, so they must be told about it too
   const uniforms = stage.world.snow && stage.world.snow.material.uniforms;
@@ -1231,7 +1275,7 @@ function frame(nowMilliseconds) {
     }
   }
 
-  applySnowStorm();
+  applyVisibility();
   stage.render(nowMilliseconds);
   $('fpsOut').textContent = stage.fps ? '· ' + stage.fps.toFixed(0) + ' fps' : '';
 
@@ -1252,24 +1296,32 @@ function frame(nowMilliseconds) {
 // module -- socket, loop, everything -- down with it.
 window.appState = state;
 // The third verifier handle, for the same reason and in the same place: this module's
-// bindings are not globals, so a screenshot harness cannot set the storm or the wind
-// without one. It exposes page-local state ONLY -- nothing here sends a knob, so driving
-// it never touches the running simulation.
-window.stormControls = {
-  stormState, windScreen,
-  setStorm(on) { stormState.on = Boolean(on); paintStormSwitch(); updateWindSound(); },
+// bindings are not globals, so a screenshot harness cannot read the weather without one.
+// It exposes page-local state ONLY -- nothing here sends a knob, so driving it never
+// touches the running simulation.
+window.visibilityControls = {
+  visibilityState, windScreen,
+  setVisibility(meters) {
+    visibilityState.meters = Number(meters);
+    $('visibility').value = String(sliderFromVisibility(visibilityState.meters));
+    paintVisibility();
+  },
   setWind(east, north) { noteWindVelocity([east, north]); },
   read() {
     const fog = stage.scene && stage.scene.fog;
     const snow = stage.world && stage.world.snow;
+    const world = stage.world;
     return {
-      storm: stormState.on,
+      visibilityMeters: +visibilityState.meters.toFixed(2),
+      whiteoutShare: +whiteoutShare(visibilityState.meters).toFixed(3),
       screenSpeed: +windScreen.speed.toFixed(1),
       fogDensity: fog ? +fog.density.toFixed(5) : null,
       fogColour: fog ? '#' + fog.color.getHexString() : null,
       snowVisible: snow ? snow.visible : null,
       flakesDrawn: snow ? snow.geometry.drawRange.count : null,
       flakeOpacity: snow ? +snow.material.uniforms.uOpacity.value.toFixed(3) : null,
+      robotFlag: Boolean(world && world.flag),
+      hikerFlag: Boolean(world && world.hikerFlag),
     };
   },
 };
@@ -1278,6 +1330,7 @@ setWindSoundMuted(readWindSoundMuted());
 paintGuideSwitch();
 paintGuideCard({});
 paintWindReadout();
+paintVisibility();
 paintSliderFill($('friction'));
 paintSliderFill($('windStrength'));
 paintLockState();

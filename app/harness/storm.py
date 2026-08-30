@@ -1,23 +1,30 @@
-"""The storm, as the ROBOT experiences it. A WHITE-OUT, not a snow shower.
+"""VISIBILITY, as the ROBOT experiences it. A WHITE-OUT, not a snow shower.
 
 THE POINT. The 3D page draws the weather. This file is the other half -- what a
-blizzard does to a machine that navigates by looking. It owns the ROBOT'S EYES;
-the page's own fog lives in `app/web/three/world.js` and is driven by the same
-`storm` knob and the same wind speed, so the two agree.
+white-out does to a machine that navigates by looking. It owns the ROBOT'S EYES;
+the page's own fog lives in `app/web/render3d.html` and `three/world.js` and is
+driven by the same knob and the same two endpoints, so the two agree.
 
-**A STORM IS FOG** (user's ruling, and it replaced this file's first version).
-That attempt painted dense flakes and wind-blown streaks over the eye images; it
-read as particles slapping the lens, which is a windscreen effect, not a
-mountain. What a white-out actually does is take DISTANCE away: the far slope
-dissolves into white first, then the middle distance, and finally you cannot see
-the person four metres in front of you. Everything here is distance-dependent,
-and nothing sits on the lens.
+**VISIBILITY IS ITS OWN DIAL** (user's ruling, 2026-08-30, and it replaced this
+file's second version). Until then a `storm` switch turned the weather on and
+the thickness came out of the WIND SPEED -- `100 m * exp(-wind / 6)` -- which
+made two independent things one control: you could not have a still white-out or
+a clear gale, and every wind experiment silently changed what the robot could
+see. The knob is now a DISTANCE IN METRES and it is derived from nothing. Wind
+still does force, flag, sound and gusting; visibility does only visibility.
 
-  VISIBILITY  v = CLEAR_VISIBILITY_METERS * exp(-speed / VISIBILITY_DECAY_MPS),
-              driven by the INSTANTANEOUS wind speed so a gust really does blind
-              the robot for a second. 100 m calm, 37 m at 6 m/s, 14 m at 12 m/s,
-              3.6 m at 20 m/s -- at which point only the nearest few metres are
-              readable at all.
+**A WHITE-OUT IS FOG** (the earlier user ruling, which stands). The first
+version painted dense flakes and wind-blown streaks over the eye images; it read
+as particles slapping the lens, which is a windscreen effect, not a mountain.
+What a white-out actually does is take DISTANCE away: the far slope dissolves
+into white first, then the middle distance, and finally you cannot see the
+person three metres in front of you. Everything here is distance-dependent, and
+nothing sits on the lens.
+
+  VISIBILITY  v, in metres, straight off the knob. CLEAR_VISIBILITY_METERS
+              (100 m) means CLEAR and the eyes are not touched at all; the far
+              end of the dial is MINIMUM_VISIBILITY_METERS (3 m), at which only
+              the nearest couple of metres are readable.
   THE FOG     composited per pixel from the eye renderer's OWN DEPTH BUFFER:
               `out = colour*(1 - f) + white*f`, `f` ramping linearly from
               `FOG_START_FRACTION_OF_VISIBILITY * v` (nothing) to `v` (gone).
@@ -25,7 +32,9 @@ and nothing sits on the lens.
               the right. That is the one thing fog does not reproduce: a real
               pair of cameras staring into a low-contrast white field produces
               two different noise fields, and a block matcher has nothing to
-              match. A couple of grey levels, not a texture.
+              match. A couple of grey levels, not a texture. It scales with the
+              WHITE-OUT SHARE, not with the wind, for the same reason as
+              everything else here.
 
 WHY THE FOG IS COMPOSITED AND NOT LEFT TO MuJoCo, which is the whole reason this
 file is shaped the way it is. MuJoCo has linear GL fog, and it CANNOT BE MOVED
@@ -60,7 +69,7 @@ same seed sees the same grain. Nothing reads the wall clock.
 
 Inputs  : a rendered RGB image and the `mujoco.Renderer` that produced it (its
           scene is still loaded, so the depth pass needs no second
-          `update_scene`), plus the instantaneous wind speed.
+          `update_scene`), plus the visibility in METRES.
 Outputs : `StormVision.state()` -- what the page and the recorder are told;
           `degrade(image, renderer)` returns a new image, same shape and dtype.
 """
@@ -71,18 +80,18 @@ import math
 import numpy as np
 
 # ------------------------------------------------------------------- the fog
-# THE VISIBILITY CURVE, exponential rather than the 1/(1+kv) this file started
-# with, because no 1/(1+kv) passes through the three points the look was
-# specified by (about 40 m at 6 m/s, 12 m at 12, 4 m at 20 -- a white-out).
-# `100 * exp(-speed / 6)` gives 100 / 37 / 14 / 3.6 m at 0 / 6 / 12 / 20 m/s,
-# which is those three points to within the eye's ability to tell them apart.
-# THE 3D PAGE USES THE SAME CURVE (app/web/three/world.js); if one moves, move
-# the other, or the robot and the picture stop being in the same weather.
+# THE TWO ENDS OF THE DIAL, and they are the ONLY numbers this file shares with
+# the page (`CLEAR_VISIBILITY_METERS` / `MINIMUM_VISIBILITY_METERS` in
+# app/web/three/world.js). If one moves, move the other, or the robot and the
+# picture stop being in the same weather.
+#
+# 100 m is CLEAR: at or above it the eyes are handed back untouched, which is
+# what the retired `storm = off` state was. 3 m is the floor rather than zero,
+# because a visibility of nothing is a blank screen and not a white-out -- and
+# because 3 m is already inside the follower's own FOLLOW/WAIT band, i.e. as
+# blind as the demo can be and still be a demo.
 CLEAR_VISIBILITY_METERS = 100.0
-VISIBILITY_DECAY_MPS = 6.0
-# Never quite zero: past 25 m/s the curve is already under 2 m, and a visibility
-# of nothing is a blank screen rather than a white-out.
-MINIMUM_VISIBILITY_METERS = 1.5
+MINIMUM_VISIBILITY_METERS = 3.0
 # Fog starts this fraction of the way out. Not zero: fog that begins at the lens
 # is a flat wash over the whole frame, which is the look this is not.
 FOG_START_FRACTION_OF_VISIBILITY = 0.15
@@ -99,15 +108,46 @@ FAR_DEPTH_METERS = 1000.0
 # purpose: this is a clean camera in a bad scene, not a broken camera. It exists
 # because two real sensors staring into a low-contrast white field disagree,
 # which is what leaves a block matcher nothing to match.
-SENSOR_NOISE_SIGMA_STILL = 1.0
-SENSOR_NOISE_SIGMA_PER_MPS = 0.30
+# It used to be `1.0 + 0.30 * wind`, i.e. 1.0 in still air and 7.0 in a 20 m/s
+# gale. The endpoints are kept and the DRIVER is changed: 1.0 at 100 m of clear
+# air and 7.0 in a 3 m white-out, on the same log share everything else uses.
+# Grain that tracked the wind was the last place the two dials were still tied
+# together.
+SENSOR_NOISE_SIGMA_CLEAR = 1.0
+SENSOR_NOISE_SIGMA_WHITEOUT = 7.0
+
+_VISIBILITY_LOG_SPAN = math.log(CLEAR_VISIBILITY_METERS
+                                / MINIMUM_VISIBILITY_METERS)
 
 
-def visibility_meters(wind_speed_mps: float) -> float:
-    """How far the robot can see. -> metres."""
-    speed = max(0.0, float(wind_speed_mps))
+def clamp_visibility_meters(visibility_meters) -> float:
+    """The knob, sanitised. -> metres in [MINIMUM, CLEAR].
+
+    A missing or unparseable value reads as CLEAR, because the safe failure of a
+    weather knob is good weather: a page that sends nothing must not blind the
+    robot.
+    """
+    try:
+        value = float(visibility_meters)
+    except (TypeError, ValueError):
+        return CLEAR_VISIBILITY_METERS
+    if not math.isfinite(value):
+        return CLEAR_VISIBILITY_METERS
     return max(MINIMUM_VISIBILITY_METERS,
-               CLEAR_VISIBILITY_METERS * math.exp(-speed / VISIBILITY_DECAY_MPS))
+               min(CLEAR_VISIBILITY_METERS, value))
+
+
+def whiteout_share(visibility_meters) -> float:
+    """How far down the dial we are. -> 0.0 at 100 m (clear), 1.0 at 3 m.
+
+    LOGARITHMIC, because visibility is: 100 m to 50 m is barely a haze and 6 m
+    to 3 m is the difference between navigating and not. The same expression
+    runs in `whiteoutShare` (app/web/three/world.js) and sets the slider's own
+    scale, so the page's fog, its flakes and the robot's grain all move together.
+    """
+    visibility = clamp_visibility_meters(visibility_meters)
+    return max(0.0, min(1.0, math.log(CLEAR_VISIBILITY_METERS / visibility)
+                             / _VISIBILITY_LOG_SPAN))
 
 
 def fog_fraction(depth_meters, visibility) -> np.ndarray:
@@ -139,7 +179,7 @@ def fog_image(image, depth_meters, visibility) -> np.ndarray:
     return np.clip(blended, 0.0, 255.0).astype(np.uint8)
 
 
-def sensor_noise(image, wind_speed_mps: float, generator) -> np.ndarray:
+def sensor_noise(image, visibility_meters, generator) -> np.ndarray:
     """Independent Gaussian grain on one eye. -> uint8 RGB, same shape.
 
     Called on EACH eye with the SAME generator, which is what makes the two
@@ -147,8 +187,9 @@ def sensor_noise(image, wind_speed_mps: float, generator) -> np.ndarray:
     before the right asks for any. Identical noise in both eyes would sit at
     zero disparity and the matcher would happily match it.
     """
-    speed = max(0.0, float(wind_speed_mps))
-    sigma = SENSOR_NOISE_SIGMA_STILL + SENSOR_NOISE_SIGMA_PER_MPS * speed
+    share = whiteout_share(visibility_meters)
+    sigma = (SENSOR_NOISE_SIGMA_CLEAR
+             + (SENSOR_NOISE_SIGMA_WHITEOUT - SENSOR_NOISE_SIGMA_CLEAR) * share)
     if sigma <= 0.0:
         return image
     noisy = image.astype(np.float32) + generator.normal(0.0, sigma, image.shape)
@@ -178,24 +219,29 @@ class StormVision:
     detector ever see them -- the only placement that makes the degradation
     honest. Degrading a picture after the measurement is a special effect.
 
-    Inputs  : a seed, and per tick the storm knob and the instantaneous wind
-              speed.
+    Inputs  : a seed, and per tick the VISIBILITY in metres. Nothing about the
+              wind reaches this class any more (user's ruling, 2026-08-30).
     Outputs : `state()` and `recorded()` for the websocket and the recorder;
               `degrade(image, renderer)` is the hook.
     """
 
     def __init__(self, seed=0):
         self.generator = np.random.default_rng(int(seed))
-        self.enabled = False
-        self.wind_speed_mps = 0.0
-        self.visibility_meters = float("inf")
+        self.visibility_meters = CLEAR_VISIBILITY_METERS
         self.fog_milliseconds = 0.0
 
-    def update(self, enabled: bool, wind_speed_mps: float) -> None:
-        self.enabled = bool(enabled)
-        self.wind_speed_mps = float(wind_speed_mps)
-        self.visibility_meters = (visibility_meters(self.wind_speed_mps)
-                                  if self.enabled else float("inf"))
+    @property
+    def enabled(self) -> bool:
+        """Is the weather doing anything at all? -> bool.
+
+        Kept as a READ-ONLY convenience for callers that want one word rather
+        than a distance (the contact sheet's labels, `recorded`). It is a
+        derived fact now, not a mode: there is no switch left to set.
+        """
+        return self.visibility_meters < CLEAR_VISIBILITY_METERS
+
+    def update(self, visibility_meters) -> None:
+        self.visibility_meters = clamp_visibility_meters(visibility_meters)
 
     def degrade(self, image, renderer=None, with_noise=True):
         """The hook. -> the image fogged and grained, or the image untouched.
@@ -203,6 +249,12 @@ class StormVision:
         `renderer` is the one that drew `image`, and its scene must still be
         loaded. Without it the fog is skipped and only the grain is added, which
         is what happens if a caller has no depth to offer.
+
+        AT CLEAR VISIBILITY THE IMAGE IS RETURNED UNTOUCHED -- not fogged with a
+        100 m ramp and not grained. That identity is what makes "clear" a
+        control arm in every table rather than a nearly-clear one, and the
+        generator is not advanced either, so a clear run's random stream is the
+        stream a run with no weather at all would have had.
         """
         if not self.enabled:
             return image
@@ -213,18 +265,21 @@ class StormVision:
                               self.visibility_meters)
         self.fog_milliseconds = (time.time() - started) * 1000.0
         if with_noise:
-            image = sensor_noise(image, self.wind_speed_mps, self.generator)
+            image = sensor_noise(image, self.visibility_meters, self.generator)
         return image
 
     def state(self) -> dict:
-        return {"storm": bool(self.enabled),
-                "visibility_meters": (None if not self.enabled
-                                      else round(self.visibility_meters, 2))}
+        """What the page reads. -> {"visibility_meters": metres}.
+
+        ALWAYS A NUMBER, never null: the page's fog, its flakes and its slider
+        are all functions of this one field, and a null would have each of them
+        inventing its own idea of "clear".
+        """
+        return {"visibility_meters": round(self.visibility_meters, 2)}
 
     def recorded(self) -> dict:
         """Per-tick columns. `Recorder.append` stacks floats, so both are floats."""
         return {
-            "storm": 1.0 if self.enabled else 0.0,
-            "storm_visibility_meters": (
-                float(self.visibility_meters) if self.enabled else -1.0),
+            "visibility_meters": float(self.visibility_meters),
+            "whiteout_share": float(whiteout_share(self.visibility_meters)),
         }

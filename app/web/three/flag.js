@@ -1,4 +1,5 @@
-// A red pennant on a short pole on top of the G1's head, to show the wind.
+// A red pennant on a pole on top of the G1's head -- and on the hiker's -- to
+// show the wind.
 //
 // WHAT IT IS FOR. The 3-D page already knows the wind -- the snow drifts with
 // it and the sidebar prints it -- but neither tells you at a glance which way it
@@ -24,18 +25,32 @@
 // the cloth is counter-rotated back into the world frame every frame, because
 // the wind does not care which way the robot is facing.
 //
-// The mount is also 7.5 cm BEHIND the `d435i` camera's own plane and 8.5 cm
-// above it. That camera looks along +x with a 58 deg vertical field of view,
-// which on the eyes' 4:3 frame is a 42.7 deg half DIAGONAL; the pole's base sits
-// 131.4 deg off its optical axis and the pole's top 107.7 deg. Both are past
-// 90 deg, i.e. behind the image plane, where no field of view can reach -- so a
-// future in-model version of this flag could not get into the robot's eyes
-// either. (Arithmetic from the MJCF's own numbers; nothing here is eyeballed.)
+// TWO OF THEM (user's ruling, 2026-08-30). The same class, the same size and
+// the same cloth flies on the HIKER's head too, so the wind reads off both
+// figures in the same frame. Her mount is an offset in the `guide` mocap body's
+// frame -- see `HIKER_MOUNT_IN_BODY` -- and it needs no visibility rule of its
+// own: when the guide knob is off, `guide.py` parks that whole body at
+// z = -50 m and the flag rides down with it, because it is a CHILD of the node.
 //
-// COST. Two draw calls and 250 triangles against the world's ~780,000, one
-// small vertex shader, and no per-frame allocation: the ripple is entirely a
-// function of `uTime` on the GPU, and the JavaScript side writes four uniforms
-// and one quaternion a frame.
+// THREE TIMES THE SIZE, and the clearance re-checked rather than assumed (user's
+// ruling, 2026-08-30: "the flag needs to be a lot bigger"). The mount is 7.5 cm
+// BEHIND the `d435i` camera's own plane and 8.5 cm above it. That camera looks
+// along +x with a 58 deg vertical field of view, which on the eyes' 320x240
+// frame is a 36.5 deg half width and a 42.7 deg half DIAGONAL. Measured off the
+// COMPILED model (`model.cam_pos` / `cam_quat` / `cam_fovy` on flat_0, not off
+// the MJCF text): the pole's base sits 131.4 deg off the optical axis and its
+// top 98.0 deg -- both still behind the image plane, where no field of view can
+// reach. The CLOTH is the part that grew into open air, so it was swept: every
+// point on the pennant, over every lift angle 0-90 deg and every wind heading,
+// comes no closer than 56.2 deg to the optical axis (worst case: level-ish at
+// 34 deg of lift, blowing straight forward). That is 13.5 deg of margin on the
+// half diagonal, so a future in-model version of this flag still could not get
+// into the robot's eyes.
+//
+// COST. Two draw calls and 250 triangles PER FLAG against the world's ~780,000
+// -- four and 500 now that the hiker wears one -- one small vertex shader, and
+// no per-frame allocation: the ripple is entirely a function of `uTime` on the
+// GPU, and the JavaScript side writes four uniforms and one quaternion a frame.
 //
 // EVERYTHING HERE IS Z-UP, like the rest of this directory.
 import * as THREE from './vendor/three.module.js';
@@ -43,17 +58,32 @@ import * as THREE from './vendor/three.module.js';
 // torso-local metres. x/y are the head geom's own centre (`head_link` sits at
 // x = 0.0039635); z clears the `mid360` site at 0.456.
 const MOUNT_IN_BODY = [0.0039635, 0.0, 0.471];
+// `guide`-local metres, and the guide body's origin is HER GROUND CONTACT, so
+// these are heights above her boots. Her pompom is a 3.5 cm sphere centred at
+// z = 1.77 in assets/humans/human.xml, i.e. the top of her hat is 1.805 m; the
+// pole starts a centimetre above it and 2 cm behind the crown so it clears the
+// hat rather than growing out of it.
+const HIKER_MOUNT_IN_BODY = [0.03, 0.0, 1.815];
 
-const POLE_LENGTH_METERS = 0.15;
-const POLE_RADIUS_METERS = 0.004;
-const PENNANT_LENGTH_METERS = 0.12;      // pole to tip, along the wind
-const PENNANT_HEIGHT_METERS = 0.08;      // at the pole; it tapers to the tip
+// THREE TIMES THE 2026-08-29 SIZE (user's ruling). At 15 cm of pole and a
+// 12 x 8 cm pennant the wind indicator was legible only when the chase camera
+// was close; the whole point of it is to be readable at a glance from wherever
+// the camera happens to be. The clearance arithmetic in the header was redone
+// against these numbers, not carried over.
+const POLE_LENGTH_METERS = 0.45;
+const POLE_RADIUS_METERS = 0.012;
+const PENNANT_LENGTH_METERS = 0.36;      // pole to tip, along the wind
+const PENNANT_HEIGHT_METERS = 0.24;      // at the pole; it tapers to the tip
 const PENNANT_TIP_SHARE = 0.22;          // the tip's height, as a share of the root's
 const CLOTH_SEGMENTS_ALONG = 26;         // enough that the ripple is a curve, not a crease
 const CLOTH_SEGMENTS_ACROSS = 3;
 
-// Lift. 0 m/s hangs it straight down the pole; FULL_LIFT flies it level. 12 m/s
-// is about where a real pennant this size stops climbing.
+// Lift. 0 m/s hangs it straight down the pole; FULL_LIFT flies it level.
+// KEPT AT 12 m/s THROUGH THE 3x RESIZE, deliberately: a bigger pennant really
+// would need more wind to fly level, but this is an INSTRUMENT, and the reading
+// the user asked it to keep is limp at 0 and streaming at 20. Moving the number
+// with the size would have made the top of the dial the first place it flies
+// level, which is a worse dial.
 const FULL_LIFT_METERS_PER_SECOND = 12.0;
 
 // The ripple. Amplitude is a share of the cloth's LENGTH, so the shape is scale
@@ -142,10 +172,13 @@ function dressCloth(material, uniforms) {
 }
 
 export class WindFlag {
-  // `mountNode` is the GLB node for the body the flag rides on (`torso_link`).
-  constructor(mountNode) {
+  // `mountNode` is the GLB node for the body the flag rides on (`torso_link`
+  // for the robot, `guide` for the hiker). `mountInBody` is the pole's base in
+  // THAT body's own frame, metres -- the robot's is the default because it was
+  // the only one for a day.
+  constructor(mountNode, mountInBody = MOUNT_IN_BODY) {
     this.mount = new THREE.Group();
-    this.mount.position.set(MOUNT_IN_BODY[0], MOUNT_IN_BODY[1], MOUNT_IN_BODY[2]);
+    this.mount.position.set(mountInBody[0], mountInBody[1], mountInBody[2]);
 
     // The pole. CylinderGeometry runs along +y, so stand it along +z and lift
     // it so it grows UP from the mount rather than straddling it.
@@ -259,5 +292,6 @@ export class WindFlag {
   }
 }
 
-export { MOUNT_IN_BODY, POLE_LENGTH_METERS, PENNANT_LENGTH_METERS,
-         PENNANT_HEIGHT_METERS, FULL_LIFT_METERS_PER_SECOND };
+export { MOUNT_IN_BODY, HIKER_MOUNT_IN_BODY, POLE_LENGTH_METERS,
+         PENNANT_LENGTH_METERS, PENNANT_HEIGHT_METERS,
+         FULL_LIFT_METERS_PER_SECOND };

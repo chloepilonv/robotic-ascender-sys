@@ -1,4 +1,11 @@
-// The first-person camera: the view from the robot's own eyes.
+// The first-person camera: the view from the robot's own eyes -- or, with the
+// guide switched on, from the HIKER's (user's ruling, 2026-08-30).
+//
+// ONE CLASS, TWO SUBJECTS. Both bodies it can ride use the SAME frame
+// convention -- x forward, y left, z up -- so the torso-to-camera basis below is
+// the whole of what they have in common and the only per-subject numbers are the
+// mount offset and the look limits. `stage.js` builds one instance per subject
+// and swaps which one it drives; nothing here knows which is which.
 //
 // WHERE IT SITS. Exactly where the robot's stereo pair sits. `app/harness/
 // guide.py::_add_eye_cameras` mounts `eye_left` / `eye_right` either side of the
@@ -64,6 +71,19 @@ export const YAW_LIMIT_DEGREES = 150.00;
 // waist_pitch_joint, range="-0.52 0.52" rad.
 export const PITCH_LIMIT_DEGREES = 29.79;
 
+// THE HIKER'S EYES, in the `guide` mocap body's own frame -- and that body's
+// origin is HER GROUND CONTACT, so these are heights above her boots. Her head
+// is an ellipsoid centred (0.05, 0, 1.61) with a 0.10 m semi-axis forward
+// (assets/humans/human.xml), so the eyes sit at the front of it and just above
+// the middle. Metres.
+export const HIKER_EYE_IN_BODY_METERS = new THREE.Vector3(0.10, 0, 1.63);
+// SHE HAS A NECK AND THE ROBOT DOES NOT (user's ruling, 2026-08-30: "head can
+// turn 360"). The robot's yaw clamp is the waist joint's real travel; a person
+// looking over her shoulder has no such stop, so hers WRAPS instead of clamping.
+// `null` is the way to say that, and the pitch cap is the robot's, unchanged --
+// a rolled or fully inverted horizon is nausea, not information.
+export const HIKER_YAW_LIMIT_DEGREES = null;
+
 const YAW_DEGREES_PER_PIXEL = 0.15;      // chase_camera.AZIMUTH_DEGREES_PER_PIXEL
 const PITCH_DEGREES_PER_PIXEL = 0.12;    // chase_camera.ELEVATION_DEGREES_PER_PIXEL
 // A breath of lag on the look offset only -- not on the mount. The mount is
@@ -78,8 +98,19 @@ function blend(lagSeconds, elapsedSeconds) {
 }
 
 export class FirstPersonCamera {
-  constructor(camera) {
+  // `mountInBody` is the eye in the ridden body's own frame; `yawLimitDegrees`
+  // is the half-range of the look, or `null` for a head that turns all the way
+  // round. The defaults are the robot's, because it was the only subject for a
+  // day.
+  constructor(camera, {
+    mountInBody = EYE_MOUNT_IN_TORSO_METERS,
+    yawLimitDegrees = YAW_LIMIT_DEGREES,
+    pitchLimitDegrees = PITCH_LIMIT_DEGREES,
+  } = {}) {
     this.camera = camera;
+    this.mountInBody = mountInBody.clone();
+    this.yawLimitDegrees = yawLimitDegrees;
+    this.pitchLimitDegrees = pitchLimitDegrees;
     // Where the drag has asked to look, and where the view actually is.
     this.yawDegrees = 0;
     this.pitchDegrees = 0;
@@ -104,11 +135,19 @@ export class FirstPersonCamera {
   }
 
   // The same call the third-person camera gets, with the same numbers.
+  //
+  // A `null` yaw limit WRAPS into (-180, 180] rather than running off to
+  // thousands of degrees: the smoothing below takes the shortest way round, and
+  // an unwrapped angle would send it the long way after a couple of spins.
   look(movementX, movementY) {
-    this.yawDegrees = Math.max(-YAW_LIMIT_DEGREES, Math.min(YAW_LIMIT_DEGREES,
-      this.yawDegrees + movementX * YAW_DEGREES_PER_PIXEL));
-    this.pitchDegrees = Math.max(-PITCH_LIMIT_DEGREES, Math.min(PITCH_LIMIT_DEGREES,
-      this.pitchDegrees + movementY * PITCH_DEGREES_PER_PIXEL));
+    const wantedYaw = this.yawDegrees + movementX * YAW_DEGREES_PER_PIXEL;
+    this.yawDegrees = this.yawLimitDegrees === null
+      ? ((wantedYaw + 180) % 360 + 360) % 360 - 180
+      : Math.max(-this.yawLimitDegrees,
+                 Math.min(this.yawLimitDegrees, wantedYaw));
+    this.pitchDegrees = Math.max(-this.pitchLimitDegrees,
+      Math.min(this.pitchLimitDegrees,
+               this.pitchDegrees + movementY * PITCH_DEGREES_PER_PIXEL));
   }
 
   recentreNow() {
@@ -121,10 +160,16 @@ export class FirstPersonCamera {
   // head it is bolted to by even one frame.
   update(elapsedSeconds, torsoPosition, torsoQuaternion) {
     const share = blend(LOOK_LAG_SECONDS, elapsedSeconds);
-    this.smoothedYawDegrees += (this.yawDegrees - this.smoothedYawDegrees) * share;
+    // SHORTEST WAY ROUND, not straight subtraction: with a wrapping yaw the
+    // step from +179 to -179 is two degrees, and a plain difference would spin
+    // the view 358 the other way.
+    const yawError = ((this.yawDegrees - this.smoothedYawDegrees + 540) % 360)
+                     - 180;
+    this.smoothedYawDegrees = (((this.smoothedYawDegrees + yawError * share)
+                                + 180) % 360 + 360) % 360 - 180;
     this.smoothedPitchDegrees += (this.pitchDegrees - this.smoothedPitchDegrees) * share;
 
-    this._mountOffset.copy(EYE_MOUNT_IN_TORSO_METERS).applyQuaternion(torsoQuaternion);
+    this._mountOffset.copy(this.mountInBody).applyQuaternion(torsoQuaternion);
     this.camera.position.copy(torsoPosition).add(this._mountOffset);
 
     // torso -> mount -> yaw about the camera's own up -> pitch about the yawed

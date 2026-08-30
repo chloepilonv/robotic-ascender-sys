@@ -784,7 +784,7 @@ number below with `python -m app.harness.test_guide`.
 | the two eye images | **REAL** | 320×240 RGB renders of the scene from two MuJoCo cameras 6 cm apart, copied from the `d435i` mount already in `assets/robots/mujoco/g1_unitree_ascender.xml` (pos `0.0789635 0 0.386` on `torso_link`, fovy 58°). Cameras are visual-only; MuJoCo integrates nothing from them. |
 | the DISTANCE | **REAL passive stereo** | OpenCV `StereoSGBM` on that pair → disparity → `depth = focal_pixels × baseline / disparity`, `focal_pixels = (height/2)/tan(fovy/2) = 216.5 px`, `baseline = 0.06 m`. Sub-pixel from SGBM's own 1/16-px fixed point. **No simulator state is read anywhere in this path.** |
 | the BEARING | **REAL** | the matched pixels' centroid column through the same intrinsics. |
-| WHICH PIXELS ARE THE HUMAN | **STAND-IN** | an HSV colour threshold on her deliberately distinctive orange jacket (hue 6–15, saturation ≥ 120, value ≥ 80), largest connected component. Re-measured on HER jacket with a segmentation render: **97.7% of jacket pixels in, 0.0% of every other material** — the table is below. A person detector goes here; the seam is `guide.detect_guide(image) -> (box, mask)`. It is not vision in any interesting sense — it knows the answer's colour. |
+| WHICH PIXELS ARE THE HUMAN | **STAND-IN** | an HSV colour threshold on her deliberately distinctive orange BACKPACK (hue 9–14, saturation ≥ 180, value ≥ 40), largest connected component. Re-measured with a segmentation render: **100.0% of pack pixels in, 0.0% of every other material and of the scene** — the table is below. A person detector goes here; the seam is `guide.detect_guide(image) -> (box, mask)`. It is not vision in any interesting sense — it knows the answer's colour. It targeted her JACKET until 2026-08-30, when the user put her in blue with an orange pack. |
 | `true_distance_meters` | **LABELLED CHEAT** | read straight out of `data.cam_xpos` and the guide's own pose. HUD and grading only; the follower never sees it. Recorded as `guide_true_distance_meters`. |
 | the guide's motion | **not physics, and says so** | Chloe's hiker (`assets/humans/human.xml`) as one mocap root plus six WELDED limb bodies (zero DOF, `nq`/`nv`/`njnt` untouched), driven along `RopeRoute` arc length, height snapped to `terrain.surface_z` every tick. It cannot fall, be pushed, or be walked into: every geom is `contype=0, conaffinity=0`. |
 | the guide's WALK | **synthetic animation, geometric not learned** | six hinge angles written into `model.body_quat`, phase locked to distance travelled (`2π × travel / 1.05 m`). No joint, no actuator, no integrator. See "The animated guide" below. |
@@ -898,27 +898,90 @@ anchor and the boot are nudged to the mean of the two sides in the sagittal
 plane -- 1.3 cm and 1.6 cm, half the difference each way. The left/right
 offsets in y are untouched: those are her stance width, not an error.
 
-### The colour window, re-measured on HER jacket
+### The outfit, and the colour window re-measured on HER BACKPACK
+
+**THE OUTFIT IS OURS, APPLIED AT ATTACH TIME** (user's ruling, 2026-08-30: "make
+the human wear a blue outfit with a bright orange backpack"). `guide.
+GUIDE_OUTFIT_RGBA` overrides the `rgba` of her materials as `_add_guide_body`
+copies them onto the spec; `assets/humans/human.xml` is shared with
+`human-safety/` and is not edited for a wardrobe choice. Cobalt jacket
+`0.13 0.30 0.72`, navy trousers `0.09 0.14 0.34`, slate boots `0.16 0.19 0.28`,
+teal beanie `0.05 0.62 0.55`, safety-orange pack `1.00 0.38 0.02`. Only `rgba`
+moves -- `specular` and `shininess` still come from her XML and no geom, body,
+mass or contact property is touched -- so the compiled model, the GLB the
+browser draws and the eye images the robot detects with all read one source.
+
+The detector therefore keys on the PACK. Choosing the clothes and choosing the
+window is one decision: the boots left brown because brown renders at hue 12-14,
+inside the pack's own window.
 
 `test_guide` section A0 renders the left eye twice at each test range -- once in
 colour, once in SEGMENTATION -- so every pixel is attributed to the geom that
-painted it before its hue is counted. Window: hue 6-15, saturation >= 120,
-value >= 80. `flat_0`, pooled over 1/2/4/8 m:
+painted it before its hue is counted. Window: hue 9-14, saturation >= 180,
+value >= 40. `flat_0`, pooled over 1/2/4/8 m (`terrain_free_10` is the same
+verdict: pack 5,220 px at hue 11-11, 100.0%, everything else 0.0%):
 
 | material | pixels | hue 1-99% | saturation 1-99% | value 1-99% | inside the window |
 |---|---|---|---|---|---|
-| **jacket (target)** | 21,708 | 10-11 | 236-242 | 61-255 | **97.7%** |
-| skin | 565 | 5-11 | 57-101 | 51-217 | 0.0% |
-| beanie | 6,420 | 176-178 | 213-222 | 51-205 | 0.0% |
-| pack | 6,322 | 109-110 | 184-198 | 36-136 | 0.0% |
-| glove | 25 | 113-120 | 51-101 | 8-22 | 0.0% |
-| pants | 4,238 | 109-113 | 82-127 | 14-50 | 0.0% |
-| boots | 519 | 13-14 | 143-152 | 32-73 | 0.0% |
-| everything else (snow, sky, rope, robot) | 267,403 | 1-111 | 33-238 | 74-230 | 0.0% |
+| **pack (target)** | 6,380 | 11-12 | 246-250 | 51-239 | **100.0%** |
+| jacket | 21,546 | 111-113 | 204-219 | 60-198 | 0.0% |
+| skin | 563 | 0-178 | 39-74 | 52-223 | 0.0% |
+| beanie | 6,395 | 86-91 | 224-237 | 47-170 | 0.0% |
+| glove | 25 | 110-116 | 73-118 | 11-31 | 0.0% |
+| pants | 4,301 | 114-115 | 181-208 | 26-92 | 0.0% |
+| boots | 519 | 113-113 | 109-124 | 33-70 | 0.0% |
+| rope carrier (orange, on the palm) | 0 | | | | not visible |
+| everything else (snow, sky, rope, robot) | 267,471 | 1-111 | 33-238 | 74-230 | 0.0% |
 
-The 2.3% of jacket it drops are shadowed pixels under the value floor. The boots
-are the nearest miss at hue 13-14, and it is the VALUE floor, not the hue range,
-that keeps them out.
+Nothing sits on an edge: hue is 2 units either side of the pack's own 11-12;
+saturation is 66 clear of its 246 and is the barrier that keeps SKIN out, whose
+hue wraps straight through the band; value is 11 clear of the pack's darkest
+face. The OTHER reds, by arithmetic (OpenCV hue = degrees / 2): the **rope**
+`0.85 0.08 0.05` computes to 2.25 deg -> **hue 1**, eight units below the window,
+and hue is its only barrier since it clears both floors. The browser's **wind
+pennants** `0xc41414` (196,20,20) compute to 0 deg -> **hue 0**, nine units
+below -- and they are Three.js-only decoration that exists in no MuJoCo model,
+so they cannot reach an eye image at all. The **ascender carrier**, translucent
+orange on the robot's own palm, computes to **hue ~17**, three units above the
+window's high end, which is why that end stops at 14 rather than opening up; it
+renders 0 px in these poses, so it is out of frame rather than absent.
+
+**WHAT THE SMALLER MARKER COST AND BOUGHT**, measured jacket -> pack:
+
+| | jacket | pack |
+|---|---|---|
+| maximum detection range, `flat_0` | 10.00 m | **18.25 m** |
+| maximum detection range, `terrain_free_10` | 10.00 m | **15.87 m** |
+| stereo error at 2 m / 5 m | -5.8% / -6.0% | -7.0% / -4.4% |
+| standing at 2 m, back turned | 100% detected, WAIT at 0.89 m | 87.0% detected, WAIT at 0.78 m |
+| standing at 5 m, back turned | 79.5% detected, ends in SEARCH | **99.0% detected, ends in FOLLOW** |
+| off-axis re-acquire (`test_search` J) | 0.20 s / 0.40 s | 0.20 s / 0.60 s |
+
+The range went UP: the pack is small but it is a solid, uniformly-lit box, where
+the jacket's thin limbs anti-aliased into the snow. Detected is not the same as
+usable, though -- past about 10 m the disparity is 1-1.5 px and the range wanders
+(12 m true reads 13.07 m; 16 m true reads 13.05 m).
+
+**TWO NEW LIMITS, measured rather than left for a demo to find** (`test_guide`
+A1, A2, A2b):
+
+* **She is invisible facing the robot.** 0 mask pixels at 2 m and at 5 m, and
+  the follower sits in SEARCH rather than inventing a range -- 0.0% of ticks for
+  a whole 20 s run at 5 m on both worlds, and at 2 m on `terrain_free_10`. The
+  one exception is printed as a first-detection range: at 2 m on `flat_0` the
+  robot walks BLIND from 2.00 m down to 1.01 m with 0 mask pixels the whole way,
+  and only sees the pack's edge at 0.98 m once it is round her shoulder.
+* **A close-range hole on the approach.** She walks 0.6 m left of the rope, so
+  inside about 1.5 m the bearing to her crosses the +/-29 deg frame edge and a
+  narrow marker on her back goes with it, where a whole jacket still filled the
+  picture. The follower recovers through SEARCH (WAIT at 13.7 s from a 2 m
+  start), but on `flat_0` it is what stops `test_search`'s REALIGN handing over
+  to the ordinary follower, which the jacket managed at 0.24 s. On
+  `terrain_free_10` the hand-over still completes, at 1.10 s with a
+  camera-bearing error of 0.8 deg.
+
+Physics is untouched by all of it: `test_guide` D and `test_search` M both come
+back **0.000e+00 across every array**.
 
 ### The model surgery, and why it is safe
 
@@ -1146,19 +1209,46 @@ Same reset, same scripted command, 6 s, `flat_0`: `qpos`, `qvel`, `ctrl`,
 
 ---
 
-## The storm -- a white-out, and here is the proof it is only a picture
+## The two wind pennants and the camera subject -- browser only
 
-`app/harness/storm.py`. The `storm` knob closes the weather in with the
-INSTANTANEOUS wind speed. It degrades what the robot SEES and nothing else.
+`app/web/three/flag.js`, `three/stage.js`, `three/first_person_camera.js`. Both
+rulings of 2026-08-30 -- "the flag needs to be a lot bigger" / "put the same
+flag on the human too", and "when the guide is turned on the camera should be on
+the guide" -- landed entirely in the browser.
+
+| piece | status | what it actually is |
+|---|---|---|
+| the two pennants | **decoration** | Three.js `Group`s parented to the `torso_link` and `guide` nodes of the GLB. No MuJoCo body, no mocap slot, no geom, no mass, no collision shape. The pose stream they ride on is read-only, so the model the solver integrates is byte for byte the model it integrated before this file existed. |
+| the flag's clearance | ours, measured | from `model.cam_pos` / `cam_quat` / `cam_fovy` on the compiled `flat_0`: eyes' half diagonal **42.7°**; pole base **131.4°** off axis, pole top **98.0°**, and the worst point of the swept cloth over every lift angle and heading **56.2°**. 13.5° of margin, so even an in-model version could not enter an eye image. |
+| the hiker's pennant in the eye images | **absent** | it is browser geometry; the eye cameras render the MuJoCo model, which has no flag in it. Its colour therefore cannot reach the detector at all. Stated because the obvious worry -- a red flag inside an orange-red colour window -- is a worry about a thing that does not exist. |
+| who the camera follows | **input side** | the chase boom's target and the first-person mount swap between the robot's pelvis/torso and the guide's mocap root. The two numbers that go up the socket are still the CHASE camera's azimuth and elevation, exactly as before, so the steering command is unchanged. |
+| the hiker's 360° head turn | **input side** | her first-person yaw WRAPS instead of clamping, because a person has a neck and the robot's ±150° is the waist joint's real travel. Camera-only: nothing here writes a joint. |
+
+---
+
+## Visibility -- a white-out, and here is the proof it is only a picture
+
+`app/harness/storm.py`. The `visibility` knob is a DISTANCE IN METRES. It
+degrades what the robot SEES and nothing else.
+
+**WHAT CHANGED 2026-08-30** (user's ruling): this used to be a `storm` 0/1
+switch whose thickness came out of the WIND SPEED, `100 m x exp(-wind / 6)`.
+Two independent things were one control -- no still white-out, no clear gale,
+and every wind experiment silently moved what the robot could see. The coupling
+is deleted; wind does force, flag, sound and gusting, and visibility does only
+visibility. An older page's `storm` knob is stored and ignored rather than
+rejected, so a stale client cannot crash the runtime.
 
 ### The ledger
 
 | piece | status | what it actually is |
 |---|---|---|
-| the visibility law | ours, stated | `100 m x exp(-wind / 6)`, clamped at 1.5 m. 100 / 37 / 14 / 3.6 m at 0 / 6 / 12 / 20 m/s. Not a measurement of anything -- a look, specified by the user and fitted to three points. |
+| the visibility itself | **the knob** | metres, straight off the page. Not derived from anything. 100 m = clear, 3 m = white-out. |
+| the clear end | **an identity** | at 100 m `degrade` returns the image it was handed, un-fogged and un-grained, and does not advance its own generator -- so "clear" is a genuine control arm, not a nearly-clear one. |
+| the log share | ours, stated | `ln(100 / v) / ln(100 / 3)`, 0 at clear and 1 at white-out; centre 17.3 m. It drives the page's fog whiteness, the far-field flake count and the sensor grain, and it sets the slider's own scale. Shared with `whiteoutShare` in `app/web/three/world.js`. |
 | the fog on the eye images | **synthetic degradation** | composited per pixel from the eye renderer's own depth buffer: `out = colour*(1-f) + white*f`, `f` a linear ramp from `0.15 x visibility` to `visibility`. The same law GL's `GL_LINEAR` fog uses. |
-| the sensor grain | **synthetic degradation** | Gaussian noise, sigma `1.0 + 0.30 x wind` grey levels, drawn INDEPENDENTLY per eye from a seeded generator. |
-| the fog on the 3D page | **synthetic degradation** | `FogExp2` at density `1.73 / visibility` (FogExp2 is 95% opaque at `1.73 / density`), sky mesh hidden, clear colour = fog colour. Driven by the same knob and the same speed. |
+| the sensor grain | **synthetic degradation** | Gaussian noise, sigma 1.0 grey levels at 100 m rising to 7.0 at 3 m, drawn INDEPENDENTLY per eye from a seeded generator. It used to scale with the WIND; that was the last place the two dials were tied together. |
+| the fog on the 3D page | **synthetic degradation** | `FogExp2` at density `1.73 / visibility` (FogExp2 is 95% opaque at `1.73 / density`), background set to the fog colour so there is no horizon. Driven by the same knob. |
 | the physics | **untouched** | nothing here writes to the model or to `MjData`. |
 
 ### Why the fog is composited, and not left to MuJoCo
@@ -1185,40 +1275,29 @@ measurements, each one a dead end:
 says the scene's CLEAR-weather fog has never been visible either:
 `graphics.apply_alpine_look` writes `1.35 x terrain diagonal` into a field
 measured in EXTENTS, which on `flat_0` is a fog end of 2534 m. What reads as
-haze in the JPEG view is the haze layer and the skybox, not the fog. Changing it
-would change the look of every view and every recorded mp4, so it is written
-down rather than touched.
+haze is the haze layer and the skybox, not the fog. Changing it would change the
+look of every view, so it is written down rather than touched.
 
 ### The white-out is by DISTANCE, not a wash
 
 `test_storm` section E0. The guide is at 5 m; the near half of the frame (depth
 <= 6 m) and the far half are reported apart, sensor noise off:
 
-| wind m/s | visibility | mean change NEAR | mean change FAR |
+| visibility | mean change NEAR | mean change FAR | mean brightness |
 |---|---|---|---|
-| off | -- | 0.0 | 0.0 |
-| 0 | 100.0 m | 0.0 | 38.3 |
-| 6 | 36.8 m | 0.0 | 41.2 |
-| 12 | 13.5 m | 15.7 | 53.6 |
-| 20 | 3.6 m | 114.6 | 63.8 |
+| 100 m (clear) | 0.0 | 0.0 | 151.3 |
+| 30 m | 0.5 | 42.9 | 176.2 |
+| 10 m | 30.1 | 58.6 | 197.8 |
+| 3 m | 126.8 | 63.8 | 241.9 |
 
 A flat colour wash would move both columns equally. Fog eats the far half first
 and only reaches the near half once the visibility falls below the subject's own
 range.
 
-On the 3D page the same thing, measured off the screenshots (far-field and
-near-ground mean RGB, 1920x1080, pointer-lock scrim hidden):
-
-| wind m/s | far-field | near-ground |
-|---|---|---|
-| 0 | 205, 221, 239 | 119, 127, 139 |
-| 12 | **251, 252, 253** | 180, 187, 198 |
-| 20 | **250, 251, 252** | **250, 251, 253** |
-
 The page's fog colour carries **2.6x linear headroom** on purpose: the renderer
 tone-maps ACES-filmic at exposure 0.92, ACES rolls a 1.0 off to about 0.77, and
 a fog painted at plain "white" renders as a mid grey. Measured before the
-headroom: a full 20 m/s frame came back at RGB 150.
+headroom: a full white-out frame came back at RGB 150.
 
 (A screenshot trap worth writing down: `#lockOverlay` is `rgba(9,9,11,.55)`
 across the viewport whenever the page does not hold the pointer, and **headless
@@ -1226,39 +1305,70 @@ Chrome can never take pointer lock**, so it is always up. It dims the render by
 55% -- a white-out measured RGB 118 instead of 245 for that reason alone, and
 two rounds of chasing the tone mapper were spent on it.)
 
+A consequence of the bottom of the dial, stated so nobody reads it as a bug: the
+chase camera sits on a **4.3 m boom**, so at 3 m of visibility the CAMERA is
+itself outside the visibility and the third-person view goes fully white --
+`render3d_shots/visibility_3.png` is a blank frame. That is what a 3 m white-out
+looks like from four metres away, and it is the same weather the robot's eyes
+are in.
+
 ### What it does to the follower
 
-| wind m/s | visibility | detected at 2 m | detected at 5 m | max detection range |
-|---|---|---|---|---|
-| storm off | -- | 100% | 100% | 10 m |
-| 0 | 100.0 m | 100% | 100% | 10 m |
-| 6 | 36.8 m | 100% | 100% | 10 m |
-| 12 | 13.5 m | 100% | 100% | 6 m |
-| 20 | 3.6 m | 100% | **0%** | **2 m** |
+`test_storm` sections E and F, on `flat_0`, with the guide's orange BACKPACK as
+the detector's target:
 
-Stereo error over the frames where she IS seen stays around -5% to -10% at 2 m
-and 5 m; what the storm takes is DETECTION, not accuracy, which is what a
-contrast-destroying fog should do to a colour threshold.
+| visibility | detected at 2 m | detected at 5 m | max detection range |
+|---|---|---|---|
+| 100 m (clear) | 100% | 100% | 16 m |
+| 30 m | 100% | 100% | 10 m |
+| 10 m | 100% | **0%** | **4 m** |
+| 3 m | **0%** | **0%** | **never seen** |
+
+Stereo error over the frames where she IS seen stays around -4% to -7%; what the
+white-out takes is DETECTION, not accuracy, which is what a contrast-destroying
+fog should do to a colour threshold.
 
 And the follower's own verdict, human parked at 9 m, 6 s of real vision, robot
 not stepped -- nothing scripted, the detector simply misses and the 1 s timeout
 expires:
 
-| wind m/s | vision frames with a detection | FOLLOW | LOST |
+| visibility | vision frames with a detection | FOLLOW | LOST |
 |---|---|---|---|
-| off | 100% | 100% | 0% |
-| 6 | 100% | 100% | 0% |
-| 12 | **0%** | 0% | **100%** |
-| 20 | **0%** | 0% | **100%** |
+| 100 m (clear) | 100% | 100% | 0% |
+| 30 m | 100% | 100% | 0% |
+| 10 m | **0%** | 0% | 0% |
+| 3 m | **0%** | 0% | 0% |
 
-LOST needs a whole second with no detection and the eyes run at 10 Hz, so ten
-consecutive misses: the mode only flips once detection falls well below half.
+(The 10 m and 3 m rows show 0% FOLLOW and 0% LOST because the follower opens in
+WAIT and never sees her at all -- LOST needs a detection to have been lost.)
+
+### Visibility is not wind
+
+`test_storm` section J, the table that says the 2026-08-30 split is real rather
+than cosmetic. Visibility held at 10 m; the wind dial at 0 m/s and at 12 m/s,
+two settings that under the retired coupling meant 100 m and 13.5 m of
+visibility. The wind really blows -- half a second of it through
+`episode.step`'s world-frame wind velocity, from the same reset -- and then the
+guide is re-placed at the test range by bisection.
+
+    `StormVision.update` parameters: ['visibility_meters']
+    J1  same rendered eye, degraded in each arm: max per-pixel difference 0
+
+| wind m/s | detected at 2 m | detected at 5 m | max detection range |
+|---|---|---|---|
+| 0 | 100% | 0% | 4.0 m |
+| 12 | 100% | 0% | 4.0 m |
+
+The detection rates and the maximum range match exactly. The median stereo error
+does not (-5.2% against -8.8%), and that is the wind doing the one thing it
+still does: it moved the robot, so the two arms measure the same range from
+slightly different poses.
 
 ### The physics claim
 
 `test_storm` section H -- the same scripted command flown twice from the same
-reset, once with no storm and once with a 20 m/s white-out and the guide on, so
-the fog is recomputed every tick and the eyes render through it every fifth:
+reset, once at 100 m clear and once in a 3 m white-out with the guide on, so the
+fog is composited every tick and the eyes render through it every fifth:
 
 | array | max abs difference |
 |---|---|
@@ -1268,6 +1378,22 @@ the fog is recomputed every tick and the eyes render through it every fifth:
 | `sensordata` | 0.000e+00 |
 | `qfrc_constraint` | 0.000e+00 |
 | `cfrc_ext` | 0.000e+00 |
+
+And the whole-runtime claim, measured through `runtime.run` itself against
+commit `cf03957`, 300 ticks, seed 0, `--hold-w`:
+
+| arm | flat_0 | lhotse_B |
+|---|---|---|
+| guide OFF, whole tree | **0.000e+00**, POS0 bytes identical | **0.000e+00**, POS0 bytes identical |
+| guide ON, weather/flag/camera changes only (`guide.py` held at cf03957) | **0.000e+00**, POS0 sha `b757ad6e` unchanged | **0.000e+00**, POS0 sha `79246087` unchanged |
+| guide ON, whole tree | **0.000e+00** | qpos 1.865, qvel 17.97, ctrl 1.290 |
+
+The last cell is the ONLY divergence and it is the intended one: with the guide
+on, the robot's command comes from what it SEES, and the detector was
+deliberately re-pointed from the jacket to the backpack the same day. Holding
+`guide.py` at the old commit and changing everything else brings lhotse_B back
+to bit-identical, which is what isolates the claim -- the weather, the flags and
+the camera subject move no physics at all.
 
 ---
 

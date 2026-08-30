@@ -83,6 +83,38 @@ from the `foot_steps` events). That render was 10–20 ms of a 20 ms budget. The
 one image still on the wire is `EYE0`, the robot's own left eye — a sensor
 readout, not a view of the world.
 
+### Two wind pennants, and who the camera is on
+
+**A pennant on each head** (`app/web/three/flag.js`, user's ruling 2026-08-30 —
+"the flag needs to be a lot bigger", and "put the same flag on the human too").
+A 45 cm pole carrying a 36 × 24 cm tapered red cloth sits on the robot's
+`torso_link` and on the hiker's `guide` mocap root. It points downwind, lifts
+from hanging limp at 0 m/s to flying level by 12, and ripples faster the harder
+it blows — a wind indicator you can read at a glance from anywhere the camera
+happens to be.
+
+Three times the old size, so the clearance was recomputed rather than carried
+over. From `model.cam_pos` / `cam_quat` / `cam_fovy` on the compiled `flat_0`:
+the eyes' half diagonal is **42.7°**, the pole's base sits 131.4° off the
+optical axis, its top 98.0°, and the **worst point of the swept cloth** — over
+every lift angle and every wind heading — is **56.2°**. 13.5° of margin, so even
+an in-model version of this flag could not get into the robot's eyes. It is
+browser-only decoration either way: no MuJoCo body, no geom, no mass.
+
+The hiker's flag needs no visibility rule — with the guide knob off, `guide.py`
+parks her whole mocap body at z = −50 m and the flag, being a child of that
+node, goes with her.
+
+**The camera follows the subject** (user's ruling 2026-08-30: "when the guide is
+turned on the camera should be on the guide, not the bot"). Guide on, the chase
+boom frames HER and **V** gives first person from HER head — with no yaw clamp
+at all, because a person can look over her shoulder and the robot's ±150° limit
+is the waist joint's real travel. Guide off, both cameras are the robot's again,
+exactly as before. The switch is instantaneous: toggling re-seeds the spring arm
+onto the new subject rather than flying it across the map. W/S/A/D are
+unchanged, and the two numbers that go up the socket are still the CHASE
+camera's, so nothing about steering moved.
+
 
 ## Follow the guide (`app/harness/guide.py`)
 
@@ -129,8 +161,9 @@ and OpenCV's semi-global block matcher turns the pair into a disparity map;
 `depth = focal_pixels × baseline / disparity` gives metres. **The distance is
 real passive stereo — nothing in the decision path reads the simulator.** Which
 pixels are the human is a **stand-in** (a colour threshold on the guide's
-orange-red, where a person detector would go); `PARITY.md` has the full ledger
-of what is vision, what is stand-in and what is a labelled cheat.
+orange BACKPACK, where a person detector would go — see the next subsection);
+`PARITY.md` has the full ledger of what is vision, what is stand-in and what is
+a labelled cheat.
 
 Three states, with hysteresis so it cannot chatter at the threshold it is trying
 to hold:
@@ -166,6 +199,95 @@ ends up 10° apart), so the follower steers much better on rope-off worlds.
 The guide is available on the **ClimbScene** worlds only. The four `legacy_*`
 worlds hand back a compiled model with no `MjSpec`, so there is nothing to add
 the body and the cameras to, and the feature turns itself off there.
+
+### The guide's outfit, and why the detector keys on her backpack
+
+She wears a **cobalt jacket and navy trousers**, slate boots and a teal beanie,
+and carries a **bright safety-orange backpack** (user's ruling, 2026-08-30). The
+colours are applied at attach time by `guide.GUIDE_OUTFIT_RGBA`, where her
+materials are copied onto the scene spec — `assets/humans/human.xml` is shared
+with `human-safety/` and is never edited for a wardrobe choice. Only `rgba` is
+overridden, so the compiled model, the GLB the browser draws and the eye images
+the robot detects with all read one source, and `test_guide` section D still
+comes back **bit-identical**.
+
+The detector therefore targets the **pack**, not the jacket. Choosing the
+clothes and choosing the hue window is one decision: the pack is the only
+saturated orange on the person, and everything else is pushed away from it in
+hue, saturation or value with margin. The boots left brown for this reason —
+brown renders at hue 12–14, inside the pack's own window.
+
+**The window is `hue 9–14, saturation ≥ 180, value ≥ 40`** (OpenCV HSV), and it
+keeps **100.0%** of the pack's pixels and **0.0%** of every other material and of
+the scene itself (`flat_0`, pooled over 1/2/4/8 m, attributed with a
+segmentation render — `test_guide` section A0; `terrain_free_10` is the same
+verdict):
+
+| material | pixels | hue 1-99% | saturation 1-99% | value 1-99% | inside the window |
+|---|---|---|---|---|---|
+| pack ← TARGET | 6380 | 11-12 | 246-250 | 51-239 | 100.0% |
+| jacket | 21546 | 111-113 | 204-219 | 60-198 | 0.0% |
+| skin | 563 | 0-178 | 39-74 | 52-223 | 0.0% |
+| beanie | 6395 | 86-91 | 224-237 | 47-170 | 0.0% |
+| glove | 25 | 110-116 | 73-118 | 11-31 | 0.0% |
+| pants | 4301 | 114-115 | 181-208 | 26-92 | 0.0% |
+| boots | 519 | 113-113 | 109-124 | 33-70 | 0.0% |
+| rope carrier (orange, on the palm) | 0 | | | | not visible |
+| everything else | 267471 | 1-111 | 33-238 | 74-230 | 0.0% |
+
+Margins, so it is clear nothing sits on an edge: hue is 2 units either side of
+the pack's own 11–12; saturation is 66 clear of its 246 and is the barrier that
+keeps **skin** out, whose hue wraps straight through the band; value is 11 clear
+of the pack's darkest face. **The other reds** (OpenCV hue = degrees ÷ 2): the
+**rope** `0.85 0.08 0.05` computes to 2.25° → **hue 1**, eight units below the
+window, and hue is its only barrier since it clears both floors. The browser's
+**wind pennants** `0xc41414` (196,20,20) compute to 0° → **hue 0**, nine units
+below. The pennants are **Three.js-only decoration** (`app/web/three/flag.js`);
+they exist in no MuJoCo model and can never appear in an eye image at all. The
+**ascender carrier**, translucent orange on the robot's own palm, computes to
+**hue ≈ 17** — three units above the window's high end, which is why that end
+stops at 14 rather than opening up. It renders 0 px in the test poses, so it is
+out of frame rather than absent.
+
+**What the smaller marker cost and bought.** Measured `flat_0`, jacket → pack:
+
+| | jacket | pack |
+|---|---|---|
+| maximum detection range, `flat_0` | 10.00 m | **18.25 m** |
+| maximum detection range, `terrain_free_10` | 10.00 m | **15.87 m** |
+| stereo error at 2 m / 5 m | −5.8% / −6.0% | −7.0% / −4.4% |
+| standing at 2 m, back turned | 100% detected, WAIT at 0.89 m | 87.0% detected, WAIT at 0.78 m |
+| standing at 5 m, back turned | 79.5% detected, ends in SEARCH | **99.0% detected, ends in FOLLOW** |
+| off-axis re-acquire (`test_search` J) | 0.20 s / 0.40 s | 0.20 s / 0.60 s |
+
+The range went **up**: the pack is small but it is a solid, uniformly-lit box,
+where the jacket's thin limbs anti-aliased into the snow. Detection is not the
+same as a usable reading, though — past about 10 m the disparity is 1–1.5 px and
+the range wanders (12 m true reads 13.07 m; 16 m true reads 13.05 m).
+
+**Two limits the backpack has and the jacket did not**, both measured rather
+than left for a demo to find (`test_guide` sections A1, A2, A2b):
+
+* **She is invisible facing the robot.** 0 mask pixels at 2 m and at 5 m, and
+  the follower sits in **SEARCH** rather than inventing a range — 0.0% of ticks
+  for a whole 20 s run at 5 m on both worlds, and at 2 m on `terrain_free_10`.
+  The one exception is honest and is printed as a first-detection range: at 2 m
+  on `flat_0` the robot walks *blind* from 2.00 m down to 1.01 m with **0 mask
+  pixels the whole way**, and only sees the pack's edge at 0.98 m once it has
+  got round her shoulder.
+* **A close-range hole on the approach.** She walks 0.6 m left of the rope, so
+  as the robot closes inside about 1.5 m the bearing to her crosses the ±29°
+  frame edge, and a narrow marker on her back goes with it where a whole jacket
+  still filled the picture. The follower recovers through SEARCH — WAIT reached
+  at 13.7 s from a 2 m start — but on `flat_0` it is what stops `test_search`'s
+  REALIGN handing over to the ordinary follower, which the jacket managed at
+  0.24 s. On `terrain_free_10` the hand-over still completes, at 1.10 s with a
+  camera-bearing error of 0.8°.
+
+Physics is untouched by any of it. The whole executable change is one statement
+— the material's `rgba` — so no geometry, mass, joint or contact property moved,
+and `test_guide` D and `test_search` M both report **0.000e+00 across every
+array**.
 
 ## SEARCH: finding her again
 
@@ -230,58 +352,92 @@ steerable turn is wanted. Everything above is a workaround for a policy that
 cannot turn, and a policy that could would let the body take the angle and the
 waist unwind — which is what `realign_mode: "body+waist"` is already written for.
 
-## The storm (`app/harness/storm.py`)
+## Visibility (`app/harness/storm.py`)
 
-Turn the **`storm`** knob on and the weather closes in. **A storm here is FOG**,
-not a snow shower: what a white-out does is take DISTANCE away, so the far slope
-dissolves into white first, then the middle distance, and at the top of the dial
-you cannot see the hiker four metres in front of you. Nothing sits on the lens.
+Slide **VISIBILITY** from `100 m` down to `3 m` and the weather closes in.
+**A white-out here is FOG**, not a snow shower: what it does is take DISTANCE
+away, so the far slope dissolves into white first, then the middle distance, and
+at the far end of the dial you cannot see the hiker three metres in front of
+you. Nothing sits on the lens.
 
-Visibility follows the **instantaneous** wind speed, gusts included, so a gust
-really does blind the robot for a second:
+**It is its own dial and it owes the wind nothing** (user's ruling, 2026-08-30).
+Until then this was a `storm` on/off switch whose thickness came out of the wind
+speed — `100 m × exp(−wind / 6)` — which made two independent things one
+control: you could not have a still white-out or a clear gale, and every wind
+experiment silently changed what the robot could see. The knob is now a
+**distance in metres**:
 
-    visibility = 100 m x exp(-wind / 6)      100 / 37 / 14 / 3.6 m at 0 / 6 / 12 / 20 m/s
+    {"type":"knob", "name":"visibility", "value": 15.0}      # metres
 
-**The same curve in two places.** The page's own fog is `stormVisibilityMeters`
-in `app/web/render3d.html` (a `FogExp2` density of `1.73 / visibility`, the sky
-mesh hidden and the clear colour set to the fog colour so there is no horizon at
-all); the robot's eyes use `storm.visibility_meters`. If one moves, move the
-other, or the picture and the robot stop being in the same weather.
+`100 m` is CLEAR and the eye images are handed back **untouched** — not fogged
+with a faint 100 m ramp, and the sensor-noise generator is not even advanced, so
+"clear" is a real control arm in every table below. `3 m` is the floor rather
+than zero, because a visibility of nothing is a blank screen and not a
+white-out. An older page's `storm` knob is stored and ignored rather than
+rejected, so a stale client cannot crash the runtime.
+
+**One curve, three places.** The slider's scale, the page's fog and flake
+density, and the fog on the robot's eyes all read the same log share —
+`ln(100 / v) / ln(100 / 3)`, 0 at clear and 1 at white-out, which puts the
+slider's own centre at `sqrt(100 × 3)` = 17.3 m. It lives in `whiteoutShare`
+(`app/web/three/world.js`) and in `storm.whiteout_share`; the two endpoints are
+duplicated in both. If one moves, move the other, or the picture and the robot
+stop being in the same weather.
 
 **On the robot's eyes** the fog is composited per pixel from the eye renderer's
-own DEPTH buffer, `out = colour*(1 - f) + white*f`, plus a couple of grey levels
-of Gaussian sensor noise drawn INDEPENDENTLY per eye -- the one thing fog does
-not reproduce, and what leaves the block matcher nothing to match. All of it
-lands BEFORE the matcher and the detector, which is the only placement that
-makes the degradation honest, and the eye-view PiP shows the degraded image
-because it IS the image the robot used.
+own DEPTH buffer, `out = colour*(1 − f) + white*f`, plus a couple of grey levels
+of Gaussian sensor noise drawn INDEPENDENTLY per eye — the one thing fog does
+not reproduce, and what leaves the block matcher nothing to match. The grain now
+scales with the white-out share too (1.0 grey level at 100 m, 7.0 at 3 m); it
+used to scale with the wind, which was the last place the two dials were tied
+together. All of it lands BEFORE the matcher and the detector, which is the only
+placement that makes the degradation honest, and the eye-view PiP shows the
+degraded image because it IS the image the robot used.
 
-It legitimately breaks the follower, which is the point:
+It legitimately breaks the follower, which is the point (`flat_0`, the guide's
+orange backpack as the target, `test_storm` sections E and F):
 
-| wind m/s | visibility | detected at 2 m | detected at 5 m | max detection range |
-|---|---|---|---|---|
-| storm off | -- | 100% | 100% | 10 m |
-| 0 | 100.0 m | 100% | 100% | 10 m |
-| 6 | 36.8 m | 100% | 100% | 10 m |
-| 12 | 13.5 m | 100% | 100% | 6 m |
-| 20 | 3.6 m | 100% | **0%** | **2 m** |
+| visibility | detected at 2 m | detected at 5 m | max detection range |
+|---|---|---|---|
+| 100 m (clear) | 100% | 100% | 16 m |
+| 30 m | 100% | 100% | 10 m |
+| 10 m | 100% | **0%** | **4 m** |
+| 3 m | **0%** | **0%** | **never seen** |
 
-and with the human parked at 9 m the follower goes to LOST on its own -- 100%
-of detections at 6 m/s, **0%** at 12 and 20, and the mode follows.
+and with the human parked at 9 m the follower goes to LOST on its own — 100% of
+detections at 100 m and 30 m, **0%** at 10 m and 3 m, and the mode follows.
+
+The fog eats the far half of the frame first, which is what says it is fog and
+not a wash (section E0, sensor noise off, the guide at 5 m):
+
+| visibility | mean pixel change NEAR (≤ 6 m) | mean pixel change FAR (> 6 m) |
+|---|---|---|
+| 100 m (clear) | 0.0 | 0.0 |
+| 30 m | 0.5 | 42.9 |
+| 10 m | 30.1 | 58.6 |
+| 3 m | 126.8 | 63.8 |
+
 
     python -m app.harness.test_storm      # the tables above + the eye contact sheet
     python -m app.harness.runtime --world flat_0 --duration 10 --hold-w --guide \
-        --storm --wind 20 0
+        --visibility 3
 
 **None of it is physics.** The fog is arithmetic on two rendered arrays and
 nothing writes to the model or to `MjData`. `test_storm` section H is a
-same-seed diff, storm off against a 20 m/s white-out with the guide on:
+same-seed diff, 100 m clear against a 3 m white-out with the guide on:
 **0.000e+00** across `qpos`, `qvel`, `ctrl`, `sensordata`, `qfrc_constraint`
-and `cfrc_ext`. Storm off is a row in every table and is identical to a clean
-run.
+and `cfrc_ext`. Section J is the row that says the split from the wind is real:
+the same measurement at 10 m visibility with the wind dial at 0 m/s and at
+12 m/s — two settings that used to mean 100 m and 13.5 m of visibility.
 
-`render3d_shots/storm_eyes.png` is the left eye at each speed;
-`render3d_shots/storm_after/page3d_{0,12,20}mps.png` is the 3D page.
+`render3d_shots/storm_eyes.png` is the left eye at each visibility;
+`render3d_shots/visibility_{100,15,3}.png` is the 3D page at 8 m/s of wind with
+the guide on. (`storm_before/` and `storm_after/` are the wind-indexed shots
+from the 2026-08-29 fog ruling, kept as history — their file names are wind
+speeds, from when visibility was derived from wind.)
+
+The camera-subject shots are `render3d_shots/camera_{guide,robot}_{3p,1p}.png`,
+one per state of the guide switch and the **V** toggle.
 
 ## Snow, and footprints in it (`app/harness/snow.py`)
 

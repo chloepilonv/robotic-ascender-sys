@@ -35,25 +35,43 @@ WHAT IS REAL VISION AND WHAT IS A STAND-IN (the same list is in PARITY.md):
     depth = focal_pixels * baseline / disparity. Nothing about the distance
     reads the simulator's state.
   * STAND-IN. The DETECTION -- which pixels are the human -- is a colour
-    threshold on the guide's deliberately distinctive orange-red, not a person
-    detector. A real robot would run a detector network here; the interface
-    (`detect_guide` -> a bounding box) is the seam where one drops in.
+    threshold on the guide's deliberately distinctive BRIGHT ORANGE BACKPACK,
+    not a person detector. A real robot would run a detector network here; the
+    interface (`detect_guide` -> a bounding box) is the seam where one drops
+    in. The pack is a much smaller target than the whole jacket used to be, so
+    the range at which the threshold still fires is shorter, and the pack is
+    HIDDEN when she turns to face the robot. Both limits are measured in
+    test_guide (A1, A2) rather than left to be discovered in a demo.
   * LABELLED CHEAT. `true_distance_meters` is read from the simulator and is
     for the HUD and for grading the stereo only. Nothing in the decision path
     touches it.
 
 DISTANCES ARE RANGES TO THE PERSON, not depths along the optical axis, and the
 truth is measured to the guide's CHEST POINT -- a point on its body axis at
-`REFERENCE_HEIGHT_METERS`. MEASURED against that reference (flat_0, static
-poses): -9.0% at 1 m, -0.7% at 2 m, +4.6% at 4 m, -5.3% at 8 m.
+`REFERENCE_HEIGHT_METERS`. RE-MEASURED against that reference with the pack as
+the target (flat_0, static poses): -14.8% at 1 m, -7.0% at 2 m, +3.2% at 4 m,
++9.1% at 8 m.
 
 The 1 m figure is not a bug and is worth understanding, because it says what
-this measurement IS. A dense matcher's median disparity over a convex body lands
-somewhere between the body's near SURFACE and its AXIS: at 8 m a 0.18 m radius
-is 2% of the range and the two are the same number, while at 1 m they are 18%
-apart and the median sits between them, so the reading comes back short. The
+this measurement IS. A dense matcher's median disparity over the pixels the
+detector kept lands somewhere between that surface and the body AXIS the truth
+is measured to, and the pack's rear face is 0.30 m out: at 8 m that is 4% of the
+range and the two are the same number, while at 1 m they are 30% apart and the
+median sits between them, so the reading comes back short. The 8 m row swings
+the other way for a different reason -- the pack is 135 pixels there and the
+disparity is 1.5 px, so a quarter-pixel of quantisation is metres. The
 follower's thresholds are set on this quantity as measured, so the behaviour is
 calibrated whatever the reading is called.
+
+TWO LIMITS THE BACKPACK MARKER HAS AND THE JACKET DID NOT, both measured in
+test_guide rather than discovered in a demo. She is INVISIBLE FACING THE ROBOT:
+0 mask pixels at 2 m and at 5 m, and the follower sits in SEARCH rather than
+inventing a range (A2). And there is a CLOSE-RANGE HOLE on the approach: she
+walks 0.6 m to the left of the rope, so as the robot closes inside about 1.5 m
+the bearing to her passes the +/-29 deg frame edge and a narrow marker on her
+back goes with it, where a whole jacket still filled the picture. The follower
+recovers through SEARCH (A2b: WAIT reached at 13.7 s from 2 m) but it is a
+detour, and on flat_0 it is what stops test_search's REALIGN handing over.
 
 Inputs  : the built `ClimbScene` (its model, spec, rope route and terrain), and
           `MjData` each tick.
@@ -80,15 +98,60 @@ HUMAN_XML_PATH = os.path.join(
 # Her root frame has z = 0 AT THE GROUND CONTACT (feet), not at the hips, so the
 # body origin is snapped straight onto the terrain surface -- less whatever the
 # current stride puts below zero (`Guide.root_world`).
-# The nearest ORANGE surface to a camera behind her: the jacket capsules are
-# radius 0.17-0.19 about the body axis. The backpack sticks out further (0.30)
-# but it is blue, so the colour detector masks it out and the matcher never
-# medians over it. Used only to print the like-for-like column in test_guide.
-TORSO_RADIUS_METERS = 0.19
-# The point every TRUE range is measured to, on the body axis: where the
-# visible ORANGE pixels' centroid lands seen from behind -- hips (0.90-1.05),
-# lower torso and shoulders, with the pack covering the middle of the back.
-REFERENCE_HEIGHT_METERS = 1.15
+# The nearest DETECTED surface to a camera behind her. It used to be the jacket
+# capsules (radius 0.17-0.19 about the body axis); with the orange moved to the
+# BACKPACK it is the pack's rear face, and the pack sticks out further: its box
+# sits at x = -0.20 with a 0.10 half-extent, so that face is 0.30 m behind the
+# body axis. The matcher medians over exactly the pixels the detector kept, so
+# this is the surface it is looking at. Used only to print the like-for-like
+# column in test_guide.
+DETECTED_SURFACE_RADIUS_METERS = 0.30
+# The point every TRUE range is measured to, on the body axis: where the visible
+# ORANGE pixels' centroid lands seen from behind. That is now the pack, whose
+# box spans z 0.96-1.44 with its lid to 1.49, so the centroid sits at its middle
+# rather than at the old jacket-and-hips average of 1.15.
+REFERENCE_HEIGHT_METERS = 1.20
+
+# ---------------------------------------------------------------- her clothes
+# THE OUTFIT, APPLIED AT ATTACH TIME. `assets/humans/human.xml` is shared with
+# `human-safety/` and is not edited for a wardrobe choice, so the palette is
+# overridden where her materials are copied onto the scene spec
+# (`_add_guide_body`). That is the compiled model, so the SAME clothes reach the
+# GLB export the browser draws and the eye cameras the robot detects with --
+# there is no second place a colour could disagree.
+#
+# ONLY `rgba` IS TOUCHED. Not a geom, not a size, not a mass, not a contact
+# flag: a material colour is a rendering property and MuJoCo integrates none of
+# it, which is why test D still comes back bit-identical.
+#
+# WHY THESE COLOURS, AND WHY THEY ARE ONE DESIGN WITH THE DETECTOR. The detector
+# is a hue window, so choosing the clothes and choosing the window is a single
+# decision: the PACK is the only saturated orange on the person, and every other
+# material is pushed away from it in hue, in saturation, or in value -- with
+# margin, not by one unit. Their OpenCV hues (0-179) AS RENDERED, read off
+# test_guide's A0 table rather than computed from the rgba and hoped for:
+#
+#   pack     11-12   saturation 246-250      <- THE TARGET
+#   jacket  111-113  pants 114-115  boots 113  -- the blues, a third of the
+#                    wheel away from the pack and from nothing else in the scene
+#   beanie   86-91   (her rolled sleeping mat wears this material too)
+#   skin      wraps through 0, BUT saturation 39-74 -- a hundred short of the
+#                    window's floor, which is the barrier that matters, since
+#                    skin hue is always going to sit near an orange one
+#   glove   110-116  value 11-31: black defeats the value floor as well
+#
+# The boots moved off brown for exactly this reason. Brown renders at hue 12-14,
+# which is the pack's own window, and the old jacket window only kept them out
+# on the value floor -- a one-barrier margin that a brighter light would break.
+GUIDE_OUTFIT_RGBA = {
+    "jacket": (0.13, 0.30, 0.72, 1.0),   # cobalt
+    "pants": (0.09, 0.14, 0.34, 1.0),    # navy, a second and darker blue
+    "pack": (1.00, 0.38, 0.02, 1.0),     # safety orange -- what the robot sees
+    "beanie": (0.05, 0.62, 0.55, 1.0),   # teal
+    "boots": (0.16, 0.19, 0.28, 1.0),    # slate, off brown on purpose
+    "skin": (0.82, 0.63, 0.58, 1.0),
+    "glove": (0.10, 0.11, 0.14, 1.0),
+}
 
 GUIDE_SPEED_METERS_PER_SECOND = 1.0  # W walks her forward, S walks her back
 GUIDE_LATERAL_METERS = 0.6           # left of the rope, looking uphill
@@ -189,27 +252,59 @@ EYE_JPEG_QUALITY = 70
 EYE_MESSAGE_PREFIX = b"EYE0"         # 4 ASCII bytes, then the JPEG
 
 # The colour detector's gate, in OpenCV HSV (hue 0-179, sat/val 0-255).
-# RE-MEASURED on Chloe's hiker, through the eye camera at 1/2/4/8 m, with a
-# SEGMENTATION render alongside the colour one so every pixel is attributed to
-# the geom it actually came from rather than eyeballed. Her jacket is a
-# different orange from the placeholder's and the figure brought new colours
-# with it, so both halves of the question were re-asked. Pooled over 21,240
-# jacket pixels her hue sits at 10-11 (1st-99th percentile), saturation at
-# 236+, value at 60+; everything else in the picture is far away --
+# RE-MEASURED ON THE BACKPACK. The target used to be her jacket; the jacket is
+# now BLUE and the orange has moved to the pack, so the window was re-derived
+# from scratch rather than nudged. The method is unchanged and it is the point:
+# the eye camera is rendered at 1/2/4/8 m in colour AND in SEGMENTATION from the
+# same pose, so every pixel is attributed to the geom that painted it before its
+# hue is counted (`test_guide.colour_window_table`, table A0). Pooled 1st-99th
+# percentiles on flat_0 --
 #
-#   jacket  hue 10-11  sat 236+        boots  hue 12-14  value median 49-74
-#   skin    hue  5-11  sat <= 97       pack   hue 109     pants  hue 109-113
-#   beanie  hue 176-178                snow   hue 109-112 sat <= 40
-#   rope    hue 1      sat 233+        glove  hue 113-120
+#   pack   hue 11-12  sat 246-250  value 51-239   <- THE TARGET, 6,380 px
+#   jacket hue 111-113   pants hue 114-115   boots hue 113   beanie hue 86-91
+#   skin   hue 0-178 BUT saturation 39-74        glove value 11-31
+#   snow/sky/robot ("everything else", 267,471 px) hue 1-111
+#   rope   hue 1  sat 233+      ascender carrier (orange, alpha 0.6) hue ~17
 #
-# -- so the window below takes 97.8% of her jacket (the 2.2% it drops are
-# shadowed pixels under the value floor) and 0.0% of every other material in
-# the scene, measured. The low end moved 4 -> 6 so her SKIN has a second
-# barrier besides saturation; the high end 16 -> 15 leaves the boots at the
-# edge, and the value floor is what actually keeps them out.
-GUIDE_HUE_RANGE = (6, 15)
-GUIDE_MINIMUM_SATURATION = 120
-GUIDE_MINIMUM_VALUE = 80
+# -- and the window below takes 100.0% of the pack and 0.0% of every other
+# group, measured, with margin on all three axes rather than at one edge:
+#
+#   hue         2 units either side of the pack's own 11-12; 8 clear of the
+#               ROPE at hue 1 and 3 clear of the ASCENDER CARRIER at hue ~17,
+#               the translucent orange sphere clipped to the robot's own palm.
+#               The carrier is why the high end stops at 14 rather than opening
+#               up: it is the only other orange in the world, it rides a metre
+#               from the lens, and it is out of frame in these poses rather
+#               than reliably absent.
+#   saturation  66 clear of the pack's 246. This is the barrier that keeps SKIN
+#               out (39-74), because skin hue wraps right through the pack's
+#               band and hue alone could never separate the two.
+#   value       11 clear of the pack's darkest face (51 -- the one box face
+#               turned away from the sun, seen at 1 m). The floor no longer
+#               does the discriminating work it did for the jacket; hue and
+#               saturation do. It is kept as a guard against near-black pixels,
+#               which is why it is low rather than absent.
+#
+# The BOOTS were moved off brown as part of this: brown renders at hue 12-14,
+# inside the pack's own window, and the old jacket window kept boots out on the
+# value floor alone. Choosing the clothes and choosing the window is ONE
+# decision -- the other half is at GUIDE_OUTFIT_RGBA.
+#
+# THE OTHER REDS, by arithmetic (OpenCV hue = degrees / 2):
+#   rope 0.85/0.08/0.05 -> max 216.8, min 12.8, delta 204, hue 60*(20.4-12.8)
+#     /204 = 2.25 deg -> hue 1, saturation 240, value 217. It clears the sat and
+#     value floors easily, so HUE IS ITS ONLY BARRIER -- 8 units, and the reason
+#     the low end sits at 9 rather than dropping toward the skin.
+#   wind pennant 0xc41414 (196,20,20) -> delta 176, hue 60*(20-20)/176 = 0 deg
+#     -> hue 0, saturation 229, value 196. Nine units below the window.
+#     IT CAN NEVER REACH AN EYE IMAGE ANYWAY: the two pennants are THREE.JS-ONLY
+#     decoration drawn by `app/web/three/flag.js` in the browser. They exist in
+#     no MuJoCo model, so nothing the renderer sees contains them. The
+#     arithmetic is written down regardless, because "it is not in the model" is
+#     a fact about today's scene and the hue margin is a fact about the window.
+GUIDE_HUE_RANGE = (9, 14)
+GUIDE_MINIMUM_SATURATION = 180
+GUIDE_MINIMUM_VALUE = 40
 GUIDE_MINIMUM_PIXELS = 24            # below this it is noise, not a person
 
 # ------------------------------------------------------------ the decision
@@ -569,7 +664,10 @@ def _add_guide_body(spec) -> None:
     `contype = conaffinity = 0`, so `human-safety/human_gate.py`'s segmentation
     gate sees exactly what it saw before and the robot still cannot touch her.
     Her materials are copied across under a `guide_` prefix so a scene that also
-    calls `assets/humans/humans.py::attach_humans` cannot collide with them.
+    calls `assets/humans/humans.py::attach_humans` cannot collide with them --
+    and this copy is where `GUIDE_OUTFIT_RGBA` dresses her, so her shared XML
+    stays untouched while the compiled model, the GLB export and the eye
+    cameras all see one set of clothes.
     """
     import mujoco
 
@@ -577,7 +675,10 @@ def _add_guide_body(spec) -> None:
     for name, material in skeleton["materials"].items():
         added = spec.add_material()
         added.name = f"guide_{name}"
-        added.rgba = [float(value) for value in material["rgba"]]
+        # The outfit overrides the colour and NOTHING ELSE -- specular and
+        # shininess still come from her own XML, and no geometry is touched.
+        added.rgba = [float(value) for value in
+                      GUIDE_OUTFIT_RGBA.get(name, material["rgba"])]
         added.specular = material["specular"]
         added.shininess = material["shininess"]
 

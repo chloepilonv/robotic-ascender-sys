@@ -3,12 +3,12 @@
     ../.venv_everest/bin/python -m app.harness.test_guide
     ../.venv_everest/bin/python -m app.harness.test_guide --worlds flat_0
 
-Four things get measured, because four things could be wrong and the loss
+Six things get measured, because six things could be wrong and the loss
 curve of a demo is "it looked fine":
 
-  A0 THE COLOUR WINDOW, on HER jacket. The detector is a colour threshold, so
+  A0 THE COLOUR WINDOW, on HER BACKPACK. The detector is a colour threshold, so
      the number that decides whether it works at all is what fraction of the
-     JACKET's pixels the window keeps and what fraction of everything ELSE it
+     PACK's pixels the window keeps and what fraction of everything ELSE it
      wrongly takes. Both are measured, not eyeballed: the eye camera is rendered
      twice at each range -- once in colour, once in SEGMENTATION -- so every
      pixel is attributed to the geom it actually came from before its hue is
@@ -17,6 +17,13 @@ curve of a demo is "it looked fine":
      stereo measurement is compared against the simulator's own answer. This is
      the only check that the DISTANCE is real; everything downstream is built on
      it.
+  A1 MAXIMUM DETECTION RANGE. The pack is a far smaller target than the whole
+     jacket was, so the range at which it stops covering `GUIDE_MINIMUM_PIXELS`
+     is a real limit of the demo. It is measured, not assumed.
+  A2 FACING THE ROBOT. The pack is on her BACK, so turned to face the robot she
+     wears no orange at all and the detector must return nothing. What matters
+     is that the follower then degrades to WAIT/LOST rather than to a wrong
+     range -- "it looked fine walking away" is not evidence about turning round.
   B  FOLLOW, with the human walking away the whole time (W held). Reports the
      gap over time and every mode transition.
   C  CATCH UP AND STOP: the human walks for 5 s and then stands still. This is
@@ -106,7 +113,7 @@ def _range_placer(scene, guide, left_camera_id, right_camera_id):
 
 # ------------------------------------------------- A0: the colour window
 # Every geom the hiker is made of, grouped by the material it wears -- which is
-# what the colour detector can possibly distinguish. The jacket group is the
+# what the colour detector can possibly distinguish. The pack group is the
 # TARGET; every other group is a distractor that must stay out of the window.
 HUMAN_MATERIAL_GROUPS = {
     "jacket": ("human_hips", "human_torso", "human_chest", "human_collar",
@@ -119,7 +126,16 @@ HUMAN_MATERIAL_GROUPS = {
     "pants": ("human_thigh_l", "human_thigh_r", "human_shin_l", "human_shin_r"),
     "boots": ("human_boot_l", "human_boot_r"),
 }
-DETECTOR_TARGET_GROUP = "jacket"
+# The one object in the SCENE that is orange, and the only reason the window's
+# high end is not simply pushed further right: the ascender carrier is a
+# translucent orange sphere clipped to the robot's own palm, a metre from the
+# lens and therefore huge in the picture. It is pulled out of "everything else"
+# and given its own row so its number is attributable rather than averaged away
+# in a million snow pixels.
+SCENE_DISTRACTOR_GROUPS = {
+    "rope carrier (orange, on the palm)": ("carrier_geom",),
+}
+DETECTOR_TARGET_GROUP = "pack"
 
 
 def colour_window_table(scene, episode) -> dict:
@@ -146,14 +162,16 @@ def colour_window_table(scene, episode) -> dict:
     _, place_at = _range_placer(scene, guide, eyes.left_camera_id,
                                 eyes.right_camera_id)
 
+    attributed_groups = dict(HUMAN_MATERIAL_GROUPS)
+    attributed_groups.update(SCENE_DISTRACTOR_GROUPS)
     geom_id_of = {}
-    for group, names in HUMAN_MATERIAL_GROUPS.items():
+    for group, names in attributed_groups.items():
         for name in names:
             geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
             if geom_id >= 0:
                 geom_id_of[geom_id] = group
 
-    pooled = {group: [] for group in HUMAN_MATERIAL_GROUPS}
+    pooled = {group: [] for group in attributed_groups}
     pooled["everything else"] = []
     for target in STEREO_TEST_RANGES_METERS:
         place_at(target)
@@ -203,7 +221,7 @@ def colour_window_table(scene, episode) -> dict:
 
 
 def print_colour_window_table(world, groups) -> None:
-    print(f"\nA0. THE COLOUR WINDOW ON HER JACKET -- {world}"
+    print(f"\nA0. THE COLOUR WINDOW ON HER BACKPACK -- {world}"
           f"  (window: hue {guide_module.GUIDE_HUE_RANGE[0]}-"
           f"{guide_module.GUIDE_HUE_RANGE[1]}, saturation >="
           f" {guide_module.GUIDE_MINIMUM_SATURATION}, value >="
@@ -245,13 +263,16 @@ def stereo_table(scene, episode) -> list:
         rows.append({
             "target_meters": target,
             "true_meters": truth,
-            # The same truth measured to the guide's FRONT SURFACE rather than
-            # its axis. Both are printed because the measurement sits between
-            # them and neither alone tells the whole story: a dense matcher's
-            # median over a convex body reads its near face, so the surface
-            # column is the like-for-like comparison, while the axis column is
-            # the literal "distance to the human" the HUD reports.
-            "true_surface_meters": max(truth - guide_module.TORSO_RADIUS_METERS, 0.0),
+            # The same truth measured to the surface the detector actually
+            # keeps -- the BACKPACK's rear face, 0.30 m behind her body axis --
+            # rather than to the axis itself. Both are printed because the
+            # measurement sits between them and neither alone tells the whole
+            # story: a dense matcher's median over a convex body reads its near
+            # face, so the surface column is the like-for-like comparison,
+            # while the axis column is the literal "distance to the human" the
+            # HUD reports.
+            "true_surface_meters": max(
+                truth - guide_module.DETECTED_SURFACE_RADIUS_METERS, 0.0),
             "measured_meters": measurement["range_meters"],
             "disparity_pixels": measurement["disparity_pixels"],
             "mask_pixels": measurement["pixels"],
@@ -262,6 +283,308 @@ def stereo_table(scene, episode) -> list:
         })
     eyes.close()
     return rows
+
+
+# ------------------------------------- A1: how far away she is still seen
+# Swept coarsely and then bisected, because the answer is a threshold and a
+# threshold measured on a 2 m grid is a 2 m answer. The far end is well past
+# anything the demo needs: what is wanted is the number where it BREAKS, and a
+# sweep that never breaks has not measured anything.
+MAXIMUM_RANGE_SWEEP_METERS = (2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0,
+                              18.0, 20.0, 24.0, 28.0)
+
+
+def maximum_range_table(scene, episode) -> dict:
+    """A1: the furthest range at which the detector still fires. -> rows + edge.
+
+    The target moved from the whole jacket to the BACKPACK, which is a box
+    0.20 x 0.32 x 0.48 m seen end-on rather than a whole torso, so the range at
+    which its image falls under `GUIDE_MINIMUM_PIXELS` is shorter and has to be
+    re-measured rather than inherited.
+
+    A range counts as DETECTED only if `look()` returns a range -- which needs
+    the colour mask, the connected component AND at least
+    `GUIDE_MINIMUM_PIXELS` of matched disparity inside it, the same three
+    conditions the follower depends on. A mask that survives while the matcher
+    does not is a failure, and is printed as one.
+
+    Output: `rows` -- one per swept range: {requested_meters, true_meters,
+    mask_pixels, detected, measured_meters}; `maximum_detected_meters` -- the
+    furthest DETECTED true range, bisected to 0.25 m against the first failure;
+    `route_limited` -- True if the route ran out before detection did, in which
+    case the number is a floor, not the answer.
+    """
+    model, data = scene.model, scene.data
+    guide = guide_module.Guide(scene.route, scene.terrain, model)
+    guide.enabled = True
+    eyes = guide_module.StereoEyes(model, verbose=False)
+    _, place_at = _range_placer(scene, guide, eyes.left_camera_id,
+                                eyes.right_camera_id)
+
+    def probe(target):
+        truth = place_at(target)
+        measurement = eyes.look(data)
+        return truth, measurement
+
+    rows, last_detected, first_failed = [], None, None
+    for target in MAXIMUM_RANGE_SWEEP_METERS:
+        truth, measurement = probe(target)
+        rows.append({
+            "requested_meters": target,
+            "true_meters": truth,
+            "mask_pixels": measurement["pixels"],
+            "detected": bool(measurement["range_meters"] is not None),
+            "measured_meters": measurement["range_meters"],
+        })
+        # The route has a finite length; once the bisection stops reaching the
+        # range asked for, every further row is the same pose and says nothing.
+        if truth < target - 0.25:
+            break
+        if measurement["range_meters"] is not None:
+            last_detected = truth
+        else:
+            first_failed = truth
+            break
+
+    route_limited = first_failed is None
+    if last_detected is not None and first_failed is not None:
+        low, high = last_detected, first_failed
+        while high - low > 0.25:
+            middle = 0.5 * (low + high)
+            truth, measurement = probe(middle)
+            if measurement["range_meters"] is not None:
+                low = truth
+            else:
+                high = truth
+        last_detected = low
+    eyes.close()
+    return {
+        "rows": rows,
+        "maximum_detected_meters": last_detected,
+        "route_limited": route_limited,
+    }
+
+
+def print_maximum_range_table(world, result) -> None:
+    print(f"\nA1. MAXIMUM DETECTION RANGE -- {world}"
+          f"  (detected = colour mask AND >= {guide_module.GUIDE_MINIMUM_PIXELS}"
+          f" matched pixels, i.e. what the follower needs)")
+    print("| requested m | true m | mask px | detected | measured m |")
+    print("|---|---|---|---|---|")
+    for row in result["rows"]:
+        measured = ("--" if row["measured_meters"] is None
+                    else f"{row['measured_meters']:.2f}")
+        print(f"| {row['requested_meters']:.0f} | {row['true_meters']:.2f} |"
+              f" {row['mask_pixels']} |"
+              f" {'yes' if row['detected'] else 'NO'} | {measured} |")
+    edge = result["maximum_detected_meters"]
+    if edge is None:
+        print("  never detected at any swept range")
+    elif result["route_limited"]:
+        print(f"  detected out to {edge:.2f} m and the ROUTE RAN OUT before the"
+              f" detector did -- this is a floor, not the limit")
+    else:
+        print(f"  maximum detection range {edge:.2f} m (bisected to 0.25 m)")
+
+
+# ------------------------------------------ A2: with her back turned away
+def facing_the_robot_table(scene, episode, ranges=(2.0, 5.0)) -> list:
+    """A2: she turns to face the robot, hiding the pack. -> one row per range.
+
+    THE HONEST CONSEQUENCE OF PUTTING THE MARKER ON A BACKPACK. Her yaw comes
+    from the route tangent, so she always walks away from the robot and the pack
+    always faces it. Turned round, the pack is behind her torso and the only
+    orange in the picture is gone. This table asks what the detector does then,
+    at the two ranges the follower actually operates over.
+
+    The yaw is flipped by wrapping `Guide.yaw_radians` on this instance -- the
+    route, the terrain and the gait are untouched, so the ONLY difference from
+    table A is which way she points.
+
+    Output: one row per range -- {true_meters, mask_pixels, detected,
+    measured_meters}, and the same three with her facing away for comparison.
+    """
+    model, data = scene.model, scene.data
+    guide = guide_module.Guide(scene.route, scene.terrain, model)
+    guide.enabled = True
+    eyes = guide_module.StereoEyes(model, verbose=False)
+    _, place_at = _range_placer(scene, guide, eyes.left_camera_id,
+                                eyes.right_camera_id)
+
+    walking_away_yaw = guide.yaw_radians
+    rows = []
+    for target in ranges:
+        truth = place_at(target)
+        away = eyes.look(data)
+        guide.yaw_radians = lambda: walking_away_yaw() + math.pi
+        truth_facing = place_at(target)
+        facing = eyes.look(data)
+        guide.yaw_radians = walking_away_yaw
+        rows.append({
+            "true_meters": truth_facing,
+            "away_mask_pixels": away["pixels"],
+            "away_detected": bool(away["range_meters"] is not None),
+            "away_meters": away["range_meters"],
+            "mask_pixels": facing["pixels"],
+            "detected": bool(facing["range_meters"] is not None),
+            "measured_meters": facing["range_meters"],
+            "away_true_meters": truth,
+        })
+    eyes.close()
+    return rows
+
+
+def print_facing_table(world, rows) -> None:
+    print(f"\nA2. SHE TURNS TO FACE THE ROBOT (the pack is behind her)"
+          f" -- {world}")
+    print("| true m | back turned: mask px / detected / measured m |"
+          " FACING: mask px / detected / measured m |")
+    print("|---|---|---|")
+    for row in rows:
+        away = ("--" if row["away_meters"] is None
+                else f"{row['away_meters']:.2f}")
+        facing = ("--" if row["measured_meters"] is None
+                  else f"{row['measured_meters']:.2f}")
+        print(f"| {row['true_meters']:.2f} |"
+              f" {row['away_mask_pixels']} /"
+              f" {'yes' if row['away_detected'] else 'NO'} / {away} |"
+              f" {row['mask_pixels']} /"
+              f" {'yes' if row['detected'] else 'NO'} / {facing} |")
+    print("  One pose each, from the robot's reset standpoint. A2b below flies"
+          " it, where the robot's own approach swings the aspect angle round"
+          " and a sliver of pack edge can come back into view.")
+
+
+# Long enough to see the follower SETTLE, which is the only mode worth
+# reporting. MEASURED: from 2 m with her back turned the robot closes, loses the
+# pack for about a second on the way in (it leaves the +/-29 deg frame -- she
+# stands 0.6 m left of the rope, so the bearing to her passes 29 deg at ~1.2 m),
+# goes to SEARCH, sweeps, re-finds her and reaches WAIT at 13.7 s. An 8 s window
+# would have reported SEARCH and called a recovery a failure.
+STANDING_ROLLOUT_SECONDS = 20.0
+
+
+def standing_rollout(scene, episode, target_meters, facing_robot,
+                     seconds=STANDING_ROLLOUT_SECONDS) -> dict:
+    """A2, the behaviour half: she stands still, back turned or facing. -> report.
+
+    Flown BOTH ways at the same range so the facing number has something to be
+    compared against, and flown rather than sampled from one frame because the
+    question is what the FOLLOWER does, not what one render contains. She stands
+    (no walking), so the only variables are the robot's own motion and which way
+    she points.
+
+    What the follower must not do when the pack is hidden is invent a range.
+    Losing her is correct behaviour for a detector that cannot see its marker;
+    reporting a distance to something else would not be.
+
+    Inputs  : `target_meters` -- the true eye-to-chest range she is placed at,
+              bisected; `facing_robot` -- True turns her 180 degrees so the pack
+              is behind her torso.
+    Outputs : detected_fraction (of control ticks), median_relative_error (of
+              the detected ones, |measured - true| / true),
+              median_mask_pixels (over the detected ticks),
+              first_detection_seconds and first_detection_true_meters, the
+              modes visited, the transitions, and the final mode and gap.
+    """
+    system = guide_module.GuideSystem(scene, scene.model, episode.control_hz,
+                                      verbose=False)
+    gate = HumanGate(guide_module.GuideVisionDetector(system),
+                     clear_after_seconds=0.0)
+    episode.reset()
+    system.place(episode.spawn_position_world)
+    _, place_at = _range_placer(scene, system.guide, *system._eye_camera_ids)
+    # ONE WARM-UP TICK FIRST, and it is not optional: `GuideSystem.update` puts
+    # the human back at its default lead the first time it sees the guide
+    # switched on, so a range set before that tick is silently thrown away and
+    # every row of this table comes back identical. The tick steps nothing --
+    # `episode.step` is not called -- so the robot has not moved.
+    system.update(episode.data, 0, True, False)
+    # `place_at` refreshes the kinematics for its own range read, and the next
+    # `episode.step` would otherwise integrate from those fresher frames rather
+    # than the ones the reset left. Frozen and put straight back, the same way
+    # `GuideSystem.update` does it.
+    frozen = system._freeze(episode.data)
+    place_at(target_meters)
+    system._restore(episode.data, frozen)
+    if facing_robot:
+        walking_away_yaw = system.guide.yaw_radians
+        system.guide.yaw_radians = lambda: walking_away_yaw() + math.pi
+    system.follower.reset()
+
+    ticks = int(seconds * episode.control_hz)
+    transitions, samples = [], []
+    previous_mode = None
+    for tick in range(ticks):
+        time_seconds = tick / episode.control_hz
+        command = system.update(episode.data, tick, True, False)
+        gate.update(episode.data, time_seconds)
+        command = gate.mask(command)
+        episode.step(command, np.zeros(2))
+        mode = system.follower.mode
+        if mode != previous_mode:
+            transitions.append((time_seconds, previous_mode, mode))
+            previous_mode = mode
+        samples.append({
+            "time_seconds": time_seconds, "mode": mode,
+            "true_meters": system.true_range_meters,
+            "measured_meters": system.follower.range_meters,
+            "human_progress_meters": system.guide.arclength_meters,
+            # How much orange the detector actually had to work with. Printed
+            # because "detected 41% of ticks" with her facing the robot is only
+            # believable once you can see it is a sliver of pack edge rather
+            # than something else in the picture that happens to be orange.
+            "mask_pixels": (0 if system.latest is None
+                            else int(system.latest["pixels"])),
+            "command": np.asarray(command, dtype=float).copy(),
+        })
+    system.close()
+    detected = [s for s in samples if s["measured_meters"] is not None]
+    errors = [abs(s["measured_meters"] - s["true_meters"]) / s["true_meters"]
+              for s in detected]
+    mask_pixels = [s["mask_pixels"] for s in detected]
+    # WHEN the first detection happened, and at what true range, because a
+    # facing-the-robot rate of "76%" is a lie told by an average: the pack is
+    # hidden for the whole approach and only appears once the robot has walked
+    # blind to within a metre and round her side. The first-detection range is
+    # what says so in one number.
+    first = detected[0] if detected else None
+    return {
+        "samples": samples,
+        "transitions": transitions,
+        "detected_fraction": len(detected) / max(len(samples), 1),
+        "median_relative_error": (float(np.median(errors)) if errors
+                                  else float("nan")),
+        "median_mask_pixels": (float(np.median(mask_pixels)) if mask_pixels
+                               else 0.0),
+        "first_detection_seconds": (None if first is None
+                                    else first["time_seconds"]),
+        "first_detection_true_meters": (None if first is None
+                                        else first["true_meters"]),
+        "final_mode": samples[-1]["mode"],
+        "final_gap_meters": samples[-1]["true_meters"],
+        "modes_visited": sorted({s["mode"] for s in samples}),
+    }
+
+
+def print_standing_rollout(world, target_meters, facing_robot, result) -> None:
+    heading = ("FACING THE ROBOT (pack hidden)" if facing_robot
+               else "back turned (pack in view)")
+    print(f"\nA2b. THE FOLLOWER, human standing at {target_meters:.0f} m,"
+          f" {heading} -- {world}")
+    print(f"  detected on {100 * result['detected_fraction']:.1f}% of ticks"
+          f" | median |error| {100 * result['median_relative_error']:.1f}%"
+          f" | median mask {result['median_mask_pixels']:.0f} px"
+          f" | modes visited {', '.join(result['modes_visited'])}"
+          f" | settles in {result['final_mode']}"
+          f" at {result['final_gap_meters']:.2f} m true")
+    first_seconds = result["first_detection_seconds"]
+    print("  first detection: " + ("never" if first_seconds is None else
+          f"{first_seconds:.1f} s, at"
+          f" {result['first_detection_true_meters']:.2f} m true range"))
+    print("  transitions: " + (", ".join(
+        f"{time:.1f}s {old}->{new}" for time, old, new in result["transitions"])
+        or "none"))
 
 
 def follow_rollout(scene, episode, seconds, walk_seconds) -> dict:
@@ -425,6 +748,14 @@ def main(arguments) -> None:
         # a different standpoint is a different experiment.
         print_colour_window_table(world, colour_window_table(scene, episode))
         print_stereo_table(world, stereo_table(scene, episode))
+        print_maximum_range_table(world, maximum_range_table(scene, episode))
+        print_facing_table(world, facing_the_robot_table(
+            scene, episode, ranges=arguments.facing_ranges))
+        for target in arguments.facing_ranges:
+            for facing_robot in (False, True):
+                print_standing_rollout(world, target, facing_robot,
+                                       standing_rollout(scene, episode, target,
+                                                        facing_robot))
         print_rollout(
             f"B. FOLLOW, human walking the whole {arguments.seconds:.0f} s"
             f" -- {world}",
@@ -443,6 +774,11 @@ if __name__ == "__main__":
     parser.add_argument("--worlds", nargs="+", default=list(DEFAULT_WORLDS))
     parser.add_argument("--seconds", type=float, default=20.0)
     parser.add_argument("--walk-seconds", type=float, default=5.0)
+    # The two ranges A2 asks about: 2 m is inside the follower's working band
+    # and 5 m is a gap it is closing, so between them they cover both sides of
+    # the FOLLOW/WAIT thresholds.
+    parser.add_argument("--facing-ranges", type=float, nargs="+",
+                        default=[2.0, 5.0])
     # C runs longer than B on purpose: the walker's real ground speed is about
     # 0.15 m/s (measured), so closing a 3-4 m gap to the WAIT band is a
     # half-minute of walking, not five seconds.

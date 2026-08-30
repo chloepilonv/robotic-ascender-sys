@@ -34,7 +34,7 @@ Out (text)    : {"type":"state", "tick":int, "time_seconds":f,
                  "height_gained_meters":f, "rope_force_newtons":f,
                  "slope_degrees":f, "realtime_factor":f, "heading_degrees":f,
                  "paused":bool,
-                 "storm":bool, "visibility_meters":f|null,
+                 "visibility_meters":f,
                  "guide":{"enabled":bool,
                           "mode":"FOLLOW"|"WAIT"|"LOST",
                           "distance_meters":f|null,     # stereo, metres
@@ -56,7 +56,7 @@ In  (text)    : {"type":"input", "keys":["w"],
                     An older client may also send a `viewport` field, which the
                     server-side render used to size itself from. It is accepted
                     and ignored; nothing here draws.
-                {"type":"knob", "name":"wind_x"|"wind_y"|"friction"|"guide"|"storm", "value":f}
+                {"type":"knob", "name":"wind_x"|"wind_y"|"friction"|"guide"|"visibility", "value":f}
                     wind_x / wind_y are the world-frame XY WIND VELOCITY in m/s
                     (NOT newtons -- the force is the quadratic drag law from
                     rl/environment/wind_env.py). friction is the foot geoms' mu.
@@ -64,12 +64,19 @@ In  (text)    : {"type":"input", "keys":["w"],
                     rope and the robot's command comes from the stereo follower
                     instead of the keyboard (A/D do nothing; the follower owns
                     yaw). Default 0.
-                    storm is 0/1: the blizzard. The model's fog closes to
-                    40/(1+0.25*speed) metres with the INSTANTANEOUS wind speed
-                    (gusts included) and blowing snow is painted into both eye
-                    images before the block matcher, so detection and stereo
-                    honestly degrade. Echoed back as `storm` with
-                    `visibility_meters`. Default 0.
+                    visibility is HOW FAR THE ROBOT CAN SEE, IN METRES, and it
+                    is derived from nothing (user's ruling, 2026-08-30 -- it
+                    replaced a `storm` 0/1 switch whose thickness came out of
+                    the wind speed). 100 m is CLEAR and the eye images are not
+                    touched at all; 3 m is a white-out. In between, a fog is
+                    composited into both eye images from the eye renderer's own
+                    depth buffer BEFORE the block matcher, so detection and
+                    stereo honestly degrade. Echoed back as `visibility_meters`.
+                    Default 100.
+                    An older page's `storm` knob is stored and IGNORED rather
+                    than rejected: `_handle` writes any knob name into the dict
+                    and nothing reads that key any more, so a stale client
+                    cannot crash the runtime.
                 {"type":"reset"}      respawn at the knees_bent keyframe, ascender
                                       travel back to 0.
                 {"type":"pause", "value":true|false}
@@ -122,11 +129,12 @@ class Server:
                       # follows it by stereo vision. While it is 1, W drives the
                       # HUMAN and the robot's command comes from the follower.
                       "guide": 0.0,
-                      # 0/1: the blizzard. Fog closes with the INSTANTANEOUS
-                      # wind speed and blowing snow is painted into the eye
-                      # images before the block matcher, so the robot's vision
-                      # really does degrade. Visual and sensor only.
-                      "storm": 0.0}
+                      # METRES: how far the robot can see. 100 m is clear
+                      # (the eyes are handed back untouched), 3 m is a
+                      # white-out. Visual and sensor only -- app/harness/
+                      # storm.py holds the law and PARITY.md the same-seed
+                      # diff that says the solver never sees it.
+                      "visibility": 100.0}
         self.reset_requested = False
         self.paused = False
         self.world_requested = None

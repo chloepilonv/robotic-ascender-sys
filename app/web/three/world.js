@@ -14,7 +14,7 @@
 // rotating the world would mean rotating every streamed pose too.
 import * as THREE from './vendor/three.module.js';
 import { GLTFLoader } from './vendor/addons/loaders/GLTFLoader.js';
-import { WindFlag } from './flag.js';
+import { WindFlag, HIKER_MOUNT_IN_BODY } from './flag.js';
 
 // The sun the recorded mp4 uses (app/harness/graphics.py). Repeating the same
 // two numbers is what keeps the WebGL view and the JPEG view the same weather;
@@ -46,6 +46,36 @@ const SUN_DISTANCE_METERS = 60.0;
 
 const FOG_COLOUR = 0xbfd0e2;           // cold blue-white, matching graphics.py's haze
 const FOG_DENSITY_PER_METER = 0.0085;
+
+// ------------------------------------------------------------- VISIBILITY
+// HOW FAR YOU CAN SEE, IN METRES, AND NOTHING ELSE (user's ruling,
+// 2026-08-30). It used to be a `storm` switch whose thickness was derived from
+// the wind speed; it is now its own dial, and the wind has nothing to do with
+// it. Left of the slider is 100 m -- CLEAR, the page's own fog untouched and
+// the robot's eyes untouched. Right is 3 m, a white-out you cannot see the
+// hiker across.
+//
+// THE SAME THREE NUMBERS LIVE IN app/harness/storm.py (CLEAR_VISIBILITY_METERS,
+// MINIMUM_VISIBILITY_METERS, and this share). If one moves, move the other, or
+// the picture and the robot stop being in the same weather.
+//
+// The SHARE is logarithmic because visibility is: the step from 100 m to 50 m
+// is barely a haze and the step from 6 m to 3 m is the difference between
+// navigating and not. `share = ln(clear / v) / ln(clear / minimum)` puts the
+// midpoint at 17.3 m, which is why the slider's own middle reads about 15 m.
+const CLEAR_VISIBILITY_METERS = 100.0;
+const MINIMUM_VISIBILITY_METERS = 3.0;
+const VISIBILITY_LOG_SPAN = Math.log(CLEAR_VISIBILITY_METERS
+                                     / MINIMUM_VISIBILITY_METERS);
+
+// -> 0 at 100 m (clear), 1 at 3 m (white-out). Clamped both ends.
+export function whiteoutShare(visibilityMeters) {
+  const visibility = Math.max(MINIMUM_VISIBILITY_METERS,
+    Math.min(CLEAR_VISIBILITY_METERS, Number(visibilityMeters)
+             || CLEAR_VISIBILITY_METERS));
+  return Math.max(0, Math.min(1,
+    Math.log(CLEAR_VISIBILITY_METERS / visibility) / VISIBILITY_LOG_SPAN));
+}
 
 // A small value-noise pair, shared by the terrain's colour and its roughness.
 // Three octaves is enough for "the snow is not a flat sheet" and cheap enough
@@ -291,7 +321,7 @@ function makeSnow() {
         // fade out at the box edge so flakes pop in and out invisibly
         float edge = length(world - uCentre) / (uBox * 0.5);
         float depth = -viewPosition.z;
-        // NOTHING ON THE LENS (user's ruling: the storm is FOG, and what it had
+        // NOTHING ON THE LENS (user's ruling: the weather is FOG, and what it had
         // become was "particles slapping the camera"). A flake a hand's width
         // from the lens is a screen-filling white disc, and a field of them
         // reads as a windscreen rather than as weather. So the near fade starts
@@ -338,7 +368,9 @@ export class World {
     this.footBodies = [];
     this.lastContacts = null;
     this.pelvisIndex = 1;
-    this.flag = null;              // the head's wind pennant (flag.js)
+    this.guideIndex = -1;      // the hiker's mocap root, for her own pennant
+    this.flag = null;              // the robot head's wind pennant (flag.js)
+    this.hikerFlag = null;         // the same pennant on the hiker's head
     // The body the eye cameras hang off. The G1 has no head body: `d435i` --
     // and so the stereo pair guide.py mounts beside it -- is a child of
     // `torso_link`, which is what the first-person camera rides.
@@ -376,9 +408,10 @@ export class World {
     this.fill = new THREE.AmbientLight(0xa8bcd8, 0.14);
     scene.add(this.fill);
 
-    // Off by default: the snow only falls while the page's storm switch is on. Set from
-    // the page rather than passed through update(), so Stage's call signature is untouched.
-    this.stormEnabled = false;
+    // Clear by default: the far-field flakes only fall once the VISIBILITY
+    // slider is off its clear end. Set from the page rather than passed through
+    // update(), so Stage's call signature is untouched.
+    this.visibilityMeters = CLEAR_VISIBILITY_METERS;
     this.snow = makeSnow();
     scene.add(this.snow);
 
@@ -391,10 +424,11 @@ export class World {
 
   dispose() {
     if (!this.root) return;
-    // The flag hangs off a GLB node, so it has to come off before the traversal
-    // below disposes everything under the root -- otherwise the next world
-    // would inherit a flag whose buffers are already freed.
+    // The flags hang off GLB nodes, so they have to come off before the
+    // traversal below disposes everything under the root -- otherwise the next
+    // world would inherit a flag whose buffers are already freed.
     if (this.flag) { this.flag.dispose(); this.flag = null; }
+    if (this.hikerFlag) { this.hikerFlag.dispose(); this.hikerFlag = null; }
     this.root.traverse(object => {
       if (object.geometry) object.geometry.dispose();
       if (object.material) {
@@ -405,6 +439,7 @@ export class World {
     this.root = null;
     this.bodies = [];
     this.torsoIndex = -1;
+    this.guideIndex = -1;
     this.terrainMeshes = [];
     this.terrainUniforms = [];
     this.footprints = null;
@@ -508,6 +543,25 @@ export class World {
       || byName.get('torso_link') || null;
     this.flag = mountNode ? new WindFlag(mountNode) : null;
     if (!mountNode) console.warn('render3d: no torso node; the wind flag is off');
+
+    // AND ONE ON THE HIKER (user's ruling, 2026-08-30). The guide is a single
+    // MOCAP ROOT called `guide` carrying her torso, head, hat and pack, with
+    // six welded limb bodies hanging off it (app/harness/guide.py), so her head
+    // rides that root and the pole is an offset in its frame.
+    //
+    // IT NEEDS NO VISIBILITY RULE. `Guide.write` parks the whole mocap body at
+    // z = -50 m for every tick the guide knob is off, and the flag is a CHILD of
+    // that node, so it goes under the world with her and comes back with her.
+    // The sidecar has no `guide_body` field -- the body is appended by the same
+    // surgery that adds the eye cameras -- so it is found by NAME, which is the
+    // name guide.py's `GUIDE_BODY_NAME` writes.
+    const guideBody = (sidecar.bodies || []).find(body => body.name === 'guide');
+    this.guideIndex = guideBody ? guideBody.index : -1;
+    const hikerNode = (this.guideIndex >= 0 ? this.bodies[this.guideIndex] : null)
+      || byName.get('guide') || null;
+    this.hikerFlag = hikerNode
+      ? new WindFlag(hikerNode, HIKER_MOUNT_IN_BODY) : null;
+    if (!hikerNode) console.warn('render3d: no guide node; the hiker has no flag');
 
     const sun = sidecar.sun || {};
     this.sunVector = sun.direction
@@ -630,9 +684,11 @@ export class World {
   update(elapsedSeconds, cameraPosition, followPosition, windEast, windNorth,
          pixelHeight) {
     if (this.footprints) this.footprints.update(elapsedSeconds);
-    // The same world wind vector the snow drifts with, so the flag and the
-    // flakes can never disagree about which way it is blowing.
+    // The same world wind vector the snow drifts with, so the flags and the
+    // flakes can never disagree about which way it is blowing -- and the two
+    // pennants get the SAME vector, so they always stream the same way.
     if (this.flag) this.flag.update(elapsedSeconds, windEast, windNorth);
+    if (this.hikerFlag) this.hikerFlag.update(elapsedSeconds, windEast, windNorth);
 
     // The shadow camera is a 18 m box: parking it on the robot is what buys a
     // 2048 map enough texels to resolve a boot on a 25 m face.
@@ -641,28 +697,31 @@ export class World {
       .addScaledVector(this.sunVector, -SUN_DISTANCE_METERS);
     this.sun.target.updateMatrixWorld();
 
-    this.snow.visible = this.stormEnabled;
-    const uniforms = this.snow.material.uniforms;
-    uniforms.uTime.value += elapsedSeconds;
-    uniforms.uCentre.value.copy(cameraPosition);
-    // THE FLAKES ARE NOT THE STORM -- the FOG is (user's ruling, and the page
-    // sets that fog from the wind). These are texture in the middle distance,
-    // deliberately sparse and small: a flake's diameter in pixels is
+    // THE FLAKES ARE NOT THE WEATHER -- the FOG is (user's ruling, and the page
+    // sets that fog from the VISIBILITY slider). These are texture in the middle
+    // distance, deliberately sparse and small: a flake's diameter in pixels is
     // flakeSize * uPixels / distance, and the vertex shader caps it at 3.5 px
     // and fades everything inside 4 m to nothing. Turning them up was what made
     // the whole thing read as particles on the lens.
-    const speed = Math.hypot(windEast, windNorth);
-    const stormShare = Math.min(1, speed / 20);
-    uniforms.uPixels.value = pixelHeight * 0.012 * (1 + 0.35 * stormShare);
+    //
+    // THEY FOLLOW THE VISIBILITY, NOT THE WIND (user's ruling, 2026-08-30):
+    // how many there are and how strongly they show is a question about the
+    // weather's thickness. What the WIND still owns is the direction they
+    // drift, which is the whole reason the drift vector below is the wind's.
+    const share = whiteoutShare(this.visibilityMeters);
+    this.snow.visible = share > 0;
+    const uniforms = this.snow.material.uniforms;
+    uniforms.uTime.value += elapsedSeconds;
+    uniforms.uCentre.value.copy(cameraPosition);
+    uniforms.uPixels.value = pixelHeight * 0.012 * (1 + 0.35 * share);
     // Far fewer of them than there were, and the count barely grows: in a real
     // whiteout you see LESS, not more, because the fog gets there first.
     this.snow.geometry.setDrawRange(0,
-      Math.round(SNOW_PARTICLE_COUNT * (0.10 + 0.25 * stormShare)));
+      Math.round(SNOW_PARTICLE_COUNT * (0.10 + 0.25 * share)));
     // The horizontal drift is the WORLD wind vector, so orbiting the robot
     // swings the snow around with the scene rather than with the camera.
     uniforms.uWind.value.set(windEast, windNorth, 0);
-    uniforms.uOpacity.value = this.stormEnabled
-      ? Math.min(0.34, 0.08 + speed * 0.016) : 0;
+    uniforms.uOpacity.value = Math.min(0.34, 0.08 + 0.26 * share) * (share > 0 ? 1 : 0);
   }
 }
 
@@ -683,4 +742,6 @@ export function fnv1a32(text) {
   return value >>> 0;
 }
 
-export { FOG_COLOUR, FOG_DENSITY_PER_METER, SUN_ELEVATION_DEGREES, SUN_AZIMUTH_DEGREES };
+export { FOG_COLOUR, FOG_DENSITY_PER_METER, SUN_ELEVATION_DEGREES,
+         SUN_AZIMUTH_DEGREES, CLEAR_VISIBILITY_METERS,
+         MINIMUM_VISIBILITY_METERS };

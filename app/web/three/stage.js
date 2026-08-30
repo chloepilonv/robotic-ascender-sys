@@ -15,6 +15,7 @@ import { OutputPass } from './vendor/addons/postprocessing/OutputPass.js';
 import { World, FOG_COLOUR, FOG_DENSITY_PER_METER } from './world.js';
 import { ChaseCamera } from './chase_camera.js';
 import { FirstPersonCamera, EYE_MOUNT_IN_TORSO_METERS,
+         HIKER_EYE_IN_BODY_METERS, HIKER_YAW_LIMIT_DEGREES,
          NEAR_PLANE_METERS as FIRST_PERSON_NEAR_PLANE_METERS }
   from './first_person_camera.js';
 
@@ -23,6 +24,19 @@ import { FirstPersonCamera, EYE_MOUNT_IN_TORSO_METERS,
 // 0.17 m, so 0.25 m separates them with room to spare and still refuses to
 // blank a random chest plate on some future robot.
 const HEAD_GEOM_SEARCH_RADIUS_METERS = 0.25;
+// The hiker's head is not one geom but four -- head, neck, beanie, pompom -- all
+// siblings on the same mocap root as her torso and her pack, so hers is a RADIUS
+// and not a nearest-one. From the eye at (0.10, 0, 1.63) those four sit 0.05 to
+// 0.19 m away and the next thing out (a shoulder at 0.30 m) is comfortably past
+// this line.
+const HIKER_HEAD_CULL_RADIUS_METERS = 0.24;
+
+// WHERE THE BOOM LOOKS ON EACH SUBJECT, and why it is not the same number. The
+// chase camera pivots TARGET_HEIGHT_METERS (0.80 m) above whatever point it is
+// handed. The robot's is its PELVIS, which stands about 0.75 m off the snow, so
+// the pivot lands at chest height. The guide's body origin is her GROUND
+// CONTACT, so she needs that 0.75 m added back or the boom frames her boots.
+const GUIDE_FOLLOW_LIFT_METERS = 0.75;
 
 // Z-UP, ONCE, BEFORE ANYTHING IS CONSTRUCTED. Every camera's `lookAt`, every
 // Object3D's default orientation and the whole GLB read this. Setting it here
@@ -135,6 +149,17 @@ export class Stage {
     // the robot, and the first-person camera then OVERWRITES the position,
     // orientation and lens for the frame.
     this.firstPerson = new FirstPersonCamera(this.camera);
+    // THE GUIDE IS A SUBJECT, NOT A MODE (user's ruling, 2026-08-30: "when the
+    // guide is turned on the camera should be on the guide, not the bot").
+    // Its own first-person camera, because the mount and the look limits differ
+    // -- and its own instance rather than a re-pointed one, so switching back to
+    // the robot finds the head exactly where it was left.
+    this.firstPersonGuide = new FirstPersonCamera(this.camera, {
+      mountInBody: HIKER_EYE_IN_BODY_METERS,
+      yawLimitDegrees: HIKER_YAW_LIMIT_DEGREES,
+    });
+    this.followGuide = false;
+    this._hikerHeadNodes = null;
     this.firstPersonEnabled = false;
     this._thirdPersonNearPlaneMeters = NEAR_PLANE_METERS;
     // The one geom culled in first person, found once per world load. `undefined`
@@ -272,7 +297,12 @@ export class Stage {
     const sidecar = await this.world.load(name);
     this.chase.seeded = false;
     // A world swap rebuilds every node, so a torso hidden before the swap is
-    // visible again after it unless it is re-hidden here.
+    // visible again after it unless it is re-hidden here -- and the cached
+    // culling lists point at nodes that no longer exist, so they are dropped
+    // rather than re-tested. (An EMPTY cached list would pass the parent test
+    // vacuously and never rebuild, which is the bug this line is for.)
+    this._headNode = undefined;
+    this._hikerHeadNodes = null;
     this._applyFirstPersonVisibility();
     this._posePrevious = this._poseLatest = this._poseBlend = null;
     this.slopeDegrees = sidecar.slope_degrees || 0;
@@ -312,20 +342,50 @@ export class Stage {
   // W does in every first-person game -- and looking around steers nothing.
   get cameraAzimuthDegrees() { return this.chase.azimuthDegrees; }
   get cameraElevationDegrees() { return this.chase.elevationDegrees; }
+
+  // Which first-person camera is live. One expression, so the four places that
+  // ask cannot disagree.
+  get activeFirstPerson() {
+    return this.followGuide ? this.firstPersonGuide : this.firstPerson;
+  }
+
+  // WHO THE CAMERA IS ON. Called from the page whenever the guide switch moves
+  // -- on the click AND on the runtime's echo, so a run started with `--guide`
+  // frames her without being told twice.
+  //
+  // THE SPRING IS RE-SEEDED, NOT FLOWN (user's ruling: "make the switch
+  // instantaneous on toggle"). `chase.seeded = false` makes the next update
+  // place the follow point, the previous target and the aim point ON the new
+  // subject instead of lerping toward it, so the boom snaps and then springs
+  // normally from there -- rather than sailing across the map for a second and
+  // a half at the position lag.
+  setFollowGuide(enabled) {
+    const wanted = Boolean(enabled);
+    if (wanted === this.followGuide) return this.followGuide;
+    this.followGuide = wanted;
+    this.chase.seeded = false;
+    this._applyFirstPersonVisibility();
+    return this.followGuide;
+  }
   // Where the PICTURE is pointing, in the same convention. The wind ribbons in
   // render3d.html are drawn in screen space from this and must follow whichever
   // camera is live, or a storm blows sideways the moment V is pressed.
   get viewAzimuthDegrees() {
     return this.firstPersonEnabled
-      ? this.firstPerson.azimuthDegrees() : this.chase.azimuthDegrees;
+      ? this.activeFirstPerson.azimuthDegrees() : this.chase.azimuthDegrees;
   }
   look(movementX, movementY) {
-    if (this.firstPersonEnabled) this.firstPerson.look(movementX, movementY);
+    if (this.firstPersonEnabled) this.activeFirstPerson.look(movementX, movementY);
     else this.chase.look(movementX, movementY);
   }
-  // R recentres BOTH, whichever is live: coming back to third person after a
-  // reset should not find the head still turned 150 degrees from where it was.
-  recentreCamera() { this.chase.recentreNow(); this.firstPerson.recentreNow(); }
+  // R recentres ALL of them, whichever is live: coming back to third person
+  // after a reset should not find a head still turned 150 degrees from where it
+  // was, and nor should coming back to the robot from the guide.
+  recentreCamera() {
+    this.chase.recentreNow();
+    this.firstPerson.recentreNow();
+    this.firstPersonGuide.recentreNow();
+  }
 
   // ------------------------------------------------------- the view toggle
   setFirstPerson(enabled) {
@@ -364,18 +424,41 @@ export class Stage {
   // name like `torso_link__geom_58` does not.
   _applyFirstPersonVisibility() {
     if (!this.world || !this.world.bodies) return;
+    const insideRobot = this.firstPersonEnabled && !this.followGuide;
+    const insideHiker = this.firstPersonEnabled && this.followGuide;
+
     const torsoNode = this.world.bodies[this.world.torsoIndex];
-    if (!torsoNode) return;
-    if (this._headNode === undefined || this._headNode?.parent !== torsoNode) {
-      this._headNode = null;
-      let nearest = Infinity;
-      for (const child of torsoNode.children) {
-        const distance = child.position.distanceTo(EYE_MOUNT_IN_TORSO_METERS);
-        if (distance < nearest) { nearest = distance; this._headNode = child; }
+    if (torsoNode) {
+      if (this._headNode === undefined || this._headNode?.parent !== torsoNode) {
+        this._headNode = null;
+        let nearest = Infinity;
+        for (const child of torsoNode.children) {
+          const distance = child.position.distanceTo(EYE_MOUNT_IN_TORSO_METERS);
+          if (distance < nearest) { nearest = distance; this._headNode = child; }
+        }
+        if (nearest > HEAD_GEOM_SEARCH_RADIUS_METERS) this._headNode = null;
       }
-      if (nearest > HEAD_GEOM_SEARCH_RADIUS_METERS) this._headNode = null;
+      if (this._headNode) this._headNode.visible = !insideRobot;
     }
-    if (this._headNode) this._headNode.visible = !this.firstPersonEnabled;
+
+    // THE SAME RULE FOR HER, by radius rather than by nearest: her head, neck,
+    // beanie and pompom are four separate geoms on one mocap root that also
+    // carries her whole torso, so "the nearest child" would blank a hat and
+    // leave a skull. Her PENNANT goes too -- a 36 cm flag on a 45 cm pole above
+    // your own eyes fills the frame the moment you look up, which is the same
+    // objection that culls the robot's head and not a new one.
+    const hikerNode = this.world.guideIndex >= 0
+      ? this.world.bodies[this.world.guideIndex] : null;
+    if (hikerNode) {
+      if (this._hikerHeadNodes === null
+          || this._hikerHeadNodes.some(node => node.parent !== hikerNode)) {
+        this._hikerHeadNodes = hikerNode.children.filter(child =>
+          child.position.distanceTo(HIKER_EYE_IN_BODY_METERS)
+            <= HIKER_HEAD_CULL_RADIUS_METERS);
+      }
+      for (const node of this._hikerHeadNodes) node.visible = !insideHiker;
+    }
+    if (this.world.hikerFlag) this.world.hikerFlag.visible = !insideHiker;
   }
 
   // Poses are 50 Hz, the display is not: blend the last two ticks by how far
@@ -425,9 +508,17 @@ export class Stage {
 
     this._interpolatePoses(nowMilliseconds);
 
-    const pelvisNode = this.world.bodies[this.world.pelvisIndex];
+    // WHO THE BOOM IS ON. The guide's mocap root when the guide is on, the
+    // robot's pelvis otherwise -- and the guide's root sits at her ground
+    // contact, hence the lift (see GUIDE_FOLLOW_LIFT_METERS). Her mocap
+    // quaternion is a pure yaw about world z, so the same heading formula reads
+    // both bodies correctly.
+    const guideNode = (this.followGuide && this.world.guideIndex >= 0)
+      ? this.world.bodies[this.world.guideIndex] : null;
+    const pelvisNode = guideNode || this.world.bodies[this.world.pelvisIndex];
     if (pelvisNode) {
       this._pelvis.copy(pelvisNode.position);
+      if (guideNode) this._pelvis.z += GUIDE_FOLLOW_LIFT_METERS;
       this._quaternion.copy(pelvisNode.quaternion);
       // YAW ABOUT WORLD Z, not "where the body's own +x happens to point".
       // On a 38.6 deg face the pelvis is pitched over by the slope, so its local
@@ -447,13 +538,17 @@ export class Stage {
     // wrote. The chase camera's OWN state is untouched, so its azimuth is still
     // the steering command and V can be pressed back at any time.
     if (this.firstPersonEnabled) {
-      const torsoNode = this.world.bodies[this.world.torsoIndex];
-      if (torsoNode) {
-        this._torsoPosition.copy(torsoNode.position);
-        this._torsoQuaternion.copy(torsoNode.quaternion);
+      // The body the eye is bolted to: her mocap root with the guide on, the
+      // robot's `torso_link` otherwise. Both are x-forward / z-up, which is why
+      // one camera class rides either.
+      const mountNode = guideNode
+        || this.world.bodies[this.world.torsoIndex];
+      if (mountNode) {
+        this._torsoPosition.copy(mountNode.position);
+        this._torsoQuaternion.copy(mountNode.quaternion);
       }
-      this.firstPerson.update(elapsedSeconds, this._torsoPosition,
-                              this._torsoQuaternion);
+      this.activeFirstPerson.update(elapsedSeconds, this._torsoPosition,
+                                    this._torsoQuaternion);
     }
     this.world.update(elapsedSeconds, this.camera.position, this._pelvis,
                       this.windEast, this.windNorth,
