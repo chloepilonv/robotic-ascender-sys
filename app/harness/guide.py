@@ -96,9 +96,25 @@ GUIDE_LEAD_METERS = 2.5              # where it is placed on reset
 
 # ------------------------------------------------------------------ the walk
 # SIX HINGES, all about the body's +y axis (her left), on child bodies of the
-# mocap root. A mocap body has no degrees of freedom, but its CHILDREN may, so
-# these are ordinary joints whose `qpos` the guide writes every tick; the
-# bodies carry `gravcomp=1` so they do not droop between writes.
+# mocap root -- and NOT ONE OF THEM IS A JOINT. Each limb is a body with no
+# degrees of freedom, welded to its parent, and the "hinge angle" is written
+# into `model.body_quat` every control tick. `mj_kinematics` reads that field
+# for a welded body, so the figure poses exactly as if it had joints.
+#
+# WHY, AND IT IS THE WHOLE REASON THIS FEATURE IS SAFE. The first version used
+# real hinge joints. They work and they animate, and they also grow `nq` 39->45
+# and `nv` 38->44 -- six degrees of freedom that MuJoCo's solver then carries
+# through every step. The guide's limbs cannot touch the robot (no contacts, no
+# constraints, a mocap root welded to the world), so they exert no force on it,
+# but the solver's global convergence test is not per-body, and the walking
+# robot is chaotic: MEASURED on flat_0, two 6 s same-seed runs with and without
+# the jointed guide came back 1.447 m and 1.675 m of rope travel. That is not a
+# force, it is floating-point divergence -- and it is still a run that does not
+# reproduce, which is exactly what PARITY.md exists to forbid.
+#
+# Welded bodies posed through `body_quat` leave `nq`, `nv` and `njnt` untouched,
+# so the state vector the solver integrates is byte-for-byte the one it
+# integrated before the guide existed, and the same-seed diff is 0.000e+00.
 #
 #   positive hip      = that leg swings BACKWARD   (rotation about +y takes a
 #                       downward segment toward -x, and -x is behind her)
@@ -110,7 +126,14 @@ GUIDE_LEAD_METERS = 2.5              # where it is placed on reset
 # ZERO IS A STANDING POSE, not the mid-stride she is authored in: every limb is
 # rotated back to vertical once, at surgery time, and the angles that were
 # subtracted are printed (`guide_skeleton()["bake_radians"]`).
-GUIDE_STRIDE_METERS = 0.70           # one full cycle = two steps of 0.35 m
+# STRIDE IS WHAT SETS THE CADENCE, because the phase is locked to distance and
+# the speed is fixed at 1.0 m/s: cadence = 2 * speed / stride. At the 0.70 m
+# this was first drawn with, that is 171 steps/min -- a JOG, and the figure
+# scurried. A brisk 1.0 m/s walk is about 110-115 steps/min, so the stride is
+# set from the cadence rather than the other way round: 1.05 m of ground per
+# cycle = 0.525 m per step = 114 steps/min, and the hips swing +/-17 deg
+# (asin(stride/4 / 0.885 m leg)), which is where a real walker's are.
+GUIDE_STRIDE_METERS = 1.05           # one full cycle = two steps of 0.525 m
 GUIDE_KNEE_SWING_RADIANS = 0.90      # peak knee flexion, mid-swing only
 GUIDE_SHOULDER_SWING_RADIANS = 0.35
 GUIDE_ELBOW_BEND_RADIANS = 0.25      # a walker's elbows are never straight
@@ -130,27 +153,30 @@ GUIDE_MOTION_BLEND_SECONDS = 0.35
 # orientation is reset to flat afterwards, which is how the boots end up soles
 # down instead of inheriting the stride's ankle tilt.
 GUIDE_SEGMENTS = (
-    {"body": "guide_thigh_l", "parent": None, "joint": "hip_l",
+    {"body": "guide_thigh_l", "parent": None, "hinge": "hip_l",
      "anchor_root": (0.00, 0.10, 0.92), "align": "human_thigh_l",
      "geoms": ("human_thigh_l",), "level": ()},
-    {"body": "guide_shin_l", "parent": "guide_thigh_l", "joint": "knee_l",
+    {"body": "guide_shin_l", "parent": "guide_thigh_l", "hinge": "knee_l",
      "anchor_root": (0.16, 0.11, 0.50), "align": "human_shin_l",
      "geoms": ("human_shin_l", "human_boot_l"), "level": ("human_boot_l",)},
-    {"body": "guide_thigh_r", "parent": None, "joint": "hip_r",
+    {"body": "guide_thigh_r", "parent": None, "hinge": "hip_r",
      "anchor_root": (0.00, -0.10, 0.92), "align": "human_thigh_r",
      "geoms": ("human_thigh_r",), "level": ()},
-    {"body": "guide_shin_r", "parent": "guide_thigh_r", "joint": "knee_r",
+    {"body": "guide_shin_r", "parent": "guide_thigh_r", "hinge": "knee_r",
      "anchor_root": (-0.14, -0.11, 0.52), "align": "human_shin_r",
      "geoms": ("human_shin_r", "human_boot_r"), "level": ("human_boot_r",)},
-    {"body": "guide_upper_arm_l", "parent": None, "joint": "shoulder_l",
+    {"body": "guide_upper_arm_l", "parent": None, "hinge": "shoulder_l",
      "anchor_root": (0.02, 0.22, 1.40), "align": "human_upper_arm_l",
      "geoms": ("human_upper_arm_l",), "level": ()},
-    {"body": "guide_forearm_l", "parent": "guide_upper_arm_l", "joint": "elbow_l",
+    {"body": "guide_forearm_l", "parent": "guide_upper_arm_l", "hinge": "elbow_l",
      "anchor_root": (-0.06, 0.28, 1.12), "align": "human_forearm_l",
      "geoms": ("human_forearm_l", "human_hand_l"), "level": ()},
 )
-GUIDE_JOINT_NAMES = tuple(segment["joint"] for segment in GUIDE_SEGMENTS)
-GUIDE_HINGE_AXIS = (0.0, 1.0, 0.0)
+GUIDE_HINGE_NAMES = tuple(segment["hinge"] for segment in GUIDE_SEGMENTS)
+# Every hinge turns about +y (her left). The axis is not a settable parameter:
+# `_rotation_y`, `_pitch_to_vertical` and the quaternion in `Guide.write` all
+# hard-code it, because a sagittal walk has no use for any other axis.
+GUIDE_HINGE_AXIS_IS_BODY_Y = True
 
 # --------------------------------------------------------------- the eyes
 EYE_LEFT_CAMERA_NAME = "eye_left"
@@ -195,6 +221,15 @@ BEARING_GAIN_PER_RADIAN = 2.0
 MAXIMUM_YAW_RATE_RADIANS_PER_SECOND = 1.0
 BEARING_DEADBAND_RADIANS = math.radians(2.0)
 
+# Every `MjData` field `mj_kinematics` and `mj_camlight` write. The guide
+# refreshes the frames so its cameras see the human where it is NOW, then puts
+# these back so the next physics step reads exactly the frames it would have
+# read -- see `GuideSystem.update` for why that is not paranoia.
+KINEMATICS_OUTPUT_FIELDS = (
+    "xanchor", "xaxis", "xpos", "xquat", "xmat", "xipos", "ximat",
+    "geom_xpos", "geom_xmat", "site_xpos", "site_xmat",
+    "cam_xpos", "cam_xmat", "light_xpos", "light_xdir")
+
 # Recorded as a number, because `Recorder.append` stacks float arrays.
 GUIDE_MODE_CODES = {"WAIT": 0, "FOLLOW": 1, "LOST": 2}
 # hud.json is read by the browser, and `JSON.parse` rejects a bare NaN, so a
@@ -202,14 +237,12 @@ GUIDE_MODE_CODES = {"WAIT": 0, "FOLLOW": 1, "LOST": 2}
 # state uses `null` for the same thing, which JSON does allow.
 NO_MEASUREMENT = -1.0
 
-# Everything a recompile of HIS spec must leave exactly where it was. nbody,
-# ngeom, nmocap, ncam, nq, nv and njnt are DELIBERATELY absent: those are the
-# seven the surgery is supposed to change. The three state-vector counts joined
-# that list when the guide gained walking legs -- six hinges is six new degrees
-# of freedom -- and the check that replaces them is stricter than a count: every
-# joint that was already there must keep the SAME qpos and dof address, which is
-# what `body_limit`/`joint_limit` truncation below asks.
-STRUCTURAL_FIELDS = ("nu", "neq", "nsite", "nsensor", "nkey")
+# Everything a recompile of HIS spec must leave exactly where it was. Only
+# nbody, ngeom, nmocap and ncam are absent, because those four are what the
+# surgery adds. `nq`, `nv` and `njnt` are IN the list, and that is the point of
+# the jointless limbs: the guide may grow the model's bodies and geoms, but not
+# by one number the solver integrates.
+STRUCTURAL_FIELDS = ("nq", "nv", "njnt", "nu", "neq", "nsite", "nsensor", "nkey")
 
 
 def _structure(model, body_limit=None, joint_limit=None) -> dict:
@@ -369,7 +402,7 @@ def guide_skeleton() -> dict:
         # the limb 160 degrees the wrong way -- which it did, once.
         angle = _pitch_to_vertical(
             geoms[segment["align"]]["pos"] - anchors[segment["body"]])
-        bake_radians[segment["joint"]] = angle
+        bake_radians[segment["hinge"]] = angle
         rotation = _rotation_y(angle)
         anchor = anchors[segment["body"]].copy()
         for follower in chain_below(segment["body"]):
@@ -433,7 +466,7 @@ def guide_skeleton() -> dict:
         bodies.append({
             "name": segment["body"],
             "parent": segment["parent"],
-            "joint": segment["joint"],
+            "hinge": segment["hinge"],
             "pos_in_parent": anchor - parent_anchor,
             "geoms": [dict(geoms[name], pos=geoms[name]["pos"] - anchor)
                       for name in segment["geoms"]],
@@ -472,11 +505,12 @@ def _add_guide_body(spec) -> None:
 
     One mocap root carrying her torso, head, pack and rope-gripping right arm,
     plus six child bodies -- thigh/shin either side and the left upper
-    arm/forearm -- each on a single +y hinge so the figure can walk. The mocap
-    root has no degrees of freedom and cannot be pushed; the six hinges DO have
-    degrees of freedom, but nothing ever integrates them anywhere: `Guide.write`
-    writes `qpos` and zeroes `qvel` every control tick, and the bodies carry
-    `gravcomp = 1` so they do not droop in between.
+    arm/forearm -- each a HINGE IN NAME ONLY: no joint is added, the body is
+    welded to its parent, and `Guide.write` turns it by writing
+    `model.body_quat` every control tick. The whole figure therefore has ZERO
+    degrees of freedom, `nq`, `nv` and `njnt` do not move, and the solver
+    integrates exactly the state vector it integrated before she existed. The
+    long comment at GUIDE_SEGMENTS says what the jointed version cost.
 
     Every geom keeps her name (`human_*`), her group (2) and her
     `contype = conaffinity = 0`, so `human-safety/human_gate.py`'s segmentation
@@ -520,12 +554,7 @@ def _add_guide_body(spec) -> None:
         body = bodies[description["parent"]].add_body()
         body.name = description["name"]
         body.pos = [float(value) for value in description["pos_in_parent"]]
-        body.gravcomp = 1.0
-        joint = body.add_joint()
-        joint.name = description["joint"]
-        joint.type = mujoco.mjtJoint.mjJNT_HINGE
-        joint.axis = list(GUIDE_HINGE_AXIS)
-        joint.pos = [0.0, 0.0, 0.0]
+        # NO `add_joint` HERE, deliberately. See _add_guide_body's docstring.
         bodies[description["name"]] = body
         for part in description["geoms"]:
             add_geom(body, part)
@@ -594,23 +623,6 @@ def _add_eye_cameras(spec, model, verbose=True) -> bool:
     return True
 
 
-def _extend_keyframes(spec, new_joint_count) -> None:
-    """Pad every keyframe by the joints the surgery is about to append.
-
-    A keyframe's `qpos` must be exactly `nq` long or the compiler rejects the
-    model outright -- so the moment the guide grew hinges, every `<key>` in
-    HIS spec became the wrong length. The guide's joints are appended after the
-    robot's, so the padding goes on the END and is zeros, which is the guide's
-    standing pose. Empty fields are left empty: MuJoCo fills those with the
-    model defaults, and writing them here would be inventing state.
-    """
-    for key in spec.keys:
-        for field in ("qpos", "qvel"):
-            values = list(getattr(key, field))
-            if values:
-                setattr(key, field, values + [0.0] * int(new_joint_count))
-
-
 def attach_guide(scene, verbose=True) -> bool:
     """Add the guide body and the two eyes to a built `ClimbScene`, in place.
 
@@ -633,28 +645,14 @@ def attach_guide(scene, verbose=True) -> bool:
         return True
 
     bodies_before = int(model.nbody)
-    joints_before = int(model.njnt)
-    coordinates_before, velocities_before = int(model.nq), int(model.nv)
-    before = _structure(model, body_limit=bodies_before, joint_limit=joints_before)
+    before = _structure(model, body_limit=bodies_before)
     if not _add_eye_cameras(scene.spec, model, verbose=verbose):
         return False
     _add_guide_body(scene.spec)
-    _extend_keyframes(scene.spec, len(GUIDE_JOINT_NAMES))
 
     recompiled = scene.spec.compile()
-    after = _structure(recompiled, body_limit=bodies_before,
-                       joint_limit=joints_before)
+    after = _structure(recompiled, body_limit=bodies_before)
     moved = [key for key in before if before[key] != after[key]]
-    # The six walking hinges are the ONLY thing allowed to grow the state
-    # vector, and they are appended after the robot's, so every existing
-    # address is unmoved (checked above). Anything else that moved nq or nv is
-    # a surprise and refuses like any other structural change.
-    expected = len(GUIDE_JOINT_NAMES)
-    for field, was, grew in (("nq", coordinates_before, int(recompiled.nq)),
-                             ("nv", velocities_before, int(recompiled.nv)),
-                             ("njnt", joints_before, int(recompiled.njnt))):
-        if grew - was != expected:
-            moved.append(f"{field} {was}->{grew} (expected +{expected})")
     if moved:
         print(f"[guide] REFUSED: recompiling moved {moved}. Keeping the"
               " original model; the guide stays off.", flush=True)
@@ -734,23 +732,24 @@ class Guide:
         self.motion_blend = 0.0
         self.idle_seconds = 0.0
         self.direction = 0.0
-        self.joint_addresses = {}
+        self.limb_body_ids = {}
         self.skeleton = guide_skeleton()
         if model is not None:
             self.bind(model)
 
     def bind(self, model) -> None:
+        """Cache the mocap slot and the six limb BODY ids for this model."""
         import mujoco
         self.body_id = mujoco.mj_name2id(
             model, mujoco.mjtObj.mjOBJ_BODY, GUIDE_BODY_NAME)
         self.mocap_id = (int(model.body_mocapid[self.body_id])
                          if self.body_id >= 0 else -1)
-        self.joint_addresses = {}
-        for name in GUIDE_JOINT_NAMES:
-            joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
-            if joint_id >= 0:
-                self.joint_addresses[name] = (int(model.jnt_qposadr[joint_id]),
-                                              int(model.jnt_dofadr[joint_id]))
+        self.limb_body_ids = {}
+        for segment in GUIDE_SEGMENTS:
+            body_id = mujoco.mj_name2id(
+                model, mujoco.mjtObj.mjOBJ_BODY, segment["body"])
+            if body_id >= 0:
+                self.limb_body_ids[segment["hinge"]] = body_id
 
     def place_ahead_of(self, position_world, lead_meters=GUIDE_LEAD_METERS) -> None:
         """Put the human `lead_meters` further up the route than a given point."""
@@ -835,7 +834,7 @@ class Guide:
         }
         blend = float(np.clip(self.motion_blend, 0.0, 1.0))
         return {name: blend * walk[name] + (1.0 - blend) * idle[name]
-                for name in GUIDE_JOINT_NAMES}
+                for name in GUIDE_HINGE_NAMES}
 
     def _boot_lowest_offset(self, angles) -> float:
         """How far the lowest boot corner sits below the root. -> metres (<= 0).
@@ -899,23 +898,28 @@ class Guide:
         return math.atan2(float(tangent[1]), float(tangent[0]))
 
     def write(self, model, data) -> None:
-        """Write the pose into `mocap_pos`/`mocap_quat` + the six hinge `qpos`.
+        """Pose her: `mocap_pos`/`mocap_quat` for the root, `body_quat` for the
+        six limbs.
 
-        The root is a MOCAP body: it has no degrees of freedom, MuJoCo reads
-        those two arrays during the forward kinematics and nothing ever writes
-        back to them. The six limb hinges DO have degrees of freedom, so their
-        `qpos` is written and their `qvel` zeroed every control tick -- the
-        figure is driven, not simulated, and `gravcomp = 1` on the limb bodies
-        stops gravity nudging them between writes. `mj_resetData` parks mocap
-        bodies at their model pose and zeroes qpos, so this runs every tick
-        rather than once.
+        TWO DIFFERENT ARRAYS, AND NEITHER IS STATE. The root is a MOCAP body:
+        MuJoCo reads `mocap_pos`/`mocap_quat` during the forward kinematics and
+        nothing ever writes back to them. The six limbs are WELDED child bodies
+        with no joints, so their orientation lives in `model.body_quat` --
+        a model field, read by `mj_kinematics` every step exactly like a fixed
+        offset, and written here every control tick to turn each hinge. Nothing
+        the solver integrates is touched: `data.qpos` and `data.qvel` are the
+        robot's alone, which is what makes the same-seed diff zero.
+
+        `mj_resetData` parks mocap bodies at their model pose, so this runs
+        every tick rather than once.
         """
         if self.mocap_id < 0:
             return
         angles = self.limb_angles()
-        for name, (qpos_address, dof_address) in self.joint_addresses.items():
-            data.qpos[qpos_address] = angles[name]
-            data.qvel[dof_address] = 0.0
+        for name, body_id in self.limb_body_ids.items():
+            half = 0.5 * angles[name]
+            # A +y hinge, as a quaternion: (cos, 0, sin, 0).
+            model.body_quat[body_id] = (math.cos(half), 0.0, math.sin(half), 0.0)
         if not self.enabled:
             data.mocap_pos[self.mocap_id] = (0.0, 0.0, -50.0)
             return
@@ -1300,13 +1304,16 @@ class GuideSystem:
     behind `update(...)`.
     """
 
-    def __init__(self, scene, model, control_hz, verbose=True):
+    def __init__(self, scene, model, control_hz, verbose=True, enable=True):
         import mujoco
         self._mujoco = mujoco
         # A legacy world has no MjSpec to operate on -- their old env hands back
         # a compiled model and nothing else -- so the guide is simply not
         # available there and every entry point below turns into a no-op.
-        self.available = scene is not None and attach_guide(scene, verbose=verbose)
+        # `enable=False` is the same no-op on purpose, for the parity runs that
+        # need a model with no guide bodies in it at all.
+        self.available = (enable and scene is not None
+                          and attach_guide(scene, verbose=verbose))
         self.model = scene.model if self.available else model
         self.control_hz = float(control_hz)
         self.dt_seconds = 1.0 / self.control_hz
@@ -1381,12 +1388,21 @@ class GuideSystem:
         self.guide.write(self.model, data)
         # `mocap_pos` is an INPUT to the forward kinematics, not a pose: nothing
         # in `data` moves until something recomputes frames from it, and the
-        # renderer reads `geom_xpos`. Without these two the eyes would see the
-        # human a tick behind where it is. Both are pure functions of qpos and
-        # mocap -- they integrate nothing, touch no sensor and no constraint --
-        # and `mj_step` re-derives all of it from scratch on the very next line
-        # of the control loop, so the physics is untouched. (`mj_kinematics`
-        # does bodies, geoms and sites; cameras and lights are `mj_camlight`.)
+        # renderer reads `geom_xpos`. Without the two calls below the eyes would
+        # see the human a tick behind where it is.
+        #
+        # AND THEY ARE UNDONE AGAIN, which is the whole reason `_restore` exists
+        # and is not defensive programming. `mj_step` is forward-then-integrate,
+        # so when it returns, `data.qpos` is the NEW state while `data.xpos` and
+        # friends still describe the OLD one -- and the next control tick reads
+        # those stale frames (the ascender's carrier projection and the
+        # observation both do). Refreshing them for the cameras therefore hands
+        # the next step a different, fresher world than it would have had, and
+        # MEASURED on flat_0 that moved the robot 0.95 rad of joint angle in six
+        # seconds. So the frames are refreshed for the cameras and then put back
+        # exactly as they were, and the physics sees precisely what it saw
+        # before the guide existed. `test_guide`'s section D is this claim.
+        frozen = self._freeze(data)
         self._mujoco.mj_kinematics(self.model, data)
         self._mujoco.mj_camlight(self.model, data)
         self.true_range_meters = self.true_range_to_guide(data)
@@ -1398,11 +1414,29 @@ class GuideSystem:
             measurement = self.eyes.look(data)
             self.latest = measurement
             self.vision_milliseconds = (time.time() - started) * 1000.0
+        self._restore(data, frozen)
         self.follower.update(measurement, self.dt_seconds)
         if measurement is not None:
             self.eye_jpeg = EYE_MESSAGE_PREFIX + annotate_eye(
                 measurement["left_image"], measurement["box"], self.label_text())
         return self.follower.command()
+
+    @staticmethod
+    def _freeze(data) -> dict:
+        """Copy every array `mj_kinematics`/`mj_camlight` write. -> name -> array.
+
+        Exactly the two functions' output fields and nothing else: joint anchors
+        and axes, body/inertial/geom/site frames, then camera and light frames.
+        `data.qpos`, `qvel`, `ctrl` and every force are deliberately absent --
+        the guide never writes them, so there is nothing to put back.
+        """
+        return {name: np.array(getattr(data, name), copy=True)
+                for name in KINEMATICS_OUTPUT_FIELDS}
+
+    @staticmethod
+    def _restore(data, frozen) -> None:
+        for name, values in frozen.items():
+            getattr(data, name)[:] = values
 
     def take_eye_jpeg(self):
         """The newest eye frame, ONCE. -> bytes or None.

@@ -39,8 +39,9 @@ rope off — the walker gives up between 10° and 15°) and `sandbox_free` /
 `sandbox_rope`, a 120 × 120 m free-roam map.
 
 Keys: **W** walk, **A/D** turn in place (they suspend the camera-follow while
-held) — *unless the `guide` knob is on, in which case W drives the HUMAN and the
-robot drives itself; see "Follow the guide" below.* Wind dial is in m/s and goes through **his** `WindParams` into
+held) — *unless the `guide` knob is on, in which case W walks the HUMAN up the
+rope, S walks her back down it, and the robot drives itself; see "Follow the
+guide" below.* Wind dial is in m/s and goes through **his** `WindParams` into
 `ClimbScene.step`; the `wind_natural` knob turns the dial into a target that
 gusts and drifts. Neither the wind nor this terrain is in training yet — the
 trainer is still on the old `climb_env` — so the state message keeps saying
@@ -77,12 +78,42 @@ unaffected either way -- the pose hook costs a measured 20 us of a 20 ms tick.
 
 ## Follow the guide (`app/harness/guide.py`)
 
-Turn the **`guide`** knob on and a human guide appears 2.5 m up the rope. Hold
-**W** and the *human* walks (0.5 m/s along the route, 0.6 m to the rope's left,
-snapped to the terrain — it never slips and never falls, because it is a mocap
-body with no degrees of freedom and no collision). The **robot decides for
-itself** what to do about that. A/D do nothing while the guide is on: the
-follower owns the yaw command, and the camera-follow controller stands down.
+Turn the **`guide`** knob on and a human guide appears 2.5 m up the rope —
+**Chloe's hiker** from `assets/humans/human.xml`, loaded whole and re-parented
+into six moving limbs. Hold **W** and the *human* walks **up** the rope at
+1.0 m/s; hold **S** and she walks **back down** it toward the robot, still
+facing uphill, animation running in reverse; hold both and she stands. She is
+0.6 m to the rope's left, snapped to the terrain, and she never slips or falls,
+because she is a mocap body with no degrees of freedom and no collision. The
+**robot decides for itself** what to do about that. A/D do nothing while the
+guide is on: the follower owns the yaw command, and the camera-follow
+controller stands down.
+
+**The walk is distance-locked**, which is why the feet do not skate: the gait
+phase is `2π × travel / 1.05 m`, a function of how far she has WALKED and never
+of the clock, so one stride of ground is exactly one stride of animation
+whatever the speed, and S runs the same cycle backwards. Within a stride the
+planted foot is placed by the same arithmetic in reverse — its offset from the
+hip ramps from +stride/4 to −stride/4 while the root advances stride/2, so the
+two cancel. MEASURED on `flat_0`: the planted boot drifts **0.7 mm** per stance
+phase, swing clearance is 8–13 cm, and the lowest boot corner sits between
+−2.6 cm and +2.2 cm of the snow surface (on terrain whose roughness is 10.9 cm
+rms). Stride is set from the CADENCE, not chosen: 1.05 m at 1.0 m/s is
+114 steps/min, a brisk walk; the 0.70 m it was first drawn with gave
+171 steps/min, which is a jog, and it looked like one.
+
+    python -m app.harness.guide_walk_sheet     # the contact sheet + the skate audit
+
+writes `render3d_shots/guide_walk_sheet.png` — eight frames across one gait
+cycle with the hip/knee/shoulder angles printed on each — and the audit table.
+
+**Her limbs have no joints, on purpose.** Six child bodies hang off the mocap
+root (thigh and shin either side, left upper arm and forearm; the right arm is
+posed gripping the rope and does not swing), and each is turned by writing
+`model.body_quat` every control tick rather than by a hinge. The first version
+used real hinges, which grew `nq` 39→45 — and six degrees of freedom the solver
+carries is enough to move the walking robot **23 cm in six seconds** through
+nothing but floating-point. `PARITY.md` has that number and the fix.
 
 The robot has two RGB cameras on its head, 6 cm apart, at the `d435i` mount
 already in the jacketed MJCF. Ten times a second they are rendered at 320×240
@@ -108,18 +139,21 @@ the detection box drawn on it. Episodes record `guide_mode` (0 WAIT, 1 FOLLOW,
 2 LOST), `guide_distance_meters`, `guide_true_distance_meters` and
 `guide_human_progress_meters`.
 
-    python -m app.harness.test_guide                  # stereo accuracy + two rollouts
+    python -m app.harness.test_guide     # colour window, stereo, two rollouts, physics parity
     python -m app.harness.runtime --world flat_0 --duration 20 --hold-w --guide --no-render
 
-**Measured, and worth knowing before you demo it.** The stereo reads −5% at 2 m
-and +7% at 4 m against the simulator's own answer. The *walker*, not the
+**Measured, and worth knowing before you demo it.** The colour window keeps
+**97.7%** of her jacket's pixels and **0.0%** of every other material in the
+scene and of the scene itself (`flat_0`, pooled over 1/2/4/8 m, attributed with
+a segmentation render — `test_guide` section A0). The stereo reads −5.8% at 2 m
+and +0.0% at 4 m against the simulator's own answer. The *walker*, not the
 follower, is the limit: its real ground speed is about **0.15 m/s** whatever
-`lin_vel_x` says, and the guide walks at 0.5 m/s, so holding W indefinitely just
-opens the gap. The demo that works is **hold W for a few seconds, then let go**
-— the robot closes the gap and stops (measured on `flat_0`: 3.8 m → WAIT at
-1.1 m). Yaw authority is also nearly nil while the palm is gripping the rope
-(commanding +1 rad/s and −1 rad/s for 3 s ends up 10° apart), so the follower
-steers much better on rope-off worlds.
+`lin_vel_x` says, and the guide now walks at 1.0 m/s, so holding W indefinitely
+opens the gap at ~0.85 m/s and she is out of the ±29° field of view within
+three seconds. **The demo is: tap W for two or three seconds, then let go**, or
+hold **S** and let her walk back to the robot. Yaw authority is also nearly nil
+while the palm is gripping the rope (commanding +1 rad/s and −1 rad/s for 3 s
+ends up 10° apart), so the follower steers much better on rope-off worlds.
 
 The guide is available on the **ClimbScene** worlds only. The four `legacy_*`
 worlds hand back a compiled model with no `MjSpec`, so there is nothing to add

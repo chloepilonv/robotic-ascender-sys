@@ -776,10 +776,141 @@ number below with `python -m app.harness.test_guide`.
 | the two eye images | **REAL** | 320×240 RGB renders of the scene from two MuJoCo cameras 6 cm apart, copied from the `d435i` mount already in `assets/robots/mujoco/g1_unitree_ascender.xml` (pos `0.0789635 0 0.386` on `torso_link`, fovy 58°). Cameras are visual-only; MuJoCo integrates nothing from them. |
 | the DISTANCE | **REAL passive stereo** | OpenCV `StereoSGBM` on that pair → disparity → `depth = focal_pixels × baseline / disparity`, `focal_pixels = (height/2)/tan(fovy/2) = 216.5 px`, `baseline = 0.06 m`. Sub-pixel from SGBM's own 1/16-px fixed point. **No simulator state is read anywhere in this path.** |
 | the BEARING | **REAL** | the matched pixels' centroid column through the same intrinsics. |
-| WHICH PIXELS ARE THE HUMAN | **STAND-IN** | an HSV colour threshold on the guide's deliberately distinctive orange-red (hue 4–16, measured off a render: the guide lands at hue 5–12 / value 236, the rope at hue 0–1 / value 56), largest connected component. A person detector goes here; the seam is `guide.detect_guide(image) -> (box, mask)`. It is not vision in any interesting sense — it knows the answer's colour. |
+| WHICH PIXELS ARE THE HUMAN | **STAND-IN** | an HSV colour threshold on her deliberately distinctive orange jacket (hue 6–15, saturation ≥ 120, value ≥ 80), largest connected component. Re-measured on HER jacket with a segmentation render: **97.7% of jacket pixels in, 0.0% of every other material** — the table is below. A person detector goes here; the seam is `guide.detect_guide(image) -> (box, mask)`. It is not vision in any interesting sense — it knows the answer's colour. |
 | `true_distance_meters` | **LABELLED CHEAT** | read straight out of `data.cam_xpos` and the guide's own pose. HUD and grading only; the follower never sees it. Recorded as `guide_true_distance_meters`. |
-| the guide's motion | **not physics, and says so** | a mocap body (zero DOF, `nq`/`nv` untouched) driven along `RopeRoute` arc length, height snapped to `terrain.surface_z` every tick. It cannot fall, be pushed, or be walked into: every geom is `contype=0, conaffinity=0`. |
+| the guide's motion | **not physics, and says so** | Chloe's hiker (`assets/humans/human.xml`) as one mocap root plus six WELDED limb bodies (zero DOF, `nq`/`nv`/`njnt` untouched), driven along `RopeRoute` arc length, height snapped to `terrain.surface_z` every tick. It cannot fall, be pushed, or be walked into: every geom is `contype=0, conaffinity=0`. |
+| the guide's WALK | **synthetic animation, geometric not learned** | six hinge angles written into `model.body_quat`, phase locked to distance travelled (`2π × travel / 1.05 m`). No joint, no actuator, no integrator. See "The animated guide" below. |
 | the command | ours, as everything in the app layer is | the follower writes the same 3-vector the keyboard writes. No new policy, no retraining, no change to `rl/`. |
+
+### The animated guide, and the 23 cm it nearly cost
+
+`guide.py`'s six limbs are hinges IN NAME ONLY: `_add_guide_body` adds no joint,
+each limb body is welded to its parent, and `Guide.write` turns it by writing
+`model.body_quat` every control tick. `mj_kinematics` reads that field for a
+welded body, so the figure poses exactly as if it had joints, and the state
+vector the solver integrates does not grow by one number.
+
+**THE FIRST VERSION USED REAL HINGES, AND IT MOVED THE ROBOT.** Six `mjJNT_HINGE`
+joints grew `nq` 39 -> 45 and `nv` 38 -> 44. The guide's limbs cannot touch the
+robot -- no contacts (`contype=0`), no constraint, a mocap root welded to the
+world -- so they exert no force on it. They still changed the answer: two 6 s
+same-seed `flat_0` runs, `--hold-w`, came back with **1.447 m** and **1.675 m**
+of rope travel. That is not a force, it is a walking robot amplifying a
+floating-point difference in the solver over 300 ticks, and a run that does not
+reproduce is exactly what this file exists to forbid.
+
+**AND SO DID THE CAMERA REFRESH, which had been there all along.** The guide
+runs `mj_kinematics` + `mj_camlight` after it moves the human, so the eyes see
+where she IS rather than where she was a tick ago. `mj_step` is
+forward-then-integrate, so when it returns `data.qpos` is the NEW state while
+`data.xpos` still describes the OLD one -- and the next control tick reads those
+stale frames. Refreshing them hands the next step a fresher world than it would
+have had: **0.95 rad** of joint-angle difference in six seconds, measured. The
+frames are now snapshotted before the refresh and put back after the eye render
+(`GuideSystem._freeze` / `_restore`, `KINEMATICS_OUTPUT_FIELDS` -- the exact
+output set of those two functions), so the cameras get the fresh pose and the
+physics gets the frames it would have got.
+
+**MEASURED, both claims, and both reproducible:**
+
+`python -m app.harness.test_guide`, section D -- the same scripted command flown
+twice from the same reset, once with the guide OFF and once with it ON and the
+human WALKING (mocap moving, limbs swinging, eyes rendering every fifth tick):
+
+| array | max abs difference, `flat_0` | `terrain_free_10` |
+|---|---|---|
+| `qpos` | 0.000e+00 | 0.000e+00 |
+| `qvel` | 0.000e+00 | 0.000e+00 |
+| `ctrl` | 0.000e+00 | 0.000e+00 |
+| `sensordata` | 0.000e+00 | 0.000e+00 |
+| `qfrc_constraint` | 0.000e+00 | 0.000e+00 |
+| `cfrc_ext` | 0.000e+00 | 0.000e+00 |
+
+And at the runtime level, two 6 s same-seed runs with the guide's bodies in the
+model and with `--no-guide-body` (which skips the surgery entirely):
+
+    python -m app.harness.runtime --world flat_0 --duration 6 --hold-w \
+        --no-render --keep-going --seed 0 --output-name paritytest_guidebody
+    python -m app.harness.runtime --world flat_0 --duration 6 --hold-w \
+        --no-render --keep-going --seed 0 --no-guide-body \
+        --output-name paritytest_noguidebody
+
+300 ticks, 39 recorded arrays, of which **35 are physics/robot: max absolute
+difference 0.000e+00**. The four that differ are the guide's own HUD columns
+(`guide_human_progress_meters` and friends), which do not exist in a run with no
+guide in it.
+
+### The gait, and why the feet do not skate
+
+Distance-locked: phase = `2π × arclength / GUIDE_STRIDE_METERS`, a function of
+how far she has walked and never of the clock. One stride of ground is one
+stride of animation at any speed, and S (walking back down the rope) runs the
+same cycle in reverse for free. Within a stride the planted foot's offset from
+the hip ramps linearly from +stride/4 to -stride/4 while the root advances
+stride/2, so the two cancel and the boot holds still in the world; the swing
+half returns it on a raised cosine. The hip angle that puts a boot a given
+distance in front is one arcsine, because with the knee straight the hip-to-boot
+vector is rigid (`Guide._hip_for_foot_offset`).
+
+**STRIDE IS SET FROM CADENCE.** Speed is 1.0 m/s (the user's ruling), so
+cadence = 2 x speed / stride. The 0.70 m the figure was first drawn with gives
+171 steps/min -- a jog, and it read as one. 1.05 m gives **114 steps/min** and
+hips swinging +/-17 deg, which is where a real brisk walker's are.
+
+`python -m app.harness.guide_walk_sheet` writes the contact sheet and prints the
+audit. `flat_0`, 200 samples around one cycle:
+
+| leg | stance skate | stance spread | swing clearance | lowest sole vs snow |
+|---|---|---|---|---|
+| left | 0.0007 m | 0.0007 m | 0.084 m | -0.026 m |
+| right | 0.0007 m | 0.0007 m | 0.125 m | -0.010 m |
+
+0.7 mm of skate per stance phase. The sole sits between -2.6 cm and +2.2 cm of
+the surface over the cycle, on terrain whose roughness is 10.9 cm rms: the root
+height is solved from the lowest boot corner assuming a LOCALLY FLAT surface
+under the root, so a boot half a stride away can be a couple of centimetres out.
+
+**The neutral pose is baked, not authored.** Chloe drew the hiker mid-stride, so
+every limb is rotated back to vertical once at surgery time and the angles that
+were subtracted become the joints' zero. Printed on attach, `flat_0`:
+
+| hinge | baked out |
+|---|---|
+| `hip_l` | +20.9 deg |
+| `knee_l` | -14.8 deg |
+| `hip_r` | -19.3 deg |
+| `knee_r` | +4.5 deg |
+| `shoulder_l` | -15.9 deg |
+| `elbow_l` | +42.5 deg |
+
+Her two legs also came out 2.7 cm different in length and 3.2 cm apart along the
+stride, which in a symmetric gait means a limp: one leg carries the whole walk
+and the other paws the air (swing clearances 7.6 cm against 5.1 cm). The knee
+anchor and the boot are nudged to the mean of the two sides in the sagittal
+plane -- 1.3 cm and 1.6 cm, half the difference each way. The left/right
+offsets in y are untouched: those are her stance width, not an error.
+
+### The colour window, re-measured on HER jacket
+
+`test_guide` section A0 renders the left eye twice at each test range -- once in
+colour, once in SEGMENTATION -- so every pixel is attributed to the geom that
+painted it before its hue is counted. Window: hue 6-15, saturation >= 120,
+value >= 80. `flat_0`, pooled over 1/2/4/8 m:
+
+| material | pixels | hue 1-99% | saturation 1-99% | value 1-99% | inside the window |
+|---|---|---|---|---|---|
+| **jacket (target)** | 21,708 | 10-11 | 236-242 | 61-255 | **97.7%** |
+| skin | 565 | 5-11 | 57-101 | 51-217 | 0.0% |
+| beanie | 6,420 | 176-178 | 213-222 | 51-205 | 0.0% |
+| pack | 6,322 | 109-110 | 184-198 | 36-136 | 0.0% |
+| glove | 25 | 113-120 | 51-101 | 8-22 | 0.0% |
+| pants | 4,238 | 109-113 | 82-127 | 14-50 | 0.0% |
+| boots | 519 | 13-14 | 143-152 | 32-73 | 0.0% |
+| everything else (snow, sky, rope, robot) | 267,403 | 1-111 | 33-238 | 74-230 | 0.0% |
+
+The 2.3% of jacket it drops are shadowed pixels under the value floor. The boots
+are the nearest miss at hue 13-14, and it is the VALUE floor, not the hue range,
+that keeps them out.
 
 ### The model surgery, and why it is safe
 
@@ -788,9 +919,11 @@ number below with `python -m app.harness.test_guide`.
 with the same refusal rule. Every joint qpos/dof address, every actuator target,
 every existing body's mass and name, and `nq nv nu njnt neq nsite nsensor nkey`
 are compared before and after; if any of them moves the swap is **refused** and
-the scene is left exactly as it was. Measured on `flat_0`: bodies 32→33, geoms
-101→104, cameras 1→3, mocap 0→1, **all 13 structural fields unchanged**. The new
-body is appended after the existing tree, so no existing id shifts.
+the scene is left exactly as it was. Measured on `flat_0`: bodies 32→39, geoms
+101→126, cameras 1→3, mocap 0→1, joints 33→33, `nq` 39→39, `nv` 38→38,
+**all 13 structural fields unchanged**. The new bodies are appended after the
+existing tree, so no existing id shifts — and `nq`, `nv` and `njnt` are IN the
+checked list, which is the whole reason the limbs are welded rather than jointed.
 
 TWO ORDERING RULES, both learned by breaking them:
 
@@ -814,12 +947,16 @@ while the axis column is the literal "distance to the human" the HUD reports.
 
 | true to axis | true to surface | measured | err vs axis | err vs surface | disparity |
 |---|---|---|---|---|---|
-| 1.000 m | 0.820 m | 0.841 m | −15.9% | +2.5% | 16.69 px |
-| 2.000 m | 1.820 m | 1.899 m | **−5.1%** | **+4.3%** | 7.00 px |
-| 4.000 m | 3.820 m | 4.270 m | +6.8% | +11.8% | 3.06 px |
-| 8.000 m | 7.820 m | 8.028 m | +0.4% | +2.7% | 1.62 px |
+| 1.000 m | 0.810 m | 0.798 m | −20.2% | −1.5% | 17.88 px |
+| 2.000 m | 1.810 m | 1.884 m | **−5.8%** | **+4.1%** | 6.94 px |
+| 4.000 m | 3.810 m | 4.002 m | +0.0% | +5.0% | 3.31 px |
+| 8.000 m | 7.810 m | 7.235 m | −9.6% | −7.4% | 1.81 px |
 
-`terrain_free_10`, against the axis: −9.2% / **−4.2%** / +9.2% / +33.5%. The 8 m
+Re-measured on the animated hiker (the numbers moved a little because the figure
+did: the reference point and the visible silhouette are hers, not the
+placeholder's). `terrain_free_10`, against the axis: −19.2% / **−3.6%** /
++12.5% / +69.6% — the 8 m row there matches on a single disparity pixel, which
+is the honest end of a 6 cm baseline. The 8 m
 row is the honest limit of a 6 cm baseline at this focal length: the whole
 disparity there is 1.25 px, so one quantisation step is metres.
 
@@ -877,10 +1014,14 @@ properties of the team's walking policy in these scenes, not of this layer:
 
 * **Ground speed is ~0.15 m/s whatever `lin_vel_x` says.** `flat_0`, 20 s,
   straight-ahead command: 3.15 m at cmd 0.5, 4.18 m at cmd 0.8, 4.22 m at
-  cmd 1.0. The guide walks at 0.5 m/s, so holding W indefinitely simply opens
-  the gap — the demo that works is a few seconds of W and then release, after
-  which the robot closes and stops (`flat_0`, human stops at t = 5 s: gap 3.8 m
-  → WAIT at 1.08 m by t = 32 s).
+  cmd 1.0. The guide walks at **1.0 m/s** (the user's ruling), so holding W
+  indefinitely opens the gap at ~0.85 m/s and she leaves the ±29° field of view
+  in about three seconds — `test_guide` B now goes FOLLOW → LOST at t = 2.5 s
+  and stays there. The demo that works is a two-second tap of W and then
+  release, or **S**, which walks her back down the rope to the robot (measured:
+  −2.00 m of arc length in 2 s, exactly the 1.0 m/s, gait running in reverse
+  with her yaw still uphill). Closing a gap the robot opened is now beyond it,
+  and that is the plant, not the follower.
 * **Yaw authority is nearly nil while the palm grips the rope.** `flat_0`, 3 s
   of a constant yaw command on top of `lin_vel_x` 0.5: +1.0 → −23.6°, +0.5 →
   −24.2°, 0.0 → −29.6°, −0.5 → −15.1°, −1.0 → −13.4°. The robot yaws about −25°

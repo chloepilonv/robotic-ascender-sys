@@ -425,7 +425,11 @@ def run(arguments) -> str:
             # other way round throws the alpine look away and the picture comes
             # back dark. `add_skybox` survives either order because a texture
             # lives in the spec, but the ordering rule is the same for both.
-            guide_module.attach_guide(scene)
+            # `--no-guide-body` skips the surgery entirely, which is how the
+            # physics-parity claim is measured: a run with no guide bodies in
+            # the model at all against a run that has them, same seed.
+            if not arguments.no_guide_body:
+                guide_module.attach_guide(scene)
             # Snow next, and for the same reason: it adds a texture and a
             # material to the spec and recompiles, so it has to happen before
             # anything writes to the compiled model.
@@ -513,7 +517,8 @@ def run(arguments) -> str:
     # 1.0/1.3 m bands and the 1 s LOST timeout.
     def make_guide(current_scene, current_model, current_episode):
         system = guide_module.GuideSystem(
-            current_scene, current_model, current_episode.control_hz)
+            current_scene, current_model, current_episode.control_hz,
+            enable=not arguments.no_guide_body)
         gate = HumanGate(guide_module.GuideVisionDetector(system),
                          clear_after_seconds=0.0)
         if system.available:
@@ -933,6 +938,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
                              " rope route and the robot follows it by stereo"
                              " vision. Live mode has the same thing as the"
                              " `guide` knob on the page.")
+    parser.add_argument("--no-guide-body", action="store_true",
+                        help="skip the guide's model surgery altogether, so the"
+                             " model carries no guide bodies, no walking hinges"
+                             " and no eye cameras. For the physics-parity diff"
+                             " only: the guide feature is unavailable with it.")
     parser.add_argument("--human", type=float, action="append", default=[],
                         help="spawn a virtual human this many metres ahead of"
                              " the spawn point (repeatable)")
