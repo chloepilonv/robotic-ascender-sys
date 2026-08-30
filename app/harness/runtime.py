@@ -63,8 +63,47 @@ from app.harness.playground_policy import (  # noqa: E402
 )
 from app.harness.recorder import Recorder  # noqa: E402
 from app.harness import worlds as worlds_module  # noqa: E402
+from app.harness import climb_worlds as climb_worlds_module  # noqa: E402
+from app.harness import graphics as graphics_module  # noqa: E402
+from app.harness.natural_wind import NaturalWind  # noqa: E402
+sys.path.insert(0, os.path.join(  # human-safety/ is a program, not a package
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", "human-safety"))
+from human_gate import (  # noqa: E402
+    HumanGate, HumanWorld, VirtualFrustumDetector)
 
-RENDER_WIDTH, RENDER_HEIGHT = 640, 480
+RENDER_WIDTH, RENDER_HEIGHT = 960, 540    # 16:9 -- the page fills the viewport with it
+RENDER_MAXIMUM_WIDTH, RENDER_MAXIMUM_HEIGHT = 1920, 1080   # native-resolution cap (F = fullscreen in the page)
+
+
+def clamp_render_size(viewport) -> tuple:
+    """Browser-reported viewport (css px * devicePixelRatio) -> (width, height) we will render.
+    Even numbers (JPEG/mp4 friendly), capped so a 5K display cannot drag the tick below realtime."""
+    try:
+        width, height = int(viewport["width"]), int(viewport["height"])
+    except (TypeError, KeyError, ValueError):
+        return RENDER_WIDTH, RENDER_HEIGHT
+    if width < 320 or height < 180:
+        return RENDER_WIDTH, RENDER_HEIGHT
+    scale = min(1.0, RENDER_MAXIMUM_WIDTH / width, RENDER_MAXIMUM_HEIGHT / height)
+    return (int(width * scale) // 2) * 2, (int(height * scale) // 2) * 2
+
+
+def make_renderer(model, width: int, height: int, alpine=True, shadows=None):
+    """The offscreen framebuffer is sized from model.vis.global_ at context creation;
+    raise it to the cap once so any requested size up to 1920x1080 fits.
+
+    Shadows measured at 1920x1080 on this machine: 14.9 ms/frame with, 9.2 ms
+    without -- 5.7 ms, against a 20 ms control tick. They stay ON at every size
+    we render, and `--no-shadows` is the escape hatch if a slower machine needs
+    it. (`graphics.shadows_affordable` keeps the width rule for that case.)"""
+    model.vis.global_.offwidth = max(int(model.vis.global_.offwidth), RENDER_MAXIMUM_WIDTH)
+    model.vis.global_.offheight = max(int(model.vis.global_.offheight), RENDER_MAXIMUM_HEIGHT)
+    renderer = mujoco.Renderer(model, height, width)
+    if alpine:
+        flags = graphics_module.apply_render_flags(
+            renderer, shadows=True if shadows is None else shadows)
+        print(f"[graphics] render flags {flags} at {width}x{height}", flush=True)
+    return renderer
 JPEG_QUALITY = 80
 
 # Third-person orbit, matching the browser's defaults so live and recorded
@@ -82,6 +121,9 @@ BROWSER_AZIMUTH_OFFSET_DEGREES = 180.0
 
 # Camera-relative driving, third-person-game style.
 HEADING_GAIN_PER_RADIAN = 2.0
+# A/D turn-in-place rate. The policy's ang_vel_yaw was trained over [-1, 1]
+# (walk_policy.CMD_LIMITS), so this is the fastest turn it has ever seen.
+MANUAL_YAW_RATE_RADIANS_PER_SECOND = 1.0
 MAXIMUM_YAW_RATE_RADIANS_PER_SECOND = 1.0
 HEADING_DEADBAND_RADIANS = math.radians(2.0)
 # Their lin_vel_x training range is [-1, 1] m/s; a demo wants a steady pace.
@@ -97,11 +139,40 @@ PAUSED_BROADCAST_HZ = 5.0     # heartbeat while the browser has let go
 # uncapped), and say so on stdout when the cap bites.
 LIVE_MAXIMUM_RECORDED_FRAMES = 6000   # 2 minutes of episode.mp4 at 50 Hz
 GAIT_FREQUENCY_HZ = 1.375     # midpoint of their reset draw U(1.25, 1.5)
-
 # rl/environment/wind_env.py:28-36 -- the ONLY place wind constants come from.
 # Imported at load time rather than restated; these are the fallback if the
 # import fails (e.g. their config keys get renamed) and the run says so.
 WIND_FALLBACK = {"rho": 1.225, "cd_torso": 1.2, "area_torso": 0.5}
+
+
+def make_battery_plugin(model, substeps):
+    """Chloe's `app/bms_ui.BmsPlugin`, or None if it cannot be imported.
+
+    Always on -- the battery readout is part of the demo now, not a flag. Kept
+    best-effort anyway: a broken import in someone else's module must not take
+    the walker down with it.
+
+    ALTITUDE IS DELIBERATELY LEFT AT 0. Her `Environment` derives ambient from
+    altitude by the ISA lapse (`t_amb = t_sea_c - 6.5e-3 * altitude_m`), while
+    `set_ambient` treats the `t_amb` knob as the pack's actual temperature. Set
+    both and they fight: at 6907 m the environment's ambient lands 44.9 C BELOW
+    whatever the knob reads. So the knob is the single source of truth for
+    ambient, and Everest conditions are dialled in by setting it to about
+    -30 C rather than by declaring an altitude.
+    """
+    try:
+        from app.bms_ui.bridge import BmsPlugin
+    except Exception as error:  # pragma: no cover - reporting only
+        print(f"[bms] NOT attached: {type(error).__name__}: {error}."
+              " The harness runs normally without a battery readout.", flush=True)
+        return None
+    plugin = BmsPlugin(model, substeps)
+    print(f"[bms] BmsPlugin attached: {model.nu} actuators, dt"
+          f" {plugin.dt * 1000:.0f} ms (one call per control tick),"
+          f" ambient {plugin.t_amb_c:.1f} C, soc0 {plugin.soc0:.0f}%"
+          f"  [altitude left at 0 on purpose -- the t_amb knob is the truth]",
+          flush=True)
+    return plugin
 
 
 def wind_drag_coefficient():
@@ -173,6 +244,20 @@ class Episode:
         self.global_linvel_torso_slice = slice(
             *meta["sensor_addresses"]["torso_global_linvel"])
         self.slope_degrees = meta["slope_degrees"]
+        # THE PHYSICS-STEP SEAM (Chloe: your BMS plugs in here).
+        # Each hook is `callable(model, data) -> dict | None`, called after
+        # EVERY mj_step -- i.e. at model.opt.timestep, the rate a battery or
+        # thermal model integrates at, not the 50 Hz control rate. The last
+        # non-None dict any hook returns during a control tick becomes
+        # `latest_bms`, which is broadcast as state["bms"] and recorded as one
+        # hud.json entry per tick. Append to this list; nothing else to touch.
+        self.physics_step_hooks = []
+        self.latest_bms = None
+        # Chloe's BMS, always on: one call per CONTROL tick, because her plugin
+        # integrates with dt = timestep * substeps. It is NOT a physics-step
+        # hook -- calling it per substep would run the battery model ten times
+        # too often on a dt ten times too long.
+        self.bms = make_battery_plugin(model, self.substeps)
         self.wind_velocity_world = np.zeros(2)
         self.wind_force_world_newtons = np.zeros(3)
         # Two worlds can SHARE an MjModel (climb_30/free_30, climb_0/free_0), and
@@ -233,6 +318,8 @@ class Episode:
         self.fall_reason = None
         self.maximum_rope_force_newtons = 0.0
         self.tick = 0
+        if getattr(self, "bms", None) is not None:
+            self.bms.reset()
 
     def set_foot_friction(self, friction: float) -> None:
         """Live friction knob. Training pins this at climb_config.foot_friction."""
@@ -307,8 +394,11 @@ class Episode:
         self.data.ctrl[:] = self.default_pose + self.action_scale * action
         self.apply_wind(wind_velocity_world)
 
-        ratchet_module.step_with_ratchet(
-            mujoco, self.model, self.data, self.ratchet, self.substeps)
+        readings = ratchet_module.step_with_ratchet(
+            mujoco, self.model, self.data, self.ratchet, self.substeps,
+            self.physics_step_hooks)
+        if readings:
+            self.latest_bms = readings[-1]
 
         self.gait_phase.advance()
         self.last_action = action
@@ -353,6 +443,7 @@ class Episode:
             "rope_force_newtons": rope_force,
             "torso_upvector_z": reasons["torso_upvector_z"],
             "fell": 1.0 if self.fell_at_seconds is not None else 0.0,
+            **(self.bms.on_tick(self.data, time_seconds) if self.bms else {}),
         }
 
 
@@ -410,8 +501,27 @@ class HeadingController:
     def desired_heading_degrees(self) -> float:
         return float(math.degrees(wrap_to_pi(self.desired_heading_radians)))
 
-    def command(self, root_quaternion_wxyz, walking: bool) -> np.ndarray:
+    def command(self, root_quaternion_wxyz, walking: bool,
+                manual_yaw_rate=None) -> np.ndarray:
+        """`manual_yaw_rate` (rad/s) SUSPENDS the camera-follow while held.
+
+        A and D are the user steering by hand, and two controllers fighting for
+        the same channel is the worst of both: the camera-follow would drag the
+        yaw straight back the moment the key came up. So while A or D is down
+        the follow's output is ignored, and its target is RE-SEATED to the
+        robot's current yaw every tick -- whatever the yaw is at release becomes
+        the new target, and the deadband reopens on a zero error. The camera
+        only steers when the user isn't.
+        """
         current = root_yaw_radians(root_quaternion_wxyz)
+        if manual_yaw_rate is not None:
+            self.desired_heading_radians = current
+            self.yaw_error_radians = 0.0
+            forward = self.command_speed if walking else 0.0
+            return np.array([forward, 0.0, float(np.clip(
+                manual_yaw_rate,
+                -MAXIMUM_YAW_RATE_RADIANS_PER_SECOND,
+                MAXIMUM_YAW_RATE_RADIANS_PER_SECOND))])
         self.yaw_error_radians = wrap_to_pi(self.desired_heading_radians - current)
         if abs(self.yaw_error_radians) < HEADING_DEADBAND_RADIANS:
             yaw_rate = 0.0
@@ -432,6 +542,7 @@ def encode_jpeg(pixels: np.ndarray) -> bytes:
 
 def make_header(episode, meta, arguments) -> dict:
     fingerprint_summary = {
+        "kind": meta.get("kind", "legacy_climb_env"),
         "nq": int(episode.model.nq), "nv": int(episode.model.nv),
         "nu": int(episode.model.nu),
         "timestep_seconds": float(episode.model.opt.timestep),
@@ -440,12 +551,20 @@ def make_header(episode, meta, arguments) -> dict:
         "slide_qpos_address": meta["slide_qpos_address"],
         "foot_friction_at_load": meta["foot_friction"],
     }
+    if meta.get("kind") == "climb_scene":
+        fingerprint_summary.update({
+            "patch": meta["patch"], "robot": meta["robot"],
+            "rope_length_meters": meta["rope_length_meters"],
+            "rope_waypoints": meta["rope_waypoints"],
+            "slope_provenance": meta["slope_provenance"],
+            "adapt_report": meta["adapt_report"],
+        })
     return {
         "backend": "mujoco-c (plain), model from rl.environment.climb_env.G1ClimbAscender",
         "world": episode.world_name,
         "world_label": episode.definition["label"],
         "world_description": episode.definition["description"],
-        "config_overrides": dict(episode.definition["config_overrides"]),
+        "config_overrides": dict(episode.definition.get("config_overrides", {})),
         "rope_enabled": episode.rope_enabled,
         "policy": "mels_g1_joystick.npz",
         "seed": arguments.seed,
@@ -455,11 +574,14 @@ def make_header(episode, meta, arguments) -> dict:
         "joint_names": meta["joint_names"],
         "line_point_world": np.asarray(meta["line_point_world"]).tolist(),
         "slope_axis_world": np.asarray(meta["slope_axis_world"]).tolist(),
+        "patch": meta.get("patch"),
+        "robot": meta.get("robot", "bare"),
         "spawn_position_world": episode.spawn_position_world.tolist(),
         "command_speed_meters_per_second": arguments.command_speed,
         "observation_noise_level": 0.0,
         "training_observation_noise_level": meta["noise_level"],
-        "wind_in_training": False,
+        "wind_in_training": meta.get("wind_in_training", False),
+        "terrain_in_training": meta.get("terrain_in_training", False),
         "model_fingerprint": fingerprint_summary,
         "wind": [], "commands": [],
         "source": "live" if arguments.live else "timed",
@@ -477,6 +599,7 @@ def episode_outcome(episode, realtime_factor: float, frames_rendered: int) -> di
             episode.pelvis_position_world - episode.spawn_position_world)),
         "rope_travel_meters": episode.rope_travel_meters,
         "climb_meters": episode.rope_travel_meters,
+        "arclength_meters": getattr(episode, "arclength_meters", None),
         "height_gained_meters": episode.height_gained_meters,
         "maximum_rope_force_newtons": episode.maximum_rope_force_newtons,
         "hand_line_error_meters": episode.hand_line_error_meters(),
@@ -494,6 +617,7 @@ def run(arguments) -> str:
     print(policy.describe(), flush=True)
     wind_drag = wind_drag_coefficient()
     library = worlds_module.WorldLibrary()
+    climb_library = climb_worlds_module.ClimbSceneLibrary()
 
     server = None
     if arguments.live:
@@ -523,6 +647,53 @@ def run(arguments) -> str:
     latest_state = [None]
 
     def open_world(name):
+        """Either kind of world, behind one interface.
+
+        `climb_scene` worlds are PR #8's merged model -- real terrain, a rope
+        draped over it, the jacketed robot, his physics step and his walking
+        policy. `legacy_climb_env` worlds are the older flat tilted plane and
+        slide joint, kept because the trainer still uses them. Both return an
+        episode with the same interface, so everything below this function is
+        shared.
+        """
+        name = worlds_module.resolve_world_name(name)
+        kind = worlds_module.WORLD_DEFINITIONS[name]["kind"]
+        if kind == "climb_scene":
+            scene, meta, definition = climb_library.load(
+                name, on_build_start=lambda: announce_build(name))
+            # Dress the scene BEFORE the episode binds to it: `add_skybox`
+            # recompiles the spec, so it must happen while nothing holds a
+            # reference to the old model or data. It verifies the swap and
+            # refuses if anything structural moved.
+            if not arguments.plain_graphics:
+                graphics_module.add_skybox(scene)
+                look = graphics_module.apply_alpine_look(
+                    scene.model, terrain_size_meters=scene.terrain.size_xy)
+                print(f"[graphics] {name}: fog"
+                      f" {look['fog_start_meters']:.0f}-{look['fog_end_meters']:.0f} m,"
+                      f" sun {look['sun']['elevation_degrees']:.0f} deg elevation,"
+                      f" shadows {look['shadow_texture']}, snow on", flush=True)
+            episode = climb_worlds_module.ClimbSceneEpisode(
+                scene, meta, definition, name, seed=arguments.seed)
+            model = scene.model
+            print(f"[runtime] world={name} ({definition['label']})"
+                  f"  patch={definition['patch']} robot={definition['robot']}"
+                  f"  slope={episode.slope_degrees:.1f} deg"
+                  f" ({definition['slope_provenance']})"
+                  f"  rope={'ON' if episode.rope_enabled else 'OFF'}"
+                  f"  control {episode.control_hz:.0f} Hz  physics"
+                  f" {1.0 / meta['physics_dt_seconds']:.0f} Hz"
+                  f"  substeps/tick={episode.substeps}", flush=True)
+            print(f"[runtime] spawn pelvis"
+                  f" {episode.spawn_position_world.round(4).tolist()}"
+                  f"  hand-rope distance {episode.hand_line_error_meters():.2e} m"
+                  f"  arc length {episode.arclength_meters:.3f} m of"
+                  f" {meta['rope_length_meters']:.3f}"
+                  f"  lean {meta['lean_degrees']:.1f} deg"
+                  f"  ankle {meta['ankle_degrees']:.1f} deg"
+                  f"  upright {episode.torso_upright:+.3f}", flush=True)
+            return episode, model, meta
+
         model, meta, definition = library.load(
             name, on_build_start=lambda: announce_build(name))
         episode = Episode(model, meta, policy, wind_drag, definition, name,
@@ -549,12 +720,28 @@ def run(arguments) -> str:
     if server is not None:
         server.knobs["friction"] = meta["foot_friction"]
 
+    # HUMAN GATE (human-safety/human_gate.py). Deterministic, outside the policy:
+    # the forward (= up-rope) command is clamped to <= 0 while a human is in the
+    # d435i frustum. Humans are virtual (no physics; THEIR model is untouched).
+    human_world = HumanWorld.from_model(model)   # virtual unless the model has human_* bodies
+    human_gate = HumanGate(
+        VirtualFrustumDetector(model, human_world, arguments.human_range),
+        clear_after_seconds=arguments.human_clear_seconds)
+    for distance in arguments.human:
+        human_world.spawn_ahead_of(
+            episode.spawn_position_world, root_yaw_radians(episode.data.qpos[3:7]),
+            distance)
+        print(f"[safety] human spawned {distance:.1f} m ahead", flush=True)
+
     renderer = None
+    render_size = (RENDER_WIDTH, RENDER_HEIGHT)   # follows the browser viewport in live mode
     camera = ChaseCamera()
     heading = HeadingController(arguments.command_speed)
     rendered_model = None
     if not arguments.no_render:
-        renderer = mujoco.Renderer(model, RENDER_HEIGHT, RENDER_WIDTH)
+        renderer = make_renderer(model, *render_size,
+                                 alpine=not arguments.plain_graphics,
+                                 shadows=not arguments.no_shadows)
         rendered_model = model
 
     episodes_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "episodes")
@@ -578,6 +765,10 @@ def run(arguments) -> str:
 
     duration_seconds = arguments.duration if arguments.duration is not None else 1e9
     wind_velocity_world = np.zeros(2)
+    # The dial gives a TARGET; NaturalWind turns it into gusts and drift when
+    # the page asks for it. Seeded from --seed, advanced once per control tick,
+    # so a replay at the same seed sees the same weather.
+    natural_wind = NaturalWind(seed=arguments.seed)
     last_logged_command = last_logged_wind = None
     wall_start = time.time()
     realtime_factor = 0.0
@@ -601,7 +792,13 @@ def run(arguments) -> str:
             azimuth_degrees = browser_camera.get("azimuth_degrees")
             elevation_degrees = browser_camera.get("elevation_degrees")
             heading.set_browser_azimuth(azimuth_degrees)
-            command = heading.command(episode.data.qpos[3:7], walking="w" in keys)
+            # A = turn left (positive yaw), D = turn right, both down cancel.
+            turn = ((MANUAL_YAW_RATE_RADIANS_PER_SECOND if "a" in keys else 0.0)
+                    - (MANUAL_YAW_RATE_RADIANS_PER_SECOND if "d" in keys else 0.0))
+            steering = ("a" in keys) != ("d" in keys)
+            command = heading.command(
+                episode.data.qpos[3:7], walking="w" in keys,
+                manual_yaw_rate=turn if steering else None)
             if server.paused:
                 # Freeze: no physics, no policy, no recorded tick. Keep the last
                 # picture and a heartbeat flowing so the page stays live and
@@ -615,14 +812,25 @@ def run(arguments) -> str:
                 wall_start = time.time() - episode.tick / episode.control_hz
                 time.sleep(1.0 / PAUSED_BROADCAST_HZ)
                 continue
-            wind_velocity_world[:] = [server.knobs.get("wind_x", 0.0),
-                                      server.knobs.get("wind_y", 0.0)]
+            natural_wind.enabled = bool(server.knobs.get("wind_natural", 0.0))
+            wind_velocity_world[:] = natural_wind.step(
+                [server.knobs.get("wind_x", 0.0),
+                 server.knobs.get("wind_y", 0.0)],
+                1.0 / episode.control_hz, episode.tick / episode.control_hz)
+            # The battery model's wind chill is live: the dial is m/s, hers is
+            # km/h.
+            if episode.bms is not None:
+                # t_amb / soc0 come from the page; her plugin decides what a
+                # change means (a cold-soak jump for ambient, a full reset for
+                # soc0), so we just hand the knobs over every tick.
+                episode.bms.apply_knobs(server.knobs)
             friction = float(server.knobs.get("friction", applied_friction))
             if abs(friction - applied_friction) > 1e-9:
                 episode.set_foot_friction(friction)
                 applied_friction = friction
             if server.world_requested is not None:
                 requested, server.world_requested = server.world_requested, None
+                requested = worlds_module.resolve_world_name(requested)
                 if requested not in worlds_module.WORLD_DEFINITIONS:
                     print(f"[runtime] ignoring unknown world {requested!r}; have"
                           f" {worlds_module.world_names()}", flush=True)
@@ -640,7 +848,9 @@ def run(arguments) -> str:
                         # share a model share the renderer; a different model
                         # needs a new one.
                         renderer.close()
-                        renderer = mujoco.Renderer(model, RENDER_HEIGHT, RENDER_WIDTH)
+                        renderer = make_renderer(model, *render_size,
+                                 alpine=not arguments.plain_graphics,
+                                 shadows=not arguments.no_shadows)
                         rendered_model = model
                     # The friction knob still reads the OLD world; re-sync it or
                     # the next tick paints the previous mu over the new map.
@@ -662,6 +872,8 @@ def run(arguments) -> str:
             command = np.array([
                 arguments.command_speed if arguments.hold_w else 0.0, 0.0, 0.0])
 
+        human_gate.update(episode.data, episode.tick / episode.control_hz)
+        command = human_gate.mask(command)
         row = episode.step(command, wind_velocity_world)
 
         if row["command"].tolist() != last_logged_command:
@@ -672,16 +884,29 @@ def run(arguments) -> str:
                 "ang_vel_yaw": float(row["command"][2])})
             last_logged_command = row["command"].tolist()
         wind_list = row["wind_velocity_world_meters_per_second"].tolist()
+        row.update(natural_wind.report())
         if wind_list != last_logged_wind:
             header["wind"].append({"time_seconds": row["time_seconds"],
                                    "wind_velocity_world_meters_per_second": wind_list})
             last_logged_wind = wind_list
         recorder.append(**{k: v for k, v in row.items() if k != "observation"})
+        recorder.append_bms(episode.latest_bms)
 
         jpeg = None
+        if renderer is not None and server is not None:
+            wanted = clamp_render_size(server.latest_input.get("viewport"))
+            if wanted != render_size:
+                renderer.close()
+                renderer = make_renderer(episode.model, *wanted,
+                                         alpine=not arguments.plain_graphics,
+                                         shadows=not arguments.no_shadows)
+                rendered_model = episode.model
+                render_size = wanted
+                print(f"[runtime] render size -> {wanted[0]}x{wanted[1]}", flush=True)
         if renderer is not None:
             renderer.update_scene(episode.data, camera.aim(
                 row["root_position_world"], azimuth_degrees, elevation_degrees))
+            human_world.draw(renderer.scene)
             jpeg = encode_jpeg(renderer.render())
             latest_jpeg[0] = jpeg
             if not arguments.live or frames_rendered < LIVE_MAXIMUM_RECORDED_FRAMES:
@@ -707,17 +932,26 @@ def run(arguments) -> str:
                 "command": row["command"].tolist(),
                 "wind_velocity_world_meters_per_second": wind_list,
                 "wind_force_world_newtons": row["wind_force_world_newtons"].tolist(),
-                "wind_in_training": False,
+                "wind_in_training": meta.get("wind_in_training", False),
+                # INSTANTANEOUS, not the dial: with natural wind on these surge
+                # and swing with every gust, and the ribbons/sound follow them.
+                **natural_wind.report(),
+                **human_gate.state(),
                 "fell": bool(row["fell"]),
                 "fall_reason": episode.fall_reason,
                 "root_position_world": row["root_position_world"].tolist(),
                 "rope_travel_meters": row["rope_travel_meters"],
                 "climb_meters": row["climb_meters"],
+                "arclength_meters": row.get("arclength_meters"),
+                "rope_length_meters": meta.get("rope_length_meters"),
+                "world_kind": meta.get("kind", "legacy_climb_env"),
+                "terrain_in_training": meta.get("terrain_in_training", False),
                 "hand_height_on_line_meters": row["hand_height_on_line_meters"],
                 "hand_line_error_meters": row["hand_line_error_meters"],
                 "height_gained_meters": row["height_gained_meters"],
                 "rope_force_newtons": row["rope_force_newtons"],
                 "slope_degrees": episode.slope_degrees,
+                "robot": meta.get("robot", "bare"),
                 "realtime_factor": realtime_factor,
                 "heading_degrees": heading.desired_heading_degrees,
                 "world": episode.world_name,
@@ -725,6 +959,8 @@ def run(arguments) -> str:
                 "rope_enabled": episode.rope_enabled,
                 "paused": False,
                 "loading": False,
+                # bms + actuator_names + r_int_curve, straight from her plugin.
+                **(episode.bms.state() if episode.bms else {}),
             }
             server.broadcast(latest_state[0])
             sleep_for = wall_start + episode.tick / episode.control_hz - time.time()
@@ -766,17 +1002,33 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hold-w", action="store_true",
                         help="timed runs: hold the climb command the whole way")
     parser.add_argument("--world", default=worlds_module.DEFAULT_WORLD_NAME,
-                        choices=worlds_module.world_names(),
+                        choices=(worlds_module.world_names()
+                                 + list(worlds_module.WORLD_ALIASES)),
                         help="which world to start in (see app/harness/worlds.py)")
     parser.add_argument("--command-speed", type=float,
                         default=CLIMB_COMMAND_METERS_PER_SECOND,
                         help="lin_vel_x commanded while W is held, m/s"
                              " (their training range is [-1, 1])")
+    parser.add_argument("--plain-graphics", action="store_true",
+                        help="skip the alpine look (fog/sky/snow/sun). Visual"
+                             " only either way; physics is identical.")
+    parser.add_argument("--no-shadows", action="store_true",
+                        help="render without shadows (saves ~5.7 ms/frame at"
+                             " 1920x1080)")
+    parser.add_argument("--bms", action="store_true",
+                        help="accepted and ignored: the BMS is always on now")
     parser.add_argument("--policy", default=None, help="path to a policy npz")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--randomise-reset-velocity", action="store_true",
                         help="reproduce their reset base-velocity draw U(-0.5, 0.5)")
     parser.add_argument("--no-render", action="store_true")
+    parser.add_argument("--human", type=float, action="append", default=[],
+                        help="spawn a virtual human this many metres ahead of"
+                             " the spawn point (repeatable)")
+    parser.add_argument("--human-range", type=float, default=2.0,
+                        help="gate range: a human closer than this blocks UP")
+    parser.add_argument("--human-clear-seconds", type=float, default=1.0,
+                        help="hysteresis: seconds without a detection before UP re-arms")
     parser.add_argument("--output-name", default=None)
     parser.add_argument("--port", type=int, default=8765)
     return parser

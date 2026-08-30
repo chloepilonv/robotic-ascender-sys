@@ -1,0 +1,190 @@
+{
+  "world": "Sandbox \u00b7 120 x 120 m \u00b7 12\u00b0 \u00b7 no rope",
+  "patch": "synthetic",
+  "robot": "himalaya",
+  "robot_scene_file": "/Users/dengjingxi/Documents/code/himalaya_hack/g1-himalayas/assets/robots/mujoco/g1_unitree_ascender.xml",
+  "source": "rl.environment.climb_scene.build_scene",
+  "model": {
+    "nq": 39,
+    "nv": 38,
+    "nu": 29,
+    "nbody": 32,
+    "njnt": 33,
+    "neq": 1,
+    "nsensor": 7,
+    "ngeom": 101,
+    "nhfield": 1,
+    "timestep_seconds": 0.002,
+    "integrator": "mjtIntegrator.mjINT_IMPLICITFAST",
+    "total_mass_kilograms": 34.441142
+  },
+  "terrain": {
+    "patch": "synthetic",
+    "slope_degrees": 12.0,
+    "slope_provenance": "synthetic",
+    "hfield_size": [
+      60.0,
+      60.0,
+      1.011094265943795,
+      1.0
+    ],
+    "hfield_nrow": 600,
+    "hfield_ncol": 600,
+    "terrain_geom_friction": [
+      0.9,
+      0.02,
+      0.001
+    ]
+  },
+  "rope": {
+    "length_meters": 120.7297207477036,
+    "waypoints": 9,
+    "first_point": [
+      -59.004389787427286,
+      -0.3251469194407926,
+      -12.006545251167378
+    ],
+    "last_point": [
+      58.995610212572714,
+      -0.042173178103936115,
+      13.403162575773633
+    ],
+    "rise_meters": 25.40970782694101,
+    "run_meters": 118.00033929670832,
+    "mean_slope_degrees": 12.152273562313619,
+    "polyline": [
+      [
+        -59.004389787427286,
+        -0.3251469194407926,
+        -12.006545251167378
+      ],
+      [
+        -44.254389787427286,
+        -0.23010549150615311,
+        -8.619881343229922
+      ],
+      [
+        -29.504389787427286,
+        -0.14220638931506188,
+        -5.6420325328152225
+      ],
+      [
+        -14.754389787427286,
+        -0.06805519565449014,
+        -1.9643655430074194
+      ],
+      [
+        -0.004389787427285796,
+        -0.013224343419290241,
+        0.6267942639424315
+      ],
+      [
+        14.745610212572714,
+        0.018165650517311838,
+        3.7419595383237403
+      ],
+      [
+        29.495610212572714,
+        0.023755840518078997,
+        7.004434746937462
+      ],
+      [
+        44.245610212572714,
+        0.003126126014012187,
+        10.022374225276748
+      ],
+      [
+        58.995610212572714,
+        -0.042173178103936115,
+        13.403162575773633
+      ]
+    ]
+  },
+  "ascender": {
+    "carrier_mass_kilograms": 1.0,
+    "arclength_at_spawn": 15.69972326738748,
+    "ratchet": true,
+    "grip_equality": "ascender_grip",
+    "grip_solref": [
+      0.004,
+      1.0
+    ],
+    "grip_solimp": [
+      0.95,
+      0.99,
+      0.001,
+      0.5,
+      2.0
+    ]
+  },
+  "spawn": {
+    "world": [
+      -43.84353059346154,
+      0.0,
+      -8.416406720618133
+    ],
+    "lean_degrees": 0.0,
+    "ankle_degrees": -32.798367963248886,
+    "palm_world": [
+      -43.6999635991387,
+      -0.22680152105314996,
+      -8.507949318466672
+    ],
+    "hand_rope_distance_meters": 1.7772239894833365e-15
+  },
+  "control": {
+    "action_scale": 0.5,
+    "control_dt_seconds": 0.02,
+    "substeps_per_control_step": 10,
+    "actuator_kp_min": 2.0,
+    "actuator_kp_max": 75.0,
+    "foot_geom_names": [
+      "left_foot",
+      "right_foot"
+    ],
+    "foot_friction": 0.8
+  },
+  "adapt_report": {
+    "added": [
+      "site right_palm",
+      "sensor local_linvel_pelvis",
+      "sensor gyro_pelvis",
+      "keyframe knees_bent"
+    ],
+    "retuned": [
+      "foot contact: 4 spheres -> playground box",
+      "actuator kp/kv, dof damping/armature/frictionloss"
+    ]
+  },
+  "joint_names": [
+    "left_hip_pitch_joint",
+    "left_hip_roll_joint",
+    "left_hip_yaw_joint",
+    "left_knee_joint",
+    "left_ankle_pitch_joint",
+    "left_ankle_roll_joint",
+    "right_hip_pitch_joint",
+    "right_hip_roll_joint",
+    "right_hip_yaw_joint",
+    "right_knee_joint",
+    "right_ankle_pitch_joint",
+    "right_ankle_roll_joint",
+    "waist_yaw_joint",
+    "waist_roll_joint",
+    "waist_pitch_joint",
+    "left_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "left_elbow_joint",
+    "left_wrist_roll_joint",
+    "left_wrist_pitch_joint",
+    "left_wrist_yaw_joint",
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_joint",
+    "right_wrist_roll_joint",
+    "right_wrist_pitch_joint",
+    "right_wrist_yaw_joint"
+  ]
+}

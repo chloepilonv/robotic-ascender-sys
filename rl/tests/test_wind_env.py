@@ -4,6 +4,13 @@ Checks: registry resolution, force magnitude/direction at 15 m/s headwind
 on a stationary torso, zero force when disabled, downwind acceleration.
 """
 
+import pytest
+
+# The playground envs need jax + mujoco_playground, which live on the training
+# box. Skip rather than error at collection so the CPU-only suite still runs.
+pytest.importorskip("jax")
+pytest.importorskip("mujoco_playground")
+
 import os
 import sys
 

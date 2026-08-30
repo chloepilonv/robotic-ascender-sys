@@ -18,6 +18,13 @@ Checks:
    verified explicitly via hand_height_on_line >= slide).
 """
 
+import pytest
+
+# The playground envs need jax + mujoco_playground, which live on the training
+# box. Skip rather than error at collection so the CPU-only suite still runs.
+pytest.importorskip("jax")
+pytest.importorskip("mujoco_playground")
+
 import os
 import sys
 
