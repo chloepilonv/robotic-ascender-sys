@@ -107,6 +107,27 @@
   input[type=range]::-moz-range-thumb { width: 13px; height: 13px; border-radius: 50%;
     background: var(--ink); border: none; }
 
+  .windtools { display: flex; align-items: center; gap: 7px; }
+  .iconbtn { width: 22px; height: 20px; padding: 0; display: inline-flex; align-items: center;
+             justify-content: center; border: 1px solid var(--border); border-radius: 5px;
+             background: var(--bg); color: var(--ink-2); cursor: pointer; flex: none; }
+  .iconbtn:hover { background: var(--bg); color: var(--ink); border-color: #3f3f46; }
+  .iconbtn .cross { display: none; }
+  .iconbtn.muted { color: var(--ink-3); }
+  .iconbtn.muted .wave { display: none; }
+  .iconbtn.muted .cross { display: inline; }
+  .switchrow { width: auto; display: inline-flex; align-items: center; gap: 5px; padding: 0;
+               border: none; background: none; color: var(--ink-3); font-size: 10px;
+               font-weight: 500; text-transform: uppercase; letter-spacing: .08em; cursor: pointer; }
+  .switchrow:hover { background: none; color: var(--ink-2); }
+  .switch { width: 24px; height: 14px; border-radius: 999px; border: 1px solid var(--border);
+            background: var(--elevated); position: relative; flex: none; transition: background .12s; }
+  .switch::after { content: ""; position: absolute; top: 1px; left: 1px; width: 10px; height: 10px;
+                   border-radius: 50%; background: var(--ink-3); transition: transform .12s, background .12s; }
+  .switchrow[aria-checked="true"] { color: var(--ink); }
+  .switchrow[aria-checked="true"] .switch { background: var(--good); border-color: var(--good); }
+  .switchrow[aria-checked="true"] .switch::after { transform: translateX(10px); background: #fff; }
+
   #windDial { width: 78px; height: 78px; display: block; margin: 0 auto 2px;
               cursor: grab; touch-action: none; }
 
@@ -201,7 +222,20 @@
     </section>
 
     <section class="card">
-      <div class="head"><h2>Wind</h2><output id="windOut">0.0 m/s</output></div>
+      <div class="head"><h2>Wind</h2>
+        <span class="windtools">
+          <button class="iconbtn" id="soundToggle" aria-pressed="true" title="wind sound">
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor"
+                 stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4.2 6.2H2.2v3.6h2l2.9 2.4V3.8L4.2 6.2z"/>
+              <path class="wave" d="M9.8 5.8a3 3 0 0 1 0 4.4"/>
+              <path class="wave" d="M11.8 4a6 6 0 0 1 0 8"/>
+              <path class="cross" d="M10 6.2l3.6 3.6M13.6 6.2L10 9.8"/>
+            </svg>
+          </button>
+          <button class="switchrow" id="naturalSwitch" role="switch" aria-checked="false">natural<i class="switch"></i></button>
+        </span>
+        <output id="windOut">0.0 m/s</output></div>
       <svg id="windDial" viewBox="-70 -70 140 140">
         <circle r="55" fill="none" stroke="var(--border)" stroke-width="3"/>
         <text x="0" y="-60" text-anchor="middle" font-size="15" fill="var(--ink-3)">N</text>
@@ -291,6 +325,7 @@ const state = {
   mode: 'live', socket: null, keys: new Set(), hud: null, slopeDegrees: null,
   camera: { azimuth_degrees: DEFAULT_AZIMUTH_DEGREES, elevation_degrees: DEFAULT_ELEVATION_DEGREES },
   worlds: {}, world: null, pendingWorld: null, paused: true, pauseIntent: true, loading: false,
+  windNow: null,
   actuatorNames: null,
 };
 
@@ -312,6 +347,11 @@ function paintHud(frame) {
     ? '0.0 m/s · calm'
     : magnitude.toFixed(1) + ' m/s · ' + compassPointName(windVelocity[0], windVelocity[1]);
   noteWindVelocity(windVelocity);
+  // what the air is ACTUALLY doing this tick, which natural wind makes differ from the dial
+  state.windNow = { speed: instantaneousWindSpeed(frame, magnitude),
+                    east: windVelocity[0], north: windVelocity[1] };
+  paintWindReadout();
+  noteWindSpeed(state.windNow.speed);
   paintBatteryCard(frame);
   // one status line replaces the old motion badge: climbing (green) / holding / hanging (red)
   const climbing = Number(command[0]) > 0;
@@ -334,12 +374,33 @@ function windVelocityFromFrame(frame) {
   const velocity = frame.wind_velocity_world_meters_per_second;
   if (Array.isArray(velocity) && Number.isFinite(Number(velocity[0])))
     return [Number(velocity[0]) || 0, Number(velocity[1]) || 0];
+  // speed + heading is the other honest pair: heading is degrees clockwise from north
+  // (+Y), matching compassPointName's own convention, so east = sin, north = cos
+  const speed = Number(frame.wind_speed_mps), heading = Number(frame.wind_heading_degrees);
+  if (Number.isFinite(speed) && Number.isFinite(heading)) {
+    const radians = heading * Math.PI / 180;
+    return [speed * Math.sin(radians), speed * Math.cos(radians)];
+  }
   const force = frame.wind_force_world_newtons;
   if (Array.isArray(force)) {
     const size = Math.hypot(Number(force[0]) || 0, Number(force[1]) || 0);
     if (size > 1e-6) return [Number(force[0]) / size * wind.strength, Number(force[1]) / size * wind.strength];
   }
   return [0, 0];
+}
+// The instantaneous speed the SOUND follows. `wind_speed_mps` is the honest source;
+// failing that the quadratic drag law inverts the force, F = k v^2 -> v = sqrt(F/k);
+// failing that, the magnitude of whatever velocity we did manage to read.
+const WIND_DRAG_COEFFICIENT = 0.3675;
+function instantaneousWindSpeed(frame, velocityMagnitude) {
+  const speed = Number(frame.wind_speed_mps);
+  if (Number.isFinite(speed)) return Math.max(0, speed);
+  const force = frame.wind_force_world_newtons;
+  if (Array.isArray(force)) {
+    const size = Math.hypot(Number(force[0]) || 0, Number(force[1]) || 0);
+    if (size > 1e-6) return Math.sqrt(size / WIND_DRAG_COEFFICIENT);
+  }
+  return velocityMagnitude;
 }
 // The dial is drawn +Y up / +X right, so read +Y as north and +X as east; the name is
 // the point the wind is blowing TOWARD, which is what the arrow already shows.
@@ -660,6 +721,109 @@ function animateWeather(nowMilliseconds) {
   drawSnow(width, height);
 }
 
+// ---------- WIND SOUND ----------
+// A synth, not a sample: pink noise through a band-pass and a low-pass that both open up
+// with the wind, plus a slow LFO on the band-pass so the howl breathes instead of sitting
+// there. Browsers refuse to start audio without a user gesture, so the context is built on
+// the first click of the view -- the same click that takes the pointer.
+const WIND_SOUND_SILENT_METERS_PER_SECOND = 1.0;    // below this, nothing
+const WIND_SOUND_FULL_METERS_PER_SECOND = 20.0;     // at this, howling
+const WIND_GAIN_TIME_CONSTANT_SECONDS = 0.15;       // gusts swell; they never click
+const WIND_SOUND_UPDATE_INTERVAL_MILLISECONDS = 60; // the stream is 50 Hz; the ear is not
+const windSound = { context: null, master: null, bandPass: null, lowPass: null,
+                    muted: false, speed: 0 };
+
+function readWindSoundMuted() {
+  try { return localStorage.getItem('windSoundMuted') === '1'; } catch { return false; }
+}
+function writeWindSoundMuted(muted) {
+  try { localStorage.setItem('windSoundMuted', muted ? '1' : '0'); } catch { /* private mode */ }
+}
+// Voss-McCartney-ish pink filter over white noise: three one-pole rows summed. Pink, not
+// white, because white noise reads as hiss and pink reads as air.
+function makePinkNoiseBuffer(context) {
+  const buffer = context.createBuffer(1, Math.floor(context.sampleRate * 3), context.sampleRate);
+  const samples = buffer.getChannelData(0);
+  let row0 = 0, row1 = 0, row2 = 0;
+  for (let index = 0; index < samples.length; index++) {
+    const white = Math.random() * 2 - 1;
+    row0 = 0.99765 * row0 + white * 0.0990460;
+    row1 = 0.96300 * row1 + white * 0.2965164;
+    row2 = 0.57000 * row2 + white * 1.0526913;
+    samples[index] = (row0 + row1 + row2 + white * 0.1848) * 0.22;
+  }
+  return buffer;
+}
+function startWindSound() {
+  if (windSound.context) {
+    if (windSound.context.state === 'suspended') windSound.context.resume();
+    return;
+  }
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return;
+  const context = new AudioContextClass();
+  const source = context.createBufferSource();
+  source.buffer = makePinkNoiseBuffer(context);
+  source.loop = true;
+  const bandPass = context.createBiquadFilter();
+  bandPass.type = 'bandpass'; bandPass.frequency.value = 300; bandPass.Q.value = 0.7;
+  const lowPass = context.createBiquadFilter();
+  lowPass.type = 'lowpass'; lowPass.frequency.value = 700;
+  const master = context.createGain();
+  master.gain.value = 0;
+  const lfo = context.createOscillator();
+  lfo.frequency.value = 0.13;                 // one slow breath every ~8 s
+  const lfoDepth = context.createGain();
+  lfoDepth.gain.value = 90;                   // Hz of band-pass swing
+  lfo.connect(lfoDepth);
+  lfoDepth.connect(bandPass.frequency);
+  source.connect(bandPass); bandPass.connect(lowPass);
+  lowPass.connect(master); master.connect(context.destination);
+  source.start(); lfo.start();
+  Object.assign(windSound, { context, master, bandPass, lowPass });
+  updateWindSound();
+}
+// Everything is a setTargetAtTime, whose time constant IS the smoothing: the gain uses
+// 150 ms so a gust swells, the filters a little slower so the timbre never zips.
+function updateWindSound() {
+  const context = windSound.context;
+  if (!context) return;
+  const share = Math.max(0, Math.min(1.25,
+    (windSound.speed - WIND_SOUND_SILENT_METERS_PER_SECOND) /
+    (WIND_SOUND_FULL_METERS_PER_SECOND - WIND_SOUND_SILENT_METERS_PER_SECOND)));
+  // the sound follows the sim: a frozen mountain is a silent one
+  const silent = windSound.muted || weatherIsFrozen() || share <= 0;
+  const now = context.currentTime;
+  const gain = silent ? 0 : Math.min(0.85, 0.9 * Math.pow(share, 1.5));
+  windSound.master.gain.setTargetAtTime(gain, now, WIND_GAIN_TIME_CONSTANT_SECONDS);
+  windSound.bandPass.frequency.setTargetAtTime(300 + 1100 * share, now, 0.25);
+  windSound.bandPass.Q.setTargetAtTime(0.7 + 2.3 * share, now, 0.25);
+  windSound.lowPass.frequency.setTargetAtTime(700 + 5200 * share, now, 0.25);
+}
+let lastWindSoundMilliseconds = 0;
+function noteWindSpeed(speedMetersPerSecond) {
+  windSound.speed = Number(speedMetersPerSecond) || 0;
+  const now = performance.now();
+  if (now - lastWindSoundMilliseconds < WIND_SOUND_UPDATE_INTERVAL_MILLISECONDS) return;
+  lastWindSoundMilliseconds = now;
+  updateWindSound();
+}
+function setWindSoundMuted(muted) {
+  windSound.muted = muted;
+  $('soundToggle').classList.toggle('muted', muted);
+  $('soundToggle').setAttribute('aria-pressed', String(!muted));
+  writeWindSoundMuted(muted);
+  updateWindSound();
+}
+$('soundToggle').addEventListener('click', () => {
+  const muted = !windSound.muted;
+  setWindSoundMuted(muted);
+  if (!muted) startWindSound();     // unmuting IS a gesture, so it may also be the first one
+});
+// pausing the replay must hush it as surely as pausing the sim does
+for (const eventName of ['play', 'pause', 'ended']) video.addEventListener(eventName, updateWindSound);
+document.addEventListener('visibilitychange', updateWindSound);
+
 // ---------- LIVE ----------
 function connect() {
   const url = 'ws://' + location.hostname + ':' + (Number(location.port) - 1);
@@ -779,6 +943,7 @@ function paintLockState() {
   $('pausedPill').style.display = state.paused ? 'inline-block' : 'none';
   $('lockTitle').textContent = state.paused ? 'click to resume' : 'click to take control';
   $('lockSubtitle').textContent = state.paused ? 'Esc pauses the climb' : 'Esc to release';
+  updateWindSound();
 }
 // Letting the pointer go freezes the mountain; taking it back starts it again.
 // pauseIntent is what we have TOLD the sim and is driven purely by the pointer lock;
@@ -800,6 +965,7 @@ function noteServerPaused(paused) {
 }
 // the overlay is pointer-events:none, so the click lands on the stage under it
 $('stage').addEventListener('click', () => {
+  startWindSound();          // browsers only allow audio to begin inside a user gesture
   if (state.mode === 'live' && !pointerIsLocked() && canvas.requestPointerLock) canvas.requestPointerLock();
 });
 document.addEventListener('pointerlockchange', () => {
@@ -849,12 +1015,36 @@ function sendWind() {
   $('windDot').setAttribute('cx', 55 * Math.cos(wind.angle)); $('windDot').setAttribute('cy', -55 * Math.sin(wind.angle));
   const reach = 50 * wind.strength / 25;
   $('windDialArrow').setAttribute('x2', reach * Math.cos(wind.angle)); $('windDialArrow').setAttribute('y2', -reach * Math.sin(wind.angle));
-  $('windOut').textContent = wind.strength < 0.05
-    ? '0.0 m/s'
-    : `${wind.strength.toFixed(1)} m/s · ${compassPointName(x, y)}`;
+  paintWindReadout();
   send({ type: 'knob', name: 'wind_x', value: x }); send({ type: 'knob', name: 'wind_y', value: y });
   noteWindVelocity([x, y]);   // the weather answers the dial immediately, not a tick later
 }
+// The dial and the slider always show the TARGET the user asked for. With natural wind
+// on, the readout instead shows what the air is doing right now, and says "gusting" when
+// that runs more than 15% over the target.
+const naturalWind = { on: false };
+const GUSTING_SHARE_OF_TARGET = 1.15;
+function paintWindReadout() {
+  const output = $('windOut');
+  const now = state.windNow;
+  if (naturalWind.on && now) {
+    if (now.speed < 0.05) { output.textContent = '0.0 m/s'; return; }
+    const gusting = now.speed > wind.strength * GUSTING_SHARE_OF_TARGET && now.speed > 1;
+    output.textContent = now.speed.toFixed(1) + ' m/s · '
+      + (gusting ? 'gusting' : compassPointName(now.east, now.north));
+    return;
+  }
+  output.textContent = wind.strength < 0.05 ? '0.0 m/s'
+    : wind.strength.toFixed(1) + ' m/s · '
+      + compassPointName(wind.strength * Math.cos(wind.angle), wind.strength * Math.sin(wind.angle));
+}
+$('naturalSwitch').addEventListener('click', () => {
+  naturalWind.on = !naturalWind.on;
+  $('naturalSwitch').setAttribute('aria-checked', String(naturalWind.on));
+  send({ type: 'knob', name: 'wind_natural', value: naturalWind.on ? 1 : 0 });
+  paintWindReadout();
+});
+
 const dial = $('windDial'); let dragging = false;
 function dialAngle(e) { const r = dial.getBoundingClientRect(); return Math.atan2(-(e.clientY - r.top - r.height / 2), e.clientX - r.left - r.width / 2); }
 dial.addEventListener('pointerdown', e => { dragging = true; dial.setPointerCapture(e.pointerId); wind.angle = dialAngle(e); sendWind(); });
@@ -979,6 +1169,8 @@ video.addEventListener('timeupdate', () => {
     command: at('command', [0, 0, 0]),
     wind_velocity_world_meters_per_second: at('wind_velocity_world_meters_per_second', [0, 0]),
     wind_force_world_newtons: at('wind_force_world_newtons', undefined),
+    wind_speed_mps: at('wind_speed_mps', undefined),
+    wind_heading_degrees: at('wind_heading_degrees', undefined),
     rope_travel_meters: at('rope_travel_meters', 0),
     height_gained_meters: at('height_gained_meters', 0),
     rope_force_newtons: at('rope_force_newtons', 0),
@@ -1020,6 +1212,8 @@ document.querySelectorAll('.tab').forEach(tab => tab.onclick = () => {
   paintLockState();
   paintWorldStatus();
 });
+setWindSoundMuted(readWindSoundMuted());
+paintWindReadout();
 paintSliderFill($('friction'));
 paintSliderFill($('windStrength'));
 paintLockState();
