@@ -10,7 +10,7 @@ policy (training *and* deployment) must go through it. Do not hand-place a rope.
 | Rope channel centre | `CHANNEL_CENTRE_TOOL = (0.015, -0.0012, 0.055)` m | set from renders (rope inside the plate's U, clear of the forearm), 2026-08-30 |
 | Channel axis | tool Z pitched `CHANNEL_PITCH_DEG = +5°` about tool y | frozen by eye from side renders (tool parallel to the rope), 2026-08-30 |
 | Tool mount on the wrist | `pos 0.0386 0 -0.0514`, `quat 0 0.2245 0 0.9745` | `g1_unitree_ascender.xml` (do not move) |
-| Rope | visual cylinder, Ø11 mm, along world **+x** (= uphill), through the channel at reset | `add_rope_rail` |
+| Rope | Ø11 mm cylinder along world **+x** (= uphill), through the channel at reset; **collides with the body** but not with the wrist/tool (excluded — no channel jitter) | `add_rope_rail` |
 | Rope height at reset | `ROPE_HEIGHT = 0.60` m | arm IK solves shoulder/elbow/wrist for it |
 | Mechanism | `rope_carriage`: ONE slide joint `rope_slide` along +x, **welded** to the wrist so the channel axis = rope axis | `add_rope_rail` |
 | Cam (up only) | slide's lower limit = highest point reached (`ratchet()` before every `mj_step`) | never overwrite qpos |

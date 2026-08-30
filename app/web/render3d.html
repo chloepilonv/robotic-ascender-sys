@@ -59,6 +59,21 @@
   #snow { position: absolute; left: 0; top: 0; display: none; pointer-events: none;
           max-width: none; max-height: none; }
 
+  /* THE EYE WINDOW IN FULLSCREEN (user's ruling, 2026-08-30). Fullscreen puts
+     #stage alone on the screen, so the sidebar's eye PiP -- which is NOT a
+     descendant of the fullscreen element -- is not rendered at all, however it
+     is styled. Hence a second small canvas that lives INSIDE the stage and is
+     only ever shown in fullscreen: the same EYE0 bitmap, copied on arrival, so
+     the picture-in-picture costs one drawImage per eye frame and nothing per
+     animation frame. It never appears in normal mode, where the sidebar already
+     shows the same view. */
+  #eyePip { position: absolute; right: 18px; bottom: 18px; width: 256px; height: 192px;
+            display: none; border: 1px solid rgba(228,228,231,.28); border-radius: 8px;
+            background: #000; pointer-events: none;
+            box-shadow: 0 8px 28px rgba(0,0,0,.55);;
+    /* display-only match to the viewport's renderer -- the detector sees raw pixels */
+    filter: brightness(1.42) contrast(0.97); }
+
   #lockOverlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
                  pointer-events: none; background: rgba(9,9,11,.55); }
   #lockOverlay > div { text-align: center; background: var(--card); border: 1px solid var(--border);
@@ -154,7 +169,7 @@
   #windDial { width: 78px; height: 78px; display: block; margin: 0 auto 2px;
               cursor: grab; touch-action: none; }
 
-  #telemetry { order: 2; }
+  #telemetry { order: 4; }   /* last card (user ruling 2026-08-30) */
   .hero { display: flex; align-items: baseline; gap: 6px; margin: -1px 0 8px; }
   .hero b { font-size: 30px; font-weight: 600; letter-spacing: -.02em; line-height: 1;
             font-variant-numeric: tabular-nums; }
@@ -174,22 +189,48 @@
   #motionBadge.waiting { color: var(--warn); }
   #motionBadge.fell { color: var(--bad); }
 
-  #guideCard { order: 3; }
+  #guideCard { order: 2; }   /* eyes AND ears, one card */
   #guideReadout { display: none; }
   .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-style: normal;
           font-weight: 600; font-size: 10px; letter-spacing: .1em;
           background: var(--elevated); border: 1px solid var(--border); color: var(--ink-2); }
   .pill.follow { background: rgba(34,197,94,.14); border-color: rgba(34,197,94,.4); color: var(--good); }
-  .pill.wait, .pill.search { background: rgba(245,158,11,.14); border-color: rgba(245,158,11,.35);
-                             color: var(--warn); }
+  .pill.wait { background: rgba(245,158,11,.14); border-color: rgba(245,158,11,.35);
+               color: var(--warn); }
   .pill em { font-style: normal; font-weight: 500; letter-spacing: .04em; opacity: .72;
              margin-left: 6px; text-transform: lowercase; }
   .pill.lost { background: rgba(239,68,68,.14); border-color: rgba(239,68,68,.4); color: var(--bad); }
   #guideReadout .kv { margin-top: 9px; }
   #eyeView { display: none; width: 100%; aspect-ratio: 4 / 3; margin-top: 10px;
-             border: 1px solid var(--border); border-radius: 6px; background: #000; }
+             border: 1px solid var(--border); border-radius: 6px; background: #000;;
+    /* display-only match to the viewport's renderer -- the detector sees raw pixels */
+    filter: brightness(1.42) contrast(0.97); }
 
-  #bmsCard { display: none; order: 4; }
+  #hearingReadout { display: none; }
+  .pill.coming { background: rgba(34,197,94,.14); border-color: rgba(34,197,94,.4); color: var(--good); }
+  .pill.stopped { background: rgba(239,68,68,.14); border-color: rgba(239,68,68,.4); color: var(--bad); }
+  .pill.listening { background: rgba(245,158,11,.14); border-color: rgba(245,158,11,.35); color: var(--warn); }
+  #hearingReadout .kv { margin-top: 9px; }
+  .segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 999px;
+               overflow: hidden; background: var(--elevated); }
+  .segmented button { width: auto; border: none; border-radius: 0; padding: 3px 9px;
+                      font-size: 10px; font-weight: 600; letter-spacing: .08em;
+                      color: var(--ink-3); background: none; }
+  .segmented button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+  .segmented button.denied { color: var(--bad); }
+  .shoutrow { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+  .shoutrow button { padding: 7px 0; font-size: 11px; font-weight: 600; letter-spacing: .08em; }
+  .shoutrow button:disabled { opacity: .45; }
+  #shoutNow { margin-top: 7px; font-size: 10.5px; color: var(--ink-3);
+              font-family: ui-monospace, SFMono-Regular, Menlo, monospace; min-height: 13px; }
+  .hearingtools { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+  #earMonitorToggle { width: auto; padding: 2px 9px; font-size: 10px; font-weight: 600;
+                      letter-spacing: .08em; border-radius: 999px; color: var(--ink-3); }
+  #earMonitorToggle.live { color: var(--good); border-color: rgba(34,197,94,.4); }
+  #levelBar { margin: 9px 0 0; }
+  #levelBar i { background: var(--good); }
+
+  #bmsCard { display: none; order: 3; }   /* second last */
   #bmsCard.cutoff { border-color: rgba(239,68,68,.5); }
   #bmsSoc { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .bmsbar { grid-column: auto; margin: 1px 0 0; }
@@ -201,6 +242,11 @@
   .bmsrows b em { font-style: normal; color: var(--ink-3); font-weight: 400; margin-left: 5px; }
   .bmsrows b.hot { color: var(--warn); }
   .bmsrows b.critical { color: var(--bad); }
+  .bms-i { cursor: help; color: var(--ink-3); font-style: normal; font-size: 9px; margin-left: 5px;
+           border: 1px solid var(--ink-3); border-radius: 50%; padding: 0 3.5px; }
+  #bmsJointsHead { cursor: pointer; user-select: none; color: var(--ink-3); }
+  #bmsJointsChart { display: none; width: 100%; height: 40px; }
+  #bmsJointsChart.open { display: block; }
   .bmsknobs { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);
               display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .bmsknobs .head { margin-bottom: 4px; }
@@ -209,7 +255,7 @@
                    color: var(--bad); font-style: normal; font-weight: 600;
                    font-size: 10.5px; letter-spacing: .08em; }
 
-  #liveFooter { order: 5; margin-top: auto; position: sticky; bottom: -12px; z-index: 1;
+  #liveFooter { order: 6; margin-top: auto; position: sticky; bottom: -12px; z-index: 1;
                 background: var(--bg); padding: 8px 0 12px; display: flex;
                 flex-direction: column; gap: 9px; }
   #liveFooter::before { content: ""; position: absolute; left: 0; right: 0; top: -10px;
@@ -230,6 +276,7 @@
 <div id="stage">
   <canvas id="canvas"></canvas>
   <canvas id="snow"></canvas>
+  <canvas id="eyePip" width="320" height="240"></canvas>
   <div id="loadingCard">loading the mountain…</div>
   <div id="lockOverlay"><div><i id="pausedPill">Paused</i><b id="lockTitle">click to take control</b><span id="lockSubtitle">Esc to release</span></div></div>
   <div id="banner">FELL</div>
@@ -267,17 +314,13 @@
         <line id="windDialArrow" x1="0" y1="0" x2="0" y2="0" stroke="var(--ink-2)" stroke-width="5" stroke-linecap="round"/>
         <circle id="windDot" cx="55" cy="0" r="11" fill="var(--ink)"/>
       </svg>
-      <input type="range" id="windStrength" min="0" max="25" step="0.5" value="0">
+      <input type="range" id="windStrength" min="0" max="10" step="0.5" value="0">
       <div class="windswitches">
         <button class="switchrow" id="naturalSwitch" role="switch" aria-checked="false">natural<i class="switch"></i></button>
       </div>
-    </section>
-
-    <!-- VISIBILITY is its own card because it is its own thing (user's ruling,
-         2026-08-30): it used to be a `storm` switch inside Wind whose thickness
-         came from the wind speed, and it is now a plain distance dial that the
-         wind has nothing to do with. Left is clear, right is a white-out. -->
-    <section class="card">
+      <!-- VISIBILITY shares the card but not the physics (user rulings,
+           2026-08-30): a plain distance dial the wind has nothing to do with.
+           Left clear, right white-out. -->
       <div class="head"><h2>Visibility</h2><output id="visibilityOut">100 m</output></div>
       <input type="range" id="visibility" min="0" max="1000" step="1" value="0">
       <div class="rangeends"><span>clear</span><span>white-out</span></div>
@@ -310,7 +353,34 @@
       <div class="kv">
         <span>Distance</span><b id="guideDistance">—<em></em></b>
         <span>Bearing</span><b id="guideBearing">—</b>
+        <span>Eyes</span><b><button class="switchrow" id="eyesSwitch" role="switch" aria-checked="true" title="the robot may use vision"><i class="switch"></i></button></b>
       </div>
+    </div>
+    <!-- THE EARS live in the same card as the eyes (user ruling, 2026-08-30).
+         Four virtual microphones on the robot's head; the voice is the Mac's
+         own (or a recorded shout), streamed up as MIC0 and emitted at the
+         hiker's mouth. -->
+    <div class="head"><h2>Hearing</h2>
+      <span class="hearingtools">
+        <span class="segmented" id="sourceMode">
+          <button id="modeMic" aria-pressed="false" title="stream the Mac microphone, raw">MIC</button>
+          <button id="modeManual" aria-pressed="true" title="shout at the robot with the buttons below">MANUAL</button>
+        </span>
+        <button class="iconbtn" id="earMonitorToggle" title="listen to what the robot hears">EAR</button>
+      </span>
+      <button class="switchrow" id="hearingSwitch" role="switch" aria-checked="false" title="the robot listens"><i class="switch"></i></button></div>
+    <div id="hearingReadout">
+      <i class="pill" id="hearingMode">IDLE</i>
+      <div class="bar" id="levelBar"><i id="levelBarFill"></i></div>
+      <div class="kv">
+        <span>Heard</span><b id="hearingHeard">—</b>
+        <span>Bearing</span><b id="hearingBearing">—</b>
+      </div>
+      <div class="shoutrow" id="shoutRow">
+        <button id="shoutPemba">PEMBA <span class="keycap">P</span></button>
+        <button id="shoutStop">STOP <span class="keycap">X</span></button>
+      </div>
+      <div id="shoutNow"></div>
     </div>
     <canvas id="eyeView" width="320" height="240"></canvas>
   </section>
@@ -320,10 +390,11 @@
       <span class="socline"><span id="bmsRuntime">—</span><output id="bmsSoc">—</output></span></div>
     <div class="bar bmsbar"><i id="bmsSocBar"></i></div>
     <div class="bmsrows">
-      <span id="bmsPackRow">Pack<b id="bmsPack">—</b></span>
-      <span id="bmsPowerRow">Power<b id="bmsPower">—</b></span>
-      <span id="bmsTempRow">Pack temp<b id="bmsTemp">—</b></span>
-      <span id="bmsWindingRow">Winding<b id="bmsWinding">—</b></span>
+      <span id="bmsPowerRow">Electrical power<i class="bms-i" title="P = Σ|τ·q̇|/η + copper I²R + 60 W idle — compute draws too (Jetson, boards, LiDAR, camera), not just joint force. η = 0.70, MATH.md §2. Real G1: YES — V×I from rt/lf/bmsstate.">i</i><b id="bmsPower">—</b></span>
+      <span id="bmsJointsHead" title="τ = actuator_force, q̇ = actuator_velocity — the only model inputs; everything else is derived. MATH.md §1. Real G1: YES — tau_est / dq in rt/lowstate at 500 Hz (τ estimated from motor current, no force sensor).">▸ Torque and velocity of joints<i class="bms-i">i</i></span>
+      <svg id="bmsJointsChart" viewBox="0 0 220 40" preserveAspectRatio="none"></svg>
+      <span id="bmsTempRow">Pack temperature<i class="bms-i" title="T_pack += dt/C · [I²·R_int (self-heat) − (T_pack − T_outside)/R_th (cold leak)]. The outside temperature pulls the pack down through the jacket (hardcoded 60 % insulation). MATH.md §4+§6. Real G1: YES — BmsState_.temperature (12 sensors).">i</i><b id="bmsTemp">—</b></span>
+      <span id="bmsSocRow">Battery life · SOC<i class="bms-i" title="SOC −= 100·I·dt / (3600 · 9 Ah · f(T_pack)); a cold pack (f < 1) drains faster. MATH.md §3. Real G1: YES — BmsState_.soc on rt/lf/bmsstate.">i</i><b id="bmsSocDetail">—</b></span>
     </div>
     <i id="bmsCutoffPill">Cutoff</i>
     <div class="bmsknobs">
@@ -417,9 +488,14 @@ function paintHud(frame) {
                     east: windVelocity[0], north: windVelocity[1] };
   paintWindReadout();
   noteWindSpeed(state.windNow.speed);
-  noteVisibility(frame.visibility_meters);
+  if (!frame.paused) noteVisibility(frame.visibility_meters);
+  // No dimming, no banner (user's ruling, 2026-08-30): the freeze shows
+  // itself -- the robot simply stops. The class is still set for anything
+  // that wants to know, but it styles nothing.
+  document.body.classList.toggle('world-frozen', Boolean(frame.world_frozen));
   paintBatteryCard(frame);
   paintGuideCard(frame);
+  paintHearingCard(frame);
   paintAutonomyKeys(frame);
   const climbing = Number(command[0]) > 0;
   const fell = Boolean(frame.fell);
@@ -432,7 +508,7 @@ function paintHud(frame) {
   motion.classList.toggle('climbing',
     !fell && !state.paused && (followerWord ? guideState.mode === 'FOLLOW' : climbing));
   motion.classList.toggle('waiting', !fell && !state.paused && Boolean(followerWord)
-    && (guideState.mode === 'WAIT' || guideState.mode === 'SEARCH'));
+    && guideState.mode === 'WAIT');
   motion.classList.toggle('fell', fell || (!state.paused && Boolean(followerWord) && guideState.mode === 'LOST'));
   if (frame.slope_degrees !== undefined && frame.slope_degrees !== null) state.slopeDegrees = frame.slope_degrees;
   const banner = $('banner');
@@ -494,32 +570,47 @@ function paintBatteryCard(frame) {
     : 'var(--good)';
   $('bmsRuntime').textContent = formatTimeToEmpty(bms.time_to_empty_min);
 
-  const packVolts = Number(bms.pack_V), packAmps = Number(bms.current_A);
-  setBatteryRow('bmsPackRow', 'bmsPack',
-    joinKnown([Number.isFinite(packVolts) ? packVolts.toFixed(1) + ' V' : null,
-               Number.isFinite(packAmps) ? packAmps.toFixed(1) + ' A' : null]));
   const power = Number(bms.power_W), mechanicalPower = Number(bms.mech_power_W);
   setBatteryRow('bmsPowerRow', 'bmsPower',
     Number.isFinite(power) ? power.toFixed(0) + ' W' : null,
     Number.isFinite(mechanicalPower) ? 'mech ' + mechanicalPower.toFixed(0) + ' W' : null);
   const packTemperature = Number(bms.t_bat_C);
   const ambientTemperature = Number(bms.t_amb_C !== undefined ? bms.t_amb_C : bms.T_amb_C);
+  const packValue = $('bmsTemp');
   setBatteryRow('bmsTempRow', 'bmsTemp',
-    joinKnown([Number.isFinite(packTemperature) ? packTemperature.toFixed(0) + ' °C' : null,
-               Number.isFinite(ambientTemperature) ? 'amb ' + ambientTemperature.toFixed(0) + ' °C' : null]));
-  const winding = Number(bms.max_temp_winding_C);
-  setBatteryRow('bmsWindingRow', 'bmsWinding',
-    Number.isFinite(winding) ? winding.toFixed(0) + ' °C' : null,
-    hotJointName(bms.hot_joint));
-  const windingValue = $('bmsWinding');
-  windingValue.classList.toggle('hot', Number.isFinite(winding) && winding >= 70 && winding < 90);
-  windingValue.classList.toggle('critical', Number.isFinite(winding) && winding >= 90);
+    joinKnown([Number.isFinite(packTemperature) ? packTemperature.toFixed(1) + ' °C' : null,
+               Number.isFinite(ambientTemperature) ? 'outside ' + ambientTemperature.toFixed(0) + ' °C' : null]));
+  packValue.classList.toggle('hot', Number.isFinite(packTemperature) && packTemperature < 0);
+  packValue.classList.toggle('critical', Number.isFinite(packTemperature) && packTemperature > 55);
+  setBatteryRow('bmsSocRow', 'bmsSocDetail',
+    stateOfChargeKnown ? stateOfCharge.toFixed(1) + ' %' : null,
+    formatTimeToEmpty(bms.time_to_empty_min) + ' left');
+  paintJointsChart(bms);
   const cutoff = Boolean(bms.bms_cutoff !== undefined ? bms.bms_cutoff
                        : bms.cutoff !== undefined ? bms.cutoff : frame.bms_cutoff);
   $('bmsCutoffPill').style.display = cutoff ? 'inline-block' : 'none';
   card.classList.toggle('cutoff', cutoff);
 }
 function joinKnown(parts) { const kept = parts.filter(Boolean); return kept.length ? kept.join(' · ') : null; }
+$('bmsJointsHead').addEventListener('click', () => {
+  const chart = $('bmsJointsChart'); chart.classList.toggle('open');
+  const head = $('bmsJointsHead');
+  head.firstChild.textContent = (chart.classList.contains('open') ? '▾' : '▸') + ' Torque and velocity of joints';
+});
+function paintJointsChart(bms) {
+  const chart = $('bmsJointsChart');
+  if (!chart.classList.contains('open') || !Array.isArray(bms.tau_Nm)) return;
+  const W = 220, H = 40, n = bms.tau_Nm.length, bw = W / n;
+  const tauMax = Math.max(40, ...bms.tau_Nm.map(Math.abs));
+  chart.innerHTML = bms.tau_Nm.map((tau, i) => {
+    const h = Math.abs(tau) / tauMax * (H - 2);
+    const c = i === bms.max_abs_tau_joint ? 'var(--bad)'
+            : (bms.joint_power_W && bms.joint_power_W[i] < 0) ? 'var(--ink-3)' : 'var(--good)';
+    const dq = bms.dq_radps ? bms.dq_radps[i] : NaN;
+    return `<rect x="${(i * bw + 0.5).toFixed(1)}" y="${(H - 1 - h).toFixed(1)}" width="${(bw - 1).toFixed(1)}" height="${h.toFixed(1)}" fill="${c}">` +
+           `<title>${hotJointName(i)}: τ ${tau.toFixed(1)} N·m · q̇ ${Number.isFinite(dq) ? dq.toFixed(2) : '—'} rad/s</title></rect>`;
+  }).join('');
+}
 function formatTimeToEmpty(minutes) {
   const value = Number(minutes);
   if (minutes === null || minutes === undefined || !Number.isFinite(value)) return '—';
@@ -543,28 +634,49 @@ function setBatteryRow(rowElementId, valueElementId, text, mutedNote = null) {
 }
 
 // ---------- GUIDE (ported verbatim from the retired index.html) ----------
-const GUIDE_MODE_CLASSES = { FOLLOW: 'follow', WAIT: 'wait', LOST: 'lost', SEARCH: 'search' };
-const GUIDE_MODE_STATUS_WORDS = { FOLLOW: 'following', WAIT: 'waiting', LOST: 'lost',
-                                  SEARCH: 'searching' };
+const GUIDE_MODE_CLASSES = { FOLLOW: 'follow', WAIT: 'wait', LOST: 'lost' };
+const GUIDE_MODE_STATUS_WORDS = { FOLLOW: 'following', WAIT: 'waiting', LOST: 'lost' };
 const EYE_FRAME_STALE_MILLISECONDS = 2000;
-const guideState = { on: false, mode: null, lastEyeFrameMilliseconds: 0 };
+const guideState = { on: false, freeWalk: false, mode: null, lastEyeFrameMilliseconds: 0 };
 const eyeCanvas = $('eyeView'), eyeContext = eyeCanvas.getContext('2d');
+const eyePipCanvas = $('eyePip'), eyePipContext = eyePipCanvas.getContext('2d');
 
 function paintGuideSwitch() {
   $('guideSwitch').setAttribute('aria-checked', String(guideState.on));
   // S only means anything with the guide on -- it walks the human BACKWARDS -- so the
-  // keycap appears with the guide and A/D keep turning the robot either way
+  // keycap appears with the guide.
   $('backKey').style.display = guideState.on ? '' : 'none';
-  $('climbLabel').textContent = guideState.on ? ' move the guide ' : ' climb ';
+  // ON A ROPE-OFF WORLD ALL FOUR KEYS ARE HERS (user's ruling, 2026-08-30):
+  // W/S walk her along her own heading and A/D turn it. The legend says so by
+  // moving the whole phrase after the last keycap, so it reads
+  // "W S A D move the guide" rather than two labels that disagree.
+  const hers = guideState.on && guideState.freeWalk;
+  $('climbLabel').textContent = hers ? ' ' : (guideState.on ? ' move the guide ' : ' climb ');
+  $('keySeparator').style.display = hers ? 'none' : '';
+  if (!autonomousKeysShown) {
+    $('turnLabel').textContent = hers ? ' move the guide ' : ' turn ';
+  }
   // THE CAMERA GOES WITH THE SUBJECT (user's ruling, 2026-08-30): guide on, the
   // boom and the first-person eye are HERS; guide off, they are the robot's again.
   // Set here rather than in the click handler so the runtime's own echo moves the
   // camera too -- a run started with `--guide` opens framed on the hiker.
-  stage.setFollowGuide(guideState.on);
+  stage.guideActive = guideState.on;
+  stage.setFollowGuide(guideState.on && viewState.onGuide);
+  paintViewMode();
   paintEyeViewVisibility();
 }
+// EYES (user's ruling, 2026-08-30): vision off = the stereo pair is not even
+// rendered server-side; the robot navigates by ears alone and the PiP goes
+// stale and hides on its own.
+const eyesState = { on: true };
+$('eyesSwitch').addEventListener('click', () => {
+  eyesState.on = !eyesState.on;
+  $('eyesSwitch').setAttribute('aria-checked', String(eyesState.on));
+  send({ type: 'knob', name: 'eyes', value: eyesState.on ? 1 : 0 });
+});
 $('guideSwitch').addEventListener('click', () => {
   guideState.on = !guideState.on;
+  viewState.onGuide = true;   // fresh guide session opens framed on her
   paintGuideSwitch();
   paintGuideCard({});
   send({ type: 'knob', name: 'guide', value: guideState.on ? 1 : 0 });
@@ -578,9 +690,19 @@ function paintGuideCard(frame) {
     paintEyeViewVisibility();
     return;
   }
-  if (guide.enabled !== undefined && Boolean(guide.enabled) !== guideState.on) {
+  const freeWalk = Boolean(guide.free_walk);
+  // Paused frames are re-broadcasts of the last pre-pause state: syncing the
+  // switches from them would snap back a click the server has already taken.
+  if (!frame.paused
+      && ((guide.enabled !== undefined && Boolean(guide.enabled) !== guideState.on)
+          || freeWalk !== guideState.freeWalk)) {
     guideState.on = Boolean(guide.enabled);
+    guideState.freeWalk = freeWalk;
     paintGuideSwitch();
+  }
+  if (!frame.paused && guide.eyes !== undefined && Boolean(guide.eyes) !== eyesState.on) {
+    eyesState.on = Boolean(guide.eyes);
+    $('eyesSwitch').setAttribute('aria-checked', String(eyesState.on));
   }
   readout.style.display = 'block';
   const mode = typeof guide.mode === 'string' ? guide.mode.toUpperCase() : null;
@@ -588,12 +710,6 @@ function paintGuideCard(frame) {
   const pill = $('guideMode');
   pill.textContent = mode || '—';
   pill.className = 'pill ' + (GUIDE_MODE_CLASSES[mode] || '');
-  // SEARCH also says WHAT it is doing -- sweep / acquire / realign -- muted beside the mode
-  if (mode === 'SEARCH' && typeof guide.search_phase === 'string' && guide.search_phase) {
-    const phase = document.createElement('em');
-    phase.textContent = guide.search_phase;
-    pill.appendChild(phase);
-  }
   // CHLOE'S WORLDS: the follower still SEES -- the distance and bearing below
   // are a real stereo measurement -- but her ascender network has no command
   // port, so nothing here aims the robot. The mode is honest about what the
@@ -622,16 +738,347 @@ function paintEyeFrame(jpegBuffer) {
   createImageBitmap(new Blob([jpegBuffer], { type: 'image/jpeg' })).then(bitmap => {
     guideState.lastEyeFrameMilliseconds = performance.now();
     eyeContext.drawImage(bitmap, 0, 0, eyeCanvas.width, eyeCanvas.height);
+    // The fullscreen window is fed HERE, on the frame, not in the animation
+    // loop: one extra drawImage per EYE0 arrival instead of sixty a second.
+    if (eyePipShown) eyePipContext.drawImage(bitmap, 0, 0, eyePipCanvas.width, eyePipCanvas.height);
     paintEyeViewVisibility();
   }).catch(() => {});
 }
-let eyeViewShown = false;
+let eyeViewShown = false, eyePipShown = false;
 function paintEyeViewVisibility() {
   const fresh = performance.now() - guideState.lastEyeFrameMilliseconds < EYE_FRAME_STALE_MILLISECONDS;
   const shown = guideState.on && fresh;
-  if (shown === eyeViewShown) return;
-  eyeViewShown = shown;
-  eyeCanvas.style.display = shown ? 'block' : 'none';
+  if (shown !== eyeViewShown) {
+    eyeViewShown = shown;
+    eyeCanvas.style.display = shown ? 'block' : 'none';
+  }
+  // Same three conditions, plus fullscreen -- and never in normal mode, where
+  // the sidebar's own copy is right there. On the way IN the last eye frame is
+  // copied across so the window opens with a picture rather than a black square
+  // it would hold until the next EYE0 lands.
+  const pipShown = shown && Boolean(document.fullscreenElement);
+  if (pipShown !== eyePipShown) {
+    eyePipShown = pipShown;
+    if (pipShown) eyePipContext.drawImage(eyeCanvas, 0, 0, eyePipCanvas.width, eyePipCanvas.height);
+    eyePipCanvas.style.display = pipShown ? 'block' : 'none';
+  }
+}
+
+// ---------- HEARING ----------
+// The page does NO audio processing. It captures the Mac microphone at 16 kHz
+// mono with every browser "helper" turned OFF -- no automatic gain, no noise
+// suppression, no echo cancellation -- and ships raw int16 PCM as `MIC0` +
+// samples. That matters: the ear model is meant to hear a SHOUT as louder than
+// a mumble, and automatic gain would flatten exactly that difference before the
+// runtime ever saw it.
+const MICROPHONE_SAMPLE_RATE_HZ = 16000;
+const MICROPHONE_BLOCK_SAMPLES = 512;          // 32 ms
+const MIC_MESSAGE_PREFIX = [0x4D, 0x49, 0x43, 0x30];   // "MIC0"
+const EAR_FRAME_MAGIC = [0x45, 0x41, 0x52, 0x30];      // "EAR0"
+const HEARING_MODE_CLASSES = { IDLE: '', LISTENING: 'listening', COMING_BY_EYES: 'coming',
+                               COMING_BY_EARS: 'coming', STOPPED: 'stopped', WAIT: 'wait' };
+const LEVEL_METER_FLOOR_DB = -60;
+// TWO SOURCE MODES, ONE EAR MODEL (user's ruling, 2026-08-30). MIC streams the
+// Mac microphone; MANUAL plays a recorded shout from app/web/sounds/voice/.
+// BOTH go down the socket as `MIC0` + 16 kHz int16 PCM, block by block, in real
+// time -- so the runtime cannot tell them apart and there is no shortcut past
+// the ear synthesis, the wind noise, the VAD, the keyword spotter or the
+// bearing. MANUAL is the default because it needs no permission and a demo
+// should work the moment the page opens.
+const VOICE_CLIP_DIRECTORY = '/app/web/sounds/voice/';
+// Only the takes the ear model hears with margin (measured 2026-08-30 at
+// 6 m / 45deg through hear_clip: bearing confidence 0.52 and 0.66 vs the 0.25
+// gate; pemba_1/pemba_3 sit at 0.07/0.21 in calm air and would leave the robot
+// in LISTENING). The quiet takes stay in the corpus and the tests.
+const PEMBA_CLIPS = ['pemba_2.mp3', 'pemba_4.mp3'];
+const STOP_CLIP = 'stop_1.mp3';
+const hearingState = { on: false, mode: 'manual', micLive: false, context: null,
+                       stream: null, node: null, source: null,
+                       monitorOn: false, monitorContext: null, monitorTime: 0,
+                       clips: new Map(), playing: null, playTimer: null };
+
+function paintHearingSwitch() {
+  $('hearingSwitch').setAttribute('aria-checked', String(hearingState.on));
+}
+
+$('hearingSwitch').addEventListener('click', () => {
+  hearingState.on = !hearingState.on;
+  paintHearingSwitch();
+  send({ type: 'knob', name: 'hearing', value: hearingState.on ? 1 : 0 });
+});
+
+async function startMicrophone() {
+  if (hearingState.micLive) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { autoGainControl: false, noiseSuppression: false,
+               echoCancellation: false, channelCount: 1,
+               sampleRate: MICROPHONE_SAMPLE_RATE_HZ } });
+    // Ask the AudioContext for 16 kHz so the browser resamples once, in C, and
+    // the page never has to. Safari ignores the hint on some versions, so the
+    // block below resamples by linear interpolation when the rate differs --
+    // which is the one and only piece of signal processing this page does.
+    const context = new (window.AudioContext || window.webkitAudioContext)(
+      { sampleRate: MICROPHONE_SAMPLE_RATE_HZ });
+    const source = context.createMediaStreamSource(stream);
+    const node = context.createScriptProcessor(MICROPHONE_BLOCK_SAMPLES, 1, 1);
+    node.onaudioprocess = event => sendMicrophoneBlock(
+      event.inputBuffer.getChannelData(0), context.sampleRate);
+    source.connect(node);
+    // A ScriptProcessor only runs while it is connected to the destination.
+    // Route it through a silent gain so nothing is played back and the node
+    // still gets called -- connecting it straight to `destination` would echo
+    // the room out of the speakers and into the microphone again.
+    const silence = context.createGain();
+    silence.gain.value = 0;
+    node.connect(silence); silence.connect(context.destination);
+    Object.assign(hearingState, { context, stream, node, source, micLive: true });
+    $('modeMic').classList.remove('denied');
+  } catch (error) {
+    // Permission refused, or no input device. Say so and fall back to MANUAL,
+    // which needs neither.
+    hearingState.micLive = false;
+    $('modeMic').classList.add('denied');
+    setSourceMode('manual');
+  }
+}
+function stopMicrophone() {
+  if (hearingState.node) { hearingState.node.disconnect(); hearingState.node.onaudioprocess = null; }
+  if (hearingState.source) hearingState.source.disconnect();
+  if (hearingState.stream) hearingState.stream.getTracks().forEach(track => track.stop());
+  if (hearingState.context) hearingState.context.close();
+  Object.assign(hearingState, { context: null, stream: null, node: null,
+                                source: null, micLive: false });
+}
+function sendMicrophoneBlock(samples, sampleRate) {
+  if (!state.socket || state.socket.readyState !== 1 || !hearingState.on) return;
+  if (samples.length === 0) return;
+  let source = samples;
+  if (Math.abs(sampleRate - MICROPHONE_SAMPLE_RATE_HZ) > 1) {
+    const count = Math.round(samples.length * MICROPHONE_SAMPLE_RATE_HZ / sampleRate);
+    const resampled = new Float32Array(count);
+    for (let index = 0; index < count; index++) {
+      const position = index * (samples.length - 1) / Math.max(count - 1, 1);
+      const low = Math.floor(position), share = position - low;
+      resampled[index] = samples[low] * (1 - share) + samples[Math.min(low + 1, samples.length - 1)] * share;
+    }
+    source = resampled;
+  }
+  const frame = new Uint8Array(4 + source.length * 2);
+  frame.set(MIC_MESSAGE_PREFIX, 0);
+  const view = new DataView(frame.buffer, 4);
+  for (let index = 0; index < source.length; index++) {
+    // NO GAIN, NO LIMITER, NO NORMALISATION -- just the clamp that int16 forces.
+    const value = Math.max(-1, Math.min(1, source[index]));
+    view.setInt16(index * 2, Math.round(value * 32767), true);
+  }
+  state.socket.send(frame.buffer);
+}
+function paintSourceMode() {
+  $('modeMic').setAttribute('aria-pressed', String(hearingState.mode === 'mic'));
+  $('modeManual').setAttribute('aria-pressed', String(hearingState.mode === 'manual'));
+  $('shoutRow').style.display = hearingState.mode === 'manual' ? 'grid' : 'none';
+  $('shoutNow').style.display = hearingState.mode === 'manual' ? 'block' : 'none';
+}
+function setSourceMode(mode) {
+  if (hearingState.mode === mode) return;
+  hearingState.mode = mode;
+  paintSourceMode();
+  if (mode === 'mic') startMicrophone(); else stopMicrophone();
+}
+$('modeMic').addEventListener('click', () => setSourceMode('mic'));
+$('modeManual').addEventListener('click', () => setSourceMode('manual'));
+
+// ---- MANUAL: a recorded shout, streamed exactly like the microphone ----
+async function loadClip(name) {
+  if (hearingState.clips.has(name)) return hearingState.clips.get(name);
+  if (!hearingState.context) {
+    hearingState.context = new (window.AudioContext || window.webkitAudioContext)(
+      { sampleRate: MICROPHONE_SAMPLE_RATE_HZ });
+  }
+  const response = await fetch(VOICE_CLIP_DIRECTORY + name);
+  const decoded = await hearingState.context.decodeAudioData(await response.arrayBuffer());
+  hearingState.clips.set(name, decoded);
+  return decoded;
+}
+// LISTENER-SIDE LOUDNESS: what YOU hear rides the camera (user's ruling,
+// 2026-08-30). Riding the guide you are at the mouth; riding the robot the
+// same shout arrives faint with distance -- which is the point: press P again
+// to stack shouts, or shout louder into the mic. The SIM-side loudness is the
+// clip itself either way; the ear model owns the robot's physics.
+const SHOUT_SOURCE_GAIN = 0.45;       // the guide's voice, quieter than before
+const SHOUT_SIM_GAIN = 0.35;          // what enters the SIM per press; stacking sums
+const SHOUT_REFERENCE_METERS = 1.5;   // full loudness inside this radius
+function shoutListenerGain() {
+  try {
+    if (!guideState.on || stage.followGuide) return SHOUT_SOURCE_GAIN;
+    const bodies = stage.world && stage.world.bodies;
+    const guide = (bodies && stage.world.guideIndex >= 0)
+      ? bodies[stage.world.guideIndex] : null;
+    const pelvis = bodies ? bodies[stage.world.pelvisIndex] : null;
+    if (!guide || !pelvis) return SHOUT_SOURCE_GAIN;
+    const distance = guide.position.distanceTo(pelvis.position);
+    return SHOUT_SOURCE_GAIN
+      * Math.min(1, SHOUT_REFERENCE_METERS / Math.max(distance, SHOUT_REFERENCE_METERS));
+  } catch (error) { return SHOUT_SOURCE_GAIN; }
+}
+// SHOUTS STACK (user's ruling): every press adds a voice. ONE mixer owns the
+// MIC0 stream -- overlapping clips are SUMMED into each block, because two
+// independent senders would interleave chunks and garble the word instead of
+// doubling it. The sum is what the ear model hears, so stacked shouts are
+// genuinely louder at the robot's ears. Paced by elapsed time, not tick count
+// (background tabs clamp setInterval to 1 Hz; the runtime's two-second ring
+// absorbs the burst).
+const activeShouts = [];   // { name, mono, cursor, sampleRate }
+let shoutMixerTimer = null, shoutMixerStart = 0, shoutMixerSent = 0;
+function pumpShoutMixer() {
+  const rate = activeShouts.length ? activeShouts[0].sampleRate : MICROPHONE_SAMPLE_RATE_HZ;
+  const owed = Math.floor((performance.now() - shoutMixerStart) / 1000 * rate);
+  while (shoutMixerSent < owed && activeShouts.length) {
+    const block = new Float32Array(MICROPHONE_BLOCK_SAMPLES);
+    for (const shout of activeShouts) {
+      const end = Math.min(shout.cursor + MICROPHONE_BLOCK_SAMPLES, shout.mono.length);
+      for (let source = shout.cursor, target = 0; source < end; source++, target++) {
+        block[target] += shout.mono[source];
+      }
+      shout.cursor = end;
+    }
+    for (let index = 0; index < block.length; index++) {
+      block[index] = Math.max(-1, Math.min(1, block[index]));
+    }
+    shoutMixerSent += MICROPHONE_BLOCK_SAMPLES;
+    sendMicrophoneBlock(block, rate);
+    for (let index = activeShouts.length - 1; index >= 0; index--) {
+      if (activeShouts[index].cursor >= activeShouts[index].mono.length) {
+        activeShouts.splice(index, 1);
+      }
+    }
+  }
+  if (!activeShouts.length) {
+    clearInterval(shoutMixerTimer);
+    shoutMixerTimer = null;
+    paintShoutButtons();
+  }
+}
+async function playShout(name) {
+  let buffer;
+  try { buffer = await loadClip(name); }
+  catch (error) { return; }
+  // Audible in the room, from the camera's seat.
+  try {
+    if (!hearingState.shoutContext) {
+      hearingState.shoutContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    const shoutSource = hearingState.shoutContext.createBufferSource();
+    shoutSource.buffer = buffer;
+    const shoutGain = hearingState.shoutContext.createGain();
+    shoutGain.gain.value = shoutListenerGain();
+    shoutSource.connect(shoutGain).connect(hearingState.shoutContext.destination);
+    shoutSource.start();
+  } catch (error) { /* no speakers is no reason to lose the sim shout */ }
+  const channels = buffer.numberOfChannels;
+  const mono = new Float32Array(buffer.length);
+  for (let channel = 0; channel < channels; channel++) {
+    const data = buffer.getChannelData(channel);
+    for (let index = 0; index < mono.length; index++) mono[index] += data[index] / channels;
+  }
+  // QUIETER INTO THE SIM (user's ruling, 2026-08-30: "still a little too easy
+  // for the robot to hear"). One press is one modest shout; STACKING presses
+  // sums waveforms, so each doubling is +6 dB at the robot's ears. Measured
+  // through hear_clip before choosing: at x0.35 the two demo takes still clear
+  // the bearing gate at every demo distance in calm and 6 m/s air -- the
+  // detectors are level-robust until wind actually eats the SNR, so the wind
+  // slider remains the real difficulty dial.
+  for (let index = 0; index < mono.length; index++) mono[index] *= SHOUT_SIM_GAIN;
+  if (!activeShouts.length) { shoutMixerStart = performance.now(); shoutMixerSent = 0; }
+  activeShouts.push({ name, mono, cursor: 0, sampleRate: buffer.sampleRate });
+  paintShoutButtons();
+  if (!shoutMixerTimer) {
+    shoutMixerTimer = setInterval(
+      pumpShoutMixer, 1000 * MICROPHONE_BLOCK_SAMPLES / MICROPHONE_SAMPLE_RATE_HZ);
+  }
+}
+function paintShoutButtons() {
+  // Never disabled: stacking is the feature.
+  $('shoutPemba').disabled = false;
+  $('shoutStop').disabled = false;
+  $('shoutNow').textContent = activeShouts.length
+    ? '▸ ' + activeShouts.map(shout => shout.name).join(' + ') : '';
+}
+$('shoutPemba').addEventListener('click', () => playShout(
+  PEMBA_CLIPS[Math.floor(Math.random() * PEMBA_CLIPS.length)]));
+$('shoutStop').addEventListener('click', () => playShout(STOP_CLIP));
+paintSourceMode();
+paintShoutButtons();
+$('earMonitorToggle').addEventListener('click', () => {
+  hearingState.monitorOn = !hearingState.monitorOn;
+  $('earMonitorToggle').classList.toggle('live', hearingState.monitorOn);
+  send({ type: 'knob', name: 'ear_monitor', value: hearingState.monitorOn ? 1 : 0 });
+});
+// EAR0: what the robot hears, played back. Scheduled end to end so 100 ms
+// blocks do not click; a late block restarts the schedule rather than piling up.
+function playEarFrame(buffer) {
+  if (!hearingState.monitorOn) return;
+  if (!hearingState.monitorContext) {
+    hearingState.monitorContext = new (window.AudioContext || window.webkitAudioContext)(
+      { sampleRate: MICROPHONE_SAMPLE_RATE_HZ });
+  }
+  const context = hearingState.monitorContext;
+  const pcm = new Int16Array(buffer, 4);
+  const audio = context.createBuffer(1, pcm.length, MICROPHONE_SAMPLE_RATE_HZ);
+  const channel = audio.getChannelData(0);
+  for (let index = 0; index < pcm.length; index++) channel[index] = pcm[index] / 32768;
+  const node = context.createBufferSource();
+  node.buffer = audio; node.connect(context.destination);
+  const now = context.currentTime;
+  hearingState.monitorTime = Math.max(hearingState.monitorTime, now + 0.02);
+  node.start(hearingState.monitorTime);
+  hearingState.monitorTime += audio.duration;
+}
+function paintHearingCard(frame) {
+  const hearing = frame.hearing;
+  const readout = $('hearingReadout');
+  if (!hearing || typeof hearing !== 'object' || Array.isArray(hearing)) {
+    readout.style.display = 'none';
+    return;
+  }
+  if (!frame.paused && hearing.enabled !== undefined && Boolean(hearing.enabled) !== hearingState.on) {
+    hearingState.on = Boolean(hearing.enabled);
+    paintHearingSwitch();
+  }
+  readout.style.display = 'block';
+  const mode = typeof hearing.mode === 'string' ? hearing.mode.toUpperCase() : null;
+  const pill = $('hearingMode');
+  pill.textContent = mode ? mode.replace(/_/g, ' ') : '—';
+  pill.className = 'pill ' + (HEARING_MODE_CLASSES[mode] || '');
+  const heard = hearing.heard;
+  const confidence = Number(hearing.stop_confidence);
+  $('hearingHeard').textContent =
+    heard === 'stop' ? 'STOP ' + (Number.isFinite(confidence) ? confidence.toFixed(2) : '')
+    : heard === 'voice' ? 'voice' : '—';
+  // `Number(null)` is 0, not NaN, so a bearing that has never been measured
+  // would print a confident "0°" -- straight ahead -- which is the one wrong
+  // answer that looks like a right one. Test for null before converting.
+  const bearing = hearing.bearing_degrees === null || hearing.bearing_degrees === undefined
+    ? NaN : Number(hearing.bearing_degrees);
+  const bearingConfidence = Number(hearing.bearing_confidence);
+  $('hearingBearing').textContent = Number.isFinite(bearing)
+    ? bearing.toFixed(0) + '°' : '—';
+  const confidenceNote = document.createElement('em');
+  confidenceNote.textContent = Number.isFinite(bearing) && Number.isFinite(bearingConfidence)
+    ? 'conf ' + bearingConfidence.toFixed(2) : '';
+  $('hearingBearing').appendChild(confidenceNote);
+  // ...and the same reading, drawn where you are actually looking.
+  noteHeardSound(heard, bearing, bearingConfidence);
+  // THE METER IS THE MICROPHONE'S OWN LEVEL, un-normalised end to end, so
+  // shouting really does move it. It falls back to the ear level when the page
+  // is not the one supplying the voice (a `--inject-voice` run).
+  const microphoneDb = Number(hearing.microphone_level_db);
+  const earDb = Number(hearing.level_db);
+  const shown = Number.isFinite(microphoneDb) && microphoneDb > -80 ? microphoneDb : earDb;
+  const share = Number.isFinite(shown)
+    ? Math.max(0, Math.min(1, (shown - LEVEL_METER_FLOOR_DB) / -LEVEL_METER_FLOOR_DB)) : 0;
+  $('levelBarFill').style.width = (100 * share).toFixed(1) + '%';
 }
 
 // ---------- WIND RIBBONS (ported from the retired index.html; the flakes are in the 3-D scene) ----------
@@ -725,6 +1172,169 @@ function drawWindRibbons(widthPixels, heightPixels) {
     snowContext.stroke();
   }
 }
+// ---------- THE SOUND-DIRECTION INDICATOR (user's ruling, 2026-08-30) ----------
+// A game damage-indicator, but for a shout: an arc at the edge of the viewport in
+// the direction the robot THINKS the voice came from. It exists because the ear
+// model's bearing is the one thing the robot knows that the picture cannot show --
+// in first person you are looking through its eyes, and the sound is behind you.
+//
+// THE FRAME CHAIN, which is the whole of the work here:
+//   `bearing_degrees` is in the robot's BODY frame, + = the robot's LEFT.
+//   The robot's own yaw about world z is `stage.robotHeadingRadians` (the PELVIS,
+//   not the camera boom -- the boom rides the hiker when the guide is on).
+//   So the source's WORLD azimuth is heading + bearing, and that is what we store:
+//   frozen in the world, so turning the head sweeps the arrow across the screen
+//   exactly as turning your own head sweeps a real sound.
+//   Screen space is then the SAME conversion the wind ribbons use above -- the
+//   view's forward and right from `stage.viewAzimuthDegrees` -- so one habit of
+//   reading the screen works for wind and for voices, in either view.
+const SOUND_INDICATOR_FADE_SECONDS = 2.0;
+const soundIndicator = {
+  heard: null,             // what the last frame reported, for edge detection
+  kind: null,              // 'voice' | 'stop' -- what is being DRAWN, null = nothing
+  worldAngleRadians: 0,
+  confidence: 0,
+  holding: false,          // the utterance is still going: no fade yet
+  releasedAtMilliseconds: 0,
+  screenAngleRadians: null,   // the drawn angle, slid toward the live target
+  lastDrawMilliseconds: 0,
+};
+// Called from paintHearingCard on every state frame; acts only on the EDGE.
+function noteHeardSound(heard, bearingDegrees, bearingConfidence) {
+  const heardNow = (heard === 'voice' || heard === 'stop') ? heard : null;
+  if (!heardNow) {
+    if (soundIndicator.holding) {
+      soundIndicator.holding = false;
+      soundIndicator.releasedAtMilliseconds = performance.now();
+    }
+    soundIndicator.heard = null;
+    return;
+  }
+  const newUtterance = heardNow !== soundIndicator.heard;
+  soundIndicator.heard = heardNow;
+  if (!Number.isFinite(bearingDegrees)) {
+    // Heard but not PLACED. There is nothing honest to point at, and leaving the
+    // previous utterance's arrow up would be pointing at a direction this shout
+    // never came from -- so a new utterance with no bearing clears it.
+    if (newUtterance) { soundIndicator.kind = null; soundIndicator.holding = false; }
+    return;
+  }
+  const confidence = Number.isFinite(bearingConfidence)
+    ? Math.max(0, Math.min(1, bearingConfidence)) : 0;
+  // Within one utterance the bearing keeps being measured; take the most
+  // confident reading rather than the latest, which jitters.
+  if (newUtterance || !soundIndicator.holding || confidence >= soundIndicator.confidence) {
+    soundIndicator.worldAngleRadians =
+      stage.robotHeadingRadians + bearingDegrees * Math.PI / 180;
+    soundIndicator.confidence = confidence;
+  }
+  if (newUtterance) soundIndicator.screenAngleRadians = null;   // re-seed the slide
+  soundIndicator.kind = heardNow;
+  soundIndicator.holding = true;
+}
+function drawSoundIndicator(widthPixels, heightPixels) {
+  if (!soundIndicator.kind) return;
+  const fade = soundIndicator.holding ? 1
+    : 1 - (performance.now() - soundIndicator.releasedAtMilliseconds)
+          / (SOUND_INDICATOR_FADE_SECONDS * 1000);
+  if (fade <= 0) { soundIndicator.kind = null; return; }
+
+  // LIVE TARGET (user's ruling, 2026-08-30): the indicator points at the GUIDE
+  // herself, from the pose stream, re-aimed every frame -- so looking or
+  // turning away makes it SLIDE around to keep pointing at her, instead of
+  // pinning the utterance's original direction to the screen. The ear bearing
+  // seeds the first frame; geometry owns the rest.
+  const now = performance.now();
+  const elapsedSeconds = Math.min(
+    0.1, (now - (soundIndicator.lastDrawMilliseconds || now)) / 1000);
+  soundIndicator.lastDrawMilliseconds = now;
+  let worldAngleRadians = soundIndicator.worldAngleRadians;
+  let distanceMeters = null;
+  try {
+    const bodies = stage.world && stage.world.bodies;
+    const guide = (bodies && stage.world.guideIndex >= 0)
+      ? bodies[stage.world.guideIndex] : null;
+    const pelvis = bodies ? bodies[stage.world.pelvisIndex] : null;
+    if (guide && pelvis) {
+      worldAngleRadians = Math.atan2(guide.position.y - pelvis.position.y,
+                                     guide.position.x - pelvis.position.x);
+      distanceMeters = guide.position.distanceTo(pelvis.position);
+    }
+  } catch (error) { /* geometry not up yet: keep the ear's angle */ }
+  const viewAzimuthRadians = stage.viewAzimuthDegrees * Math.PI / 180;
+  const forwardX = -Math.cos(viewAzimuthRadians), forwardY = -Math.sin(viewAzimuthRadians);
+  const rightX = forwardY, rightY = -forwardX;
+  const soundX = Math.cos(worldAngleRadians);
+  const soundY = Math.sin(worldAngleRadians);
+  const along = soundX * forwardX + soundY * forwardY;
+  const lateral = soundX * rightX + soundY * rightY;
+  // 0 = dead ahead (arc at top centre), +pi/2 = right edge, pi = behind (bottom).
+  const targetScreenAngleRadians = Math.atan2(lateral, along);
+  if (soundIndicator.screenAngleRadians === null) {
+    soundIndicator.screenAngleRadians = targetScreenAngleRadians;
+  } else {
+    const share = 1 - Math.exp(-elapsedSeconds / 0.18);
+    const error = ((targetScreenAngleRadians - soundIndicator.screenAngleRadians
+                    + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+    soundIndicator.screenAngleRadians += error * share;
+  }
+  const screenAngleRadians = soundIndicator.screenAngleRadians;
+
+  const scale = Math.max(0.75, heightPixels / REFERENCE_HEIGHT_PIXELS);
+  const radius = Math.min(widthPixels, heightPixels) * 0.34;
+  const stop = soundIndicator.kind === 'stop';
+  // Green for a voice (user's ruling), red for STOP.
+  const tint = stop ? '244,86,86' : '74,222,128';
+  // Confidence is the opacity, floored so a real-but-unsure bearing is still
+  // visible: the indicator saying "roughly that way" is the point of it.
+  const alpha = fade * (0.28 + 0.72 * soundIndicator.confidence)
+    // Third person shows it too -- same maths, and it reads as "the robot heard
+    // that" -- but dimmer, because there the robot is on screen and the picture
+    // is already telling most of the story.
+    * ((stage.firstPersonEnabled && !stage.followGuide) ? 1 : 0.62);
+
+  snowContext.save();
+  snowContext.translate(widthPixels / 2, heightPixels / 2);
+  snowContext.rotate(screenAngleRadians);
+  const top = -Math.PI / 2;
+  snowContext.lineCap = 'round';
+  // A wide soft wash under a tight bright arc: the glow is what makes it read at
+  // the corner of the eye without a hard rectangle anywhere on a snow picture.
+  snowContext.strokeStyle = 'rgba(' + tint + ',' + (alpha * 0.20).toFixed(3) + ')';
+  snowContext.lineWidth = 26 * scale;
+  snowContext.beginPath();
+  snowContext.arc(0, 0, radius, top - 0.44, top + 0.44);
+  snowContext.stroke();
+  snowContext.strokeStyle = 'rgba(' + tint + ',' + alpha.toFixed(3) + ')';
+  snowContext.lineWidth = 4.4 * scale;
+  snowContext.beginPath();
+  snowContext.arc(0, 0, radius, top - 0.27, top + 0.27);
+  snowContext.stroke();
+  // The chevron just outside the arc: the arc says WHERE, the point says OUTWARD.
+  snowContext.fillStyle = 'rgba(' + tint + ',' + alpha.toFixed(3) + ')';
+  snowContext.beginPath();
+  snowContext.moveTo(0, -radius - 17 * scale);
+  snowContext.lineTo(-8 * scale, -radius - 6 * scale);
+  snowContext.lineTo(8 * scale, -radius - 6 * scale);
+  snowContext.closePath();
+  snowContext.fill();
+  snowContext.restore();
+  // close / medium / far (user's ruling), just past the chevron's tip.
+  if (distanceMeters !== null) {
+    const word = distanceMeters < 3 ? 'close' : distanceMeters < 8 ? 'medium' : 'far';
+    const labelRadius = radius + 34 * scale;
+    snowContext.save();
+    snowContext.fillStyle = 'rgba(' + tint + ',' + alpha.toFixed(3) + ')';
+    snowContext.font = '600 ' + Math.round(12 * scale) + 'px ui-sans-serif, system-ui, sans-serif';
+    snowContext.textAlign = 'center';
+    snowContext.textBaseline = 'middle';
+    snowContext.fillText(word,
+      widthPixels / 2 + Math.sin(screenAngleRadians) * labelRadius,
+      heightPixels / 2 - Math.cos(screenAngleRadians) * labelRadius);
+    snowContext.restore();
+  }
+}
+
 const snowLayout = { width: 0, height: 0, ratio: 0, shown: false };
 function syncSnowCanvas() {
   const rectangle = canvas.getBoundingClientRect();
@@ -747,7 +1357,7 @@ function weatherIsFrozen() { return document.hidden || state.paused; }
 
 // ---------- WIND SOUND (ported verbatim from the retired index.html) ----------
 const WIND_SOUND_SILENT_METERS_PER_SECOND = 1.0;
-const WIND_SOUND_FULL_METERS_PER_SECOND = 20.0;
+const WIND_SOUND_FULL_METERS_PER_SECOND = 10.0;  // loudest at 10 m/s (user ruling)
 const WIND_GAIN_TIME_CONSTANT_SECONDS = 0.15;
 const WIND_SOUND_UPDATE_INTERVAL_MILLISECONDS = 60;
 const windSound = { context: null, master: null, bandPass: null, lowPass: null, muted: false, speed: 0 };
@@ -811,7 +1421,7 @@ function updateWindSound() {
   // heard through falling snow". With visibility split off into its own dial, wind keeps
   // doing what wind does and visibility does only visibility, so those two multipliers
   // are gone rather than re-pointed at the new knob.
-  const gain = silent ? 0 : Math.min(0.95, 0.9 * Math.pow(share, 1.5));
+  const gain = silent ? 0 : Math.min(1.0, 1.15 * Math.pow(share, 1.5));  // scaled up, capped (user ruling)
   windSound.master.gain.setTargetAtTime(gain, now, WIND_GAIN_TIME_CONSTANT_SECONDS);
   windSound.bandPass.frequency.setTargetAtTime(300 + 1100 * share, now, 0.25);
   windSound.bandPass.Q.setTargetAtTime(0.7 + 2.3 * share, now, 0.25);
@@ -869,6 +1479,7 @@ function connect() {
     const bytes = new Uint8Array(event.data);
     if (hasMagic(bytes, POSE_FRAME_MAGIC)) { readPoseFrame(event.data); return; }
     if (hasMagic(bytes, EYE_FRAME_MAGIC)) { paintEyeFrame(event.data.slice(4)); return; }
+    if (hasMagic(bytes, EAR_FRAME_MAGIC)) { playEarFrame(event.data); return; }
     // Nothing else is expected on the wire: the chase-camera JPEG the 2-D page
     // displayed is gone from the harness. An unknown binary frame is dropped
     // WITHOUT DECODING rather than guessed at.
@@ -993,14 +1604,40 @@ document.addEventListener('keydown', event => {
     if (document.fullscreenElement) document.exitFullscreen();
     else stageElement.requestFullscreen?.();
   } else if (key === 'v' && !event.repeat) {
-    setViewMode(stage.toggleFirstPerson());
+    if (guideState.on) {
+      // V SWITCHES WHO YOU RIDE (user's ruling, 2026-08-30): guide <-> robot,
+      // spring snapped by setFollowGuide. The 1P/3P pill still toggles first
+      // person on whichever one you are riding.
+      viewState.onGuide = !viewState.onGuide;
+      stage.setFollowGuide(viewState.onGuide);
+      paintViewMode();
+    } else {
+      setViewMode(stage.toggleFirstPerson());
+    }
+  } else if (key === 'p' && !event.repeat) {
+    triggerShout('shoutPemba');
+  } else if (key === 'x' && !event.repeat) {
+    triggerShout('shoutStop');
   }
 });
+// The hotkeys go THROUGH the buttons so they obey the same rules: manual
+// mode only (hidden buttons don't fire) and dead while a clip is playing.
+function triggerShout(identifier) {
+  const button = $(identifier);
+  if (button && !button.disabled && button.offsetParent !== null) button.click();
+}
 // THIRD PERSON <-> FIRST PERSON. Nothing is sent: the camera the SERVER steers
 // by is the chase camera either way (stage.cameraAzimuthDegrees), so W/S/A/D,
 // the recorded mp4 and the guide follower all carry on exactly as before.
-function setViewMode(firstPerson) {
-  $('viewMode').textContent = firstPerson ? '· 1P' : '· 3P';
+// WHO the camera rides is page state, not stage state: the runtime echoes the
+// guide knob five times a second, and a bare stage flag would be overwritten
+// on the next state frame. The echo path above composes guideState.on with
+// this choice instead.
+const viewState = { onGuide: true };
+function setViewMode(firstPerson) { paintViewMode(); }
+function paintViewMode() {
+  const who = guideState.on ? (stage.followGuide ? ' · guide' : ' · robot') : '';
+  $('viewMode').textContent = (stage.firstPersonEnabled ? '· 1P' : '· 3P') + who;
 }
 $('viewMode').addEventListener('click', () => setViewMode(stage.toggleFirstPerson()));
 
@@ -1298,6 +1935,7 @@ function frame(nowMilliseconds) {
     updateWindRibbons(elapsedSeconds, snowLayout.width, snowLayout.height);
     snowContext.clearRect(0, 0, snowLayout.width, snowLayout.height);
     drawWindRibbons(snowLayout.width, snowLayout.height);
+    drawSoundIndicator(snowLayout.width, snowLayout.height);
   }
 }
 
@@ -1310,6 +1948,15 @@ window.appState = state;
 // bindings are not globals, so a screenshot harness cannot read the weather without one.
 // It exposes page-local state ONLY -- nothing here sends a knob, so driving it never
 // touches the running simulation.
+// The fourth verifier handle, same reason: a screenshot harness has to be able to
+// see the sound indicator without a shout having to reach the ear model first.
+// Page-local state ONLY -- it sends no knob and touches no running simulation.
+window.hearingIndicatorControls = {
+  soundIndicator,
+  note(heard, bearingDegrees, bearingConfidence) {
+    noteHeardSound(heard, Number(bearingDegrees), Number(bearingConfidence));
+  },
+};
 window.visibilityControls = {
   visibilityState, windScreen,
   setVisibility(meters) {

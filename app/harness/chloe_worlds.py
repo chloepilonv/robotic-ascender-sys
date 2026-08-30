@@ -159,6 +159,20 @@ CHLOE_POLICY_VERSIONS = {
         "trained_slope_degrees": 20.0,
         "note": "her run v3 of 2026-08-30 04:35; mjlab PPO, 96-d obs, no command",
     },
+    "m1": {
+        "relative_path": os.path.join(
+            "rl", "chloe", "policies",
+            "g1_ascender_slope20_mrinal_working.onnx"),
+        "trained_slope_degrees": 20.0,
+        "display": "Mrinal",
+        "note": "Mrinal's checkpoint (branch rl-training-2, iter 7998, trained"
+                " WITHOUT the climb-mode bit -> 96-d obs; his training rope did"
+                " not collide, ours does -- transfer measured anyway: 15 s"
+                " uphill 5.73/4.43/1.88 m at 10/20/30 deg, upright ~0.96,"
+                " wind-tolerant). ONNX derived from the .pt with plain torch"
+                " (normaliser baked in), verified vs torch to 3.8e-06.",
+        "slopes": (10, 20, 30),
+    },
     "v2": {
         "relative_path": os.path.join(
             "rl", "chloe", "policies",
@@ -169,7 +183,7 @@ CHLOE_POLICY_VERSIONS = {
                 " MEASURED 2026-08-30: stands still at 10/20/30 deg, either"
                 " start mode -- the loophole her v8 run is fixing. Shipped so"
                 " the team can see it; not the default.",
-        "slopes": (20,),
+        "slopes": (0, 20),
     },
 }
 CURRENT_CHLOE_VERSION = "v1"
@@ -180,27 +194,33 @@ CURRENT_CHLOE_VERSION = "v1"
 # scales -- with only the slope changed. She trained at 20; the measured band
 # she climbs in is 10-30 (SLOPE_BAND_DEGREES); rungs outside it are kept ON
 # PURPOSE so the failure is visible in the app, not just in a table.
-CHLOE_SLOPE_LADDER_DEGREES = (0, 5, 10, 15, 20, 25, 30, 35, 40)
+CHLOE_SLOPE_LADDER_DEGREES = (0, 20, 30)   # trimmed to the demo rungs (user, 2026-08-30)
+
+
+def _display_name(version):
+    return CHLOE_POLICY_VERSIONS[version].get("display", f"Chloe {version}")
 
 
 def _ladder_description(version, slope):
     trained = CHLOE_POLICY_VERSIONS[version]["trained_slope_degrees"]
+    display = _display_name(version)
     if slope == trained:
-        return (f"Chloe's {version} mjlab rope-ascender policy on the plant it"
+        return (f"{display}'s mjlab rope-ascender policy on the plant it"
                 " was trained in: one straight line 0.60 m up, an ascender"
                 f" welded to it, and a {slope:g} degree slope. W gates it;"
                 " nothing steers it.")
     low, high = SLOPE_BAND_DEGREES
     where = ("inside" if low <= slope <= high else "OUTSIDE")
-    return (f"The same {version} policy and the same flat plant at {slope:g}"
-            f" degrees -- {where} the measured {low:g}-{high:g} degree band it"
-            f" climbs in. Not a slope she trained at (she trained at {trained:g}).")
+    return (f"The same {display} policy and the same flat plant at {slope:g}"
+            f" degrees -- {where} the measured {low:g}-{high:g} degree band"
+            f" (trained at {trained:g}).")
 
 
 def _versioned_definition(version, slope):
     name, definition = _definition(
         f"chloe_{version}_{slope:g}", float(slope),
-        f"Chloe {version} · {slope:g}° · rope", _ladder_description(version, slope))
+        f"{_display_name(version)} · {slope:g}° · rope",
+        _ladder_description(version, slope))
     definition["policy_version"] = version
     definition["policy_relative_path"] = CHLOE_POLICY_VERSIONS[version]["relative_path"]
     return name, definition
@@ -227,16 +247,34 @@ SCRIPTED_SLOPE_LADDER_DEGREES = (0, 10, 20, 30)
 SCRIPTED_POLICY_VERSION = "scripted"
 
 
+def _scripted_measured(slope):
+    """What the gait actually did there, 15 s, calm, friction 0.8.
+
+    Measured 2026-08-30 by `scripted_ascender._matrix`, and quoted rather than
+    promised: the rungs that do not climb are kept in the app ON PURPOSE, the
+    same way Chloe's out-of-band slopes are, so the failure is visible on the
+    page and not only in a table.
+    """
+    return {
+        0.0: "climbs 1.48 m in 15 s (1.58 m of rope)",
+        10.0: "climbs 0.68 m in 15 s (0.80 m of rope)",
+        20.0: "does NOT climb -- holds the line but slides 0.09 m downhill",
+        30.0: "does NOT climb -- holds the line but slides 0.39 m downhill",
+    }[float(slope)]
+
+
 def _scripted_definition(slope):
     name, definition = _definition(
         f"scripted_{slope:g}", float(slope),
         f"Scripted · {slope:g}° · rope",
         "A hand-written quasi-static climbing gait -- no network anywhere."
         " The ascender is welded to the rope, so the right wrist is pinned to a"
-        " straight line; with both feet down that is a three-point support, and"
-        " a gait that lifts only one foot at a time never needs to catch"
-        f" itself. Right foot, left foot, right hand slides up, on a {slope:g}"
-        " degree slope. W gates it; nothing steers it.")
+        " straight line and the weld carries most of the weight; the feet are"
+        " lightly loaded and skate, which is why the left foot only DRAGS"
+        " (2 cm of clearance) while the right one steps."
+        f" Right foot steps, left foot drags, the hand slides up. At {slope:g}"
+        f" degrees it {_scripted_measured(slope)}. W gates it; nothing steers"
+        " it.")
     definition["policy_version"] = SCRIPTED_POLICY_VERSION
     definition["policy_relative_path"] = None
     definition["slope_provenance"] = "chosen for the demo (nothing was trained)"

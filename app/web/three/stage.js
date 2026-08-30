@@ -159,6 +159,8 @@ export class Stage {
       yawLimitDegrees: HIKER_YAW_LIMIT_DEGREES,
     });
     this.followGuide = false;
+    this.guideActive = false;   // the page's guide knob, for the rope-map camera lock
+    this.ropeWorld = false;
     this._hikerHeadNodes = null;
     this.firstPersonEnabled = false;
     this._thirdPersonNearPlaneMeters = NEAR_PLANE_METERS;
@@ -306,6 +308,7 @@ export class Stage {
     this._applyFirstPersonVisibility();
     this._posePrevious = this._poseLatest = this._poseBlend = null;
     this.slopeDegrees = sidecar.slope_degrees || 0;
+    this.ropeWorld = Boolean(sidecar.rope_enabled);
     // Fog scaled to the map: a 25 m patch and a 120 m sandbox want very
     // different densities or one is soup and the other is glass.
     const diagonal = sidecar.terrain
@@ -373,6 +376,20 @@ export class Stage {
   get viewAzimuthDegrees() {
     return this.firstPersonEnabled
       ? this.activeFirstPerson.azimuthDegrees() : this.chase.azimuthDegrees;
+  }
+  // WHERE THE ROBOT IS FACING, world radians. `_headingRadians` above is the
+  // BOOM's subject and becomes the HIKER's the moment the guide is on, so
+  // anything about the ROBOT's own body -- the sound-direction indicator, whose
+  // bearing arrives in the robot's body frame -- must read the pelvis itself and
+  // not the boom. Same yaw-about-world-z formula as the update (a pelvis on a
+  // 38.6 deg face is pitched over, so its local +x is nothing like its heading).
+  get robotHeadingRadians() {
+    const pelvisNode = (this.world && this.world.bodies)
+      ? this.world.bodies[this.world.pelvisIndex] : null;
+    if (!pelvisNode) return this._headingRadians;
+    const quaternion = pelvisNode.quaternion;
+    const w = quaternion.w, x = quaternion.x, y = quaternion.y, z = quaternion.z;
+    return Math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z));
   }
   look(movementX, movementY) {
     if (this.firstPersonEnabled) this.activeFirstPerson.look(movementX, movementY);
@@ -547,8 +564,13 @@ export class Stage {
         this._torsoPosition.copy(mountNode.position);
         this._torsoQuaternion.copy(mountNode.quaternion);
       }
+      // ROPE MAP + GUIDE ON + robot's own eyes: stabilised orientation
+      // (position and heading only -- the climb's body-rock stays out of the
+      // lens; user's ruling 2026-08-30).
+      const lockHeading = (this.ropeWorld && this.guideActive && !this.followGuide)
+        ? this.robotHeadingRadians : null;
       this.activeFirstPerson.update(elapsedSeconds, this._torsoPosition,
-                                    this._torsoQuaternion);
+                                    this._torsoQuaternion, lockHeading);
     }
     this.world.update(elapsedSeconds, this.camera.position, this._pelvis,
                       this.windEast, this.windNorth,

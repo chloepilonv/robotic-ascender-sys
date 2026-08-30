@@ -28,9 +28,12 @@ Writes `app/bms/sim/log.jsonl`, one line per sim second → point the app at tha
 | contact forces (`mj_contactForce`) | ambient temp from altitude, wind chill, air density |
 
 ## Derived constants (top of `battery_model.py`) — from generic Li-ion / BLDC data, calibrate with real logs
-`ETA` 0.70, `R_WIND` 0.10 Ω, `KT_JOINT` 2.0 N·m/A, `P_IDLE_W` 60, `R_INT_25` 0.08 Ω, thermal C/R. Calibrate against `real/log.jsonl`.
+`ETA` 0.70, `R_WIND` 0.10 Ω, `KT_JOINT` 2.0 N·m/A, `P_IDLE_W` 60, `R_INT_25` 0.08 Ω, thermal C/R,
+`JACKET_PCT` 60 (hardcoded battery insulation: KAILAS jacket vents closed; 30 ≈ vents/fans open, 0 = no jacket —
+the robot shell is already in `R_TH_BAT`, don't count it twice). Calibrate against `real/log.jsonl`
+(R_int from voltage sag ÷ current step; R_th·C from one power-off cooldown curve; η from V·I ÷ Σ|τ·q̇|).
 Sanity: standing + arm swing ≈ 70 W; walking should land ~150–300 W.
 
 ## Known limits
 - Menagerie G1 actuators are position servos (kp=500); `actuator_force` is still the joint torque, so the maths holds.
-- No per-cell model (all cells = pack/13). No self-heating of the pack from sun/insulation.
+- No per-cell model (all cells = pack/13). Insulation is one hardcoded scalar (`JACKET_PCT`); no sun load, no vent/fan dynamics.

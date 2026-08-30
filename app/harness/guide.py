@@ -65,13 +65,12 @@ calibrated whatever the reading is called.
 
 TWO LIMITS THE BACKPACK MARKER HAS AND THE JACKET DID NOT, both measured in
 test_guide rather than discovered in a demo. She is INVISIBLE FACING THE ROBOT:
-0 mask pixels at 2 m and at 5 m, and the follower sits in SEARCH rather than
-inventing a range (A2). And there is a CLOSE-RANGE HOLE on the approach: she
-walks 0.6 m to the left of the rope, so as the robot closes inside about 1.5 m
-the bearing to her passes the +/-29 deg frame edge and a narrow marker on her
-back goes with it, where a whole jacket still filled the picture. The follower
-recovers through SEARCH (A2b: WAIT reached at 13.7 s from 2 m) but it is a
-detour, and on flat_0 it is what stops test_search's REALIGN handing over.
+0 mask pixels at 2 m and at 5 m, and the follower goes LOST rather than
+inventing a range (A2) -- which is exactly the case the EARS exist for
+(`hearing.py`). And there is a CLOSE-RANGE HOLE on the approach: she walks
+0.6 m to the left of the rope, so as the robot closes inside about 1.5 m the
+bearing to her passes the +/-29 deg frame edge and a narrow marker on her back
+goes with it, where a whole jacket still filled the picture.
 
 Inputs  : the built `ClimbScene` (its model, spec, rope route and terrain), and
           `MjData` each tick.
@@ -154,6 +153,10 @@ GUIDE_OUTFIT_RGBA = {
 }
 
 GUIDE_SPEED_METERS_PER_SECOND = 1.0  # W walks her forward, S walks her back
+# HOW FAST A AND D TURN HER, on a world with no rope. A person changing
+# direction while walking briskly turns at roughly 60-90 deg/s; 70 is in the
+# middle and it is slow enough that the figure does not pirouette.
+GUIDE_TURN_RATE_RADIANS_PER_SECOND = math.radians(70.0)
 GUIDE_LATERAL_METERS = 0.6           # left of the rope, looking uphill
 GUIDE_LEAD_METERS = 2.5              # where it is placed on reset
 
@@ -308,12 +311,113 @@ GUIDE_MINIMUM_VALUE = 40
 GUIDE_MINIMUM_PIXELS = 24            # below this it is noise, not a person
 
 # ------------------------------------------------------------ the decision
-FOLLOW_RANGE_METERS = 1.3            # start following beyond this
-WAIT_RANGE_METERS = 1.0              # stop within this
+FOLLOW_RANGE_METERS = 1.8            # start following beyond this
+WAIT_RANGE_METERS = 1.5              # stop within this (user ruling 2026-08-30: follow if > 1.5 m)
 LOST_AFTER_SECONDS = 1.0
 FOLLOW_SPEED_METERS_PER_SECOND = 0.5
 BEARING_GAIN_PER_RADIAN = 2.0
 MAXIMUM_YAW_RATE_RADIANS_PER_SECOND = 1.0
+
+# ------------------------------------------------- WALKING THE VECTOR (2026-08-30)
+# THE USER'S RULING: "the stock unitree should be able to walk in all directions
+# when it hears the voice." The old approach law was scalar -- `[speed, 0, yaw]`
+# -- so the ONLY way the robot could close a bearing was to turn, and MEASURED on
+# `flat_free` (the mels policy's own training floor, stock playground G1, 10 s per
+# cell from standstill) turning is the one thing it barely does:
+#
+#     command (vx, vy, yaw)   achieved vx    achieved vy    achieved yaw
+#     (1.0, 0.0, 0.0)           +0.70 m/s      -0.19 m/s      -0.05 rad/s
+#     (0.0, 0.5, 0.0)           +0.21          +0.08          -0.05      (fell 9.8 s)
+#     (0.0, 0.0, 1.0)           +0.09          +0.01          +0.07
+#     (0.7, 0.0, 1.0)           +0.05          -0.11          -0.11
+#     (0.7, 0.5, 0.3)           +0.32          -0.19          -0.27
+#
+# 70% of the commanded FORWARD speed arrives; about 7% of the commanded YAW does.
+# A controller that steers only with `ang_vel_yaw` is therefore spending its one
+# strong actuator (forward) on a direction it did not choose and its one weak
+# actuator on the whole steering job. The fix is to stop treating the command as
+# a speed plus a rudder and start treating it as a VELOCITY VECTOR in the body
+# frame, which is what the policy's `lin_vel_x` / `lin_vel_y` ports already are:
+#
+#     lin_vel_x  = v * cos(beta)
+#     lin_vel_y  = clip(v * sin(beta), +/- 0.5)      <- CMD_LIMITS' own lateral cap
+#     ang_vel_yaw = clip(k * beta, +/- 1.0)          <- face her WHILE walking
+#
+# `k` is set so the heading closes over about two seconds, which is gentle enough
+# that the turn is a drift rather than a lurch -- the robot is already moving
+# toward her on the linear ports, so yaw is now a comfort term, not the engine.
+#
+# BEHIND HER (|beta| > 90 deg) `cos(beta)` goes negative and the law would ask for
+# a backwards walk. It is FLOORED AT A SMALL POSITIVE CREEP instead, and the floor
+# is MEASURED, not chosen: a target 6 m away at 135 deg off the nose, `flat_free`,
+# 3 seeds, 90 s budget, walking the vector with only the floor varied --
+#
+#     lin_vel_x floor   arrivals   mean arrival   falls
+#         -0.20 m/s       0/3          --           3
+#         +0.00           3/3         27.4 s        0
+#         +0.15           3/3         26.7 s        0
+#         +0.30           3/3         42.6 s        0
+#
+# -- so asking this walker to step BACKWARDS while crabbing and turning tips it
+# over every time, and a small forward creep does not. +0.15 is taken over +0.00
+# because at a bearing of exactly 180 deg the lateral term vanishes too, and a
+# robot commanded (0, 0, yaw) is standing still: yaw only exists while the gait
+# steps (see `hearing.HearingBehaviour._walk_toward`). So the robot walks a
+# CURVED approach, crabbing sideways on `lin_vel_y` while the yaw term swings
+# the nose around -- and it never stops to pivot, because a stopped robot cannot
+# turn at all.
+VECTOR_YAW_GAIN_PER_RADIAN = 0.5          # ~2 s to face the target
+VECTOR_MAXIMUM_YAW_RATE_RADIANS_PER_SECOND = 1.0   # walk_policy.CMD_LIMITS[2]
+VECTOR_MAXIMUM_LATERAL_METERS_PER_SECOND = 0.5     # walk_policy.CMD_LIMITS[1]
+VECTOR_MAXIMUM_FORWARD_METERS_PER_SECOND = 1.0     # walk_policy.CMD_LIMITS[0]
+# The floor on `lin_vel_x` when she is BEHIND. Positive, not negative and not
+# zero: the gait has to keep stepping or the yaw term buys nothing, and stepping
+# BACKWARDS while crabbing tips this walker over. See the table above.
+VECTOR_MINIMUM_FORWARD_METERS_PER_SECOND = 0.15
+
+
+def vector_command(bearing_radians, speed_meters_per_second,
+                   yaw_gain=VECTOR_YAW_GAIN_PER_RADIAN,
+                   deadband_radians=None) -> np.ndarray:
+    """Walk TOWARD a body-frame bearing, using all three command ports.
+
+    Inputs : `bearing_radians` -- where the target is in the robot's own frame,
+             +ve to its left (the same sign the detector and the ears report);
+             `speed_meters_per_second` -- how fast to approach, metres/second.
+    Output : (3,) float [lin_vel_x m/s, lin_vel_y m/s, ang_vel_yaw rad/s], the
+             walking policy's own layout, already clamped to `CMD_LIMITS`.
+             The linear pair is the approach direction resolved into the body
+             frame; the yaw term turns the nose onto her over ~2 s WITHOUT
+             stopping. See the block comment above for the measured reason.
+    """
+    if deadband_radians is None:
+        # Resolved here, not in the signature: `BEARING_DEADBAND_RADIANS` is
+        # assigned further down this module and a default argument is evaluated
+        # at def time.
+        deadband_radians = BEARING_DEADBAND_RADIANS
+    bearing = float(_wrap_to_pi(bearing_radians))
+    speed = float(speed_meters_per_second)
+    forward = speed * math.cos(bearing)
+    lateral = speed * math.sin(bearing)
+    forward = max(forward, VECTOR_MINIMUM_FORWARD_METERS_PER_SECOND)
+    forward = float(np.clip(forward, VECTOR_MINIMUM_FORWARD_METERS_PER_SECOND,
+                            VECTOR_MAXIMUM_FORWARD_METERS_PER_SECOND))
+    lateral = float(np.clip(lateral, -VECTOR_MAXIMUM_LATERAL_METERS_PER_SECOND,
+                            VECTOR_MAXIMUM_LATERAL_METERS_PER_SECOND))
+    if abs(bearing) < deadband_radians:
+        yaw_rate = 0.0
+    else:
+        yaw_rate = float(np.clip(
+            yaw_gain * bearing,
+            -VECTOR_MAXIMUM_YAW_RATE_RADIANS_PER_SECOND,
+            VECTOR_MAXIMUM_YAW_RATE_RADIANS_PER_SECOND))
+    return np.array([forward, lateral, yaw_rate])
+
+
+def _wrap_to_pi(angle_radians: float) -> float:
+    """(-pi, pi]. A bearing of +190 deg is a bearing of -170 deg."""
+    return (float(angle_radians) + math.pi) % (2.0 * math.pi) - math.pi
+
 
 # ------------------------------------------------------- looking for her
 # THE G1 HAS NO NECK. The stereo pair is the `d435i` mount on `torso_link`, and
@@ -328,43 +432,17 @@ WAIST_YAW_JOINT_NAME = "waist_yaw_joint"
 # the block matcher cannot work with, and slow enough not to shove a robot whose
 # palm is clipped to a rope.
 WAIST_RATE_RADIANS_PER_SECOND = 1.5
-# The sweep opens OUT rather than starting wide: the human is usually just
-# outside the +/-29 deg field of view, and a 90 deg lunge for a target 35 deg
-# away throws the body about for nothing.
-SWEEP_AMPLITUDES_RADIANS = (math.radians(20.0), math.radians(60.0),
-                            math.radians(90.0))
-SWEEP_REACHED_RADIANS = math.radians(2.0)   # close enough to the end to turn back
 # HOW FAR THE "NECK" MAY EVER TURN, and this is a MEASURED number rather than a
-# design one. The joint allows +/-150 deg and the sweep ladder above asks for 90,
-# but a torso twisted that far on a robot hanging off a rope by one palm falls
-# over. Sweeping `flat_0` for 25 s, roped, at 1.5 rad/s:
+# design one. The joint allows +/-150 deg, but a torso twisted that far on a
+# robot hanging off a rope by one palm falls over. Panning `flat_0` for 25 s,
+# roped, at 1.5 rad/s:
 #
 #     90 deg -> fell at 9.5 s | 80 -> 8.3 s | 75 -> 5.6 s
 #     70 deg -> survived      | 65 -> fell at 21.6 s | 60 -> survived, upright 0.96
 #
-# So 60 deg is the widest angle this robot can actually hold, and the ladder's
-# top rung is clamped to it. The ladder is left at 20/60/90 on purpose: it is
-# the design, and a robot that can hold 90 would get it by raising this one
-# line. ASK to Mrinal: a policy that expects a moving waist would lift this.
+# So 60 deg is the widest angle this robot can actually hold.
+# ASK to Mrinal: a policy that expects a moving waist would lift this.
 WAIST_LIMIT_RADIANS = math.radians(60.0)
-# Two consecutive vision updates, not one: a single frame of a blizzard can put
-# a jacket-coloured speck anywhere, and turning the whole robot toward it is
-# expensive. Two in a row costs 100 ms at the 10 Hz vision rate.
-SEARCH_CONFIRMATIONS = 2
-# Give up sweeping after this, sit still, and try again this often.
-SEARCH_TIMEOUT_SECONDS = 15.0
-SEARCH_RETRY_SECONDS = 5.0
-# REALIGN is done when she is back on the BODY's own axis: the waist has unwound
-# to nearly straight AND she is near the middle of the picture.
-REALIGN_DONE_WAIST_RADIANS = math.radians(5.0)
-REALIGN_DONE_BEARING_RADIANS = math.radians(8.0)
-# AND the hand-over test that actually matters: she must be inside the cone the
-# cameras will see once the waist has straightened. The horizontal half-FOV is
-# 36.5 deg, so 25 leaves a margin. Handing over on the IMAGE bearing alone
-# unwinds the waist and throws her straight back out of frame; requiring the
-# waist to already be straight can never be met, because she walks 0.6 m to the
-# rope's left and the waist settles at whatever angle keeps her centred.
-REALIGN_DONE_BODY_BEARING_RADIANS = math.radians(25.0)
 BEARING_DEADBAND_RADIANS = math.radians(2.0)
 
 # Every `MjData` field `mj_kinematics` and `mj_camlight` write. The guide
@@ -377,9 +455,7 @@ KINEMATICS_OUTPUT_FIELDS = (
     "cam_xpos", "cam_xmat", "light_xpos", "light_xdir")
 
 # Recorded as a number, because `Recorder.append` stacks float arrays.
-GUIDE_MODE_CODES = {"WAIT": 0, "FOLLOW": 1, "LOST": 2, "SEARCH": 3}
-SEARCH_PHASE_CODES = {"": -1.0, "sweep": 0.0, "acquire": 1.0, "realign": 2.0,
-                      "idle": 3.0}
+GUIDE_MODE_CODES = {"WAIT": 0, "FOLLOW": 1, "LOST": 2}
 # hud.json is read by the browser, and `JSON.parse` rejects a bare NaN, so a
 # missing measurement is recorded as this rather than as NaN. The websocket
 # state uses `null` for the same thing, which JSON does allow.
@@ -746,14 +822,48 @@ def _add_eye_cameras(spec, model, verbose=True) -> bool:
     source_id = mujoco.mj_name2id(
         model, mujoco.mjtObj.mjOBJ_CAMERA, SOURCE_CAMERA_NAME)
     if source is None or source_id < 0:
-        print(f"[guide] no {SOURCE_CAMERA_NAME!r} camera in the model: the eyes"
-              " cannot be mounted, the guide stays off", flush=True)
-        return False
-
-    parent = source.parent
-    position = np.asarray(model.cam_pos[source_id], dtype=float)
-    quaternion = np.asarray(model.cam_quat[source_id], dtype=float)
-    fovy = float(model.cam_fovy[source_id])
+        # The BARE playground G1 (menagerie) ships without the RealSense the
+        # real robot carries. Mount one at the jacketed model's exact pose
+        # (assets/robots/mujoco/g1_unitree_ascender.xml: pos 0.0789635 0 0.386,
+        # xyaxes "0 -1 0  0 0 1", fovy 58) so the eyes -- and with them the
+        # guide and the hearing demo -- work on the stock robot too
+        # (user ruling 2026-08-30: flat_free carries the stock G1). A camera
+        # is visual-only: MuJoCo integrates nothing from it.
+        torso = None
+        for body in spec.bodies:
+            if body.name == "torso_link":
+                torso = body
+                break
+        if torso is None:
+            print(f"[guide] no {SOURCE_CAMERA_NAME!r} camera and no"
+                  " 'torso_link' to mount one on: the guide stays off",
+                  flush=True)
+            return False
+        # xyaxes "0 -1 0  0 0 1": camera x (image right) = -world-y of the
+        # torso, y (image up) = +z, so z (out the back) = x cross y = -x.
+        rotation_columns = np.array([[0.0, 0.0, -1.0],
+                                     [-1.0, 0.0, 0.0],
+                                     [0.0, 1.0, 0.0]])
+        fallback_quaternion = np.zeros(4)
+        mujoco.mju_mat2Quat(fallback_quaternion, rotation_columns.reshape(9))
+        source = torso.add_camera(name=SOURCE_CAMERA_NAME)
+        source.pos = [0.0789635, 0.0, 0.386]
+        source.quat = fallback_quaternion.tolist()
+        source.fovy = 58.0
+        if verbose:
+            print(f"[guide] bare robot: mounted the {SOURCE_CAMERA_NAME!r}"
+                  " RealSense at the jacketed model's pose on 'torso_link'"
+                  " (the real G1 carries one; the menagerie file omits it)",
+                  flush=True)
+        parent = torso
+        position = np.array([0.0789635, 0.0, 0.386])
+        quaternion = fallback_quaternion
+        fovy = 58.0
+    else:
+        parent = source.parent
+        position = np.asarray(model.cam_pos[source_id], dtype=float)
+        quaternion = np.asarray(model.cam_quat[source_id], dtype=float)
+        fovy = float(model.cam_fovy[source_id])
 
     # The camera's x axis in the PARENT body's frame -- the first column of the
     # rotation matrix the quaternion stands for.
@@ -874,10 +984,23 @@ class Guide:
               `write()` puts both into `MjData`.
     """
 
-    def __init__(self, route, terrain, model=None):
+    def __init__(self, route, terrain, model=None, free_walk=False):
         self.route = route
         self.terrain = terrain
+        # FREE WALK: on a world with no rope there is no line for her to be on,
+        # so W/S walk her along her OWN heading and A/D turn it (user's ruling,
+        # 2026-08-30). On a roped world she stays on the rope exactly as before
+        # and A/D do nothing to her. She is still initialised from the route in
+        # both cases -- only the DRIVING changes, so the spawn is unmoved.
+        self.free_walk = bool(free_walk)
+        self.free_position_world = np.zeros(2)
+        self.free_yaw_radians = 0.0
         self.arclength_meters = 0.0
+        # HOW FAR SHE HAS WALKED, signed, and the ONLY thing the gait phase
+        # reads. On the rope it tracks the arc length; free of it, it tracks
+        # ground covered. Keeping them separate is what stops the walk cycle
+        # freezing when free-walking past the end of the rope's length.
+        self.travel_meters = 0.0
         self.enabled = False
         self.body_id = -1
         self.mocap_id = -1
@@ -910,22 +1033,45 @@ class Guide:
         start, _ = self.route.project_arclen(np.asarray(position_world, dtype=float))
         self.arclength_meters = float(np.clip(
             start + lead_meters, 0.0, self.route.length))
+        self.travel_meters = self.arclength_meters
+        # Seed the free-walk pose from the rope route, so she stands exactly
+        # where she always did and only the controls differ.
+        on_route = self._route_ground_position()
+        self.free_position_world[:] = on_route[:2]
+        self.free_yaw_radians = self._route_yaw_radians()
 
-    def advance(self, dt_seconds: float, walking: bool, backing: bool = False) -> None:
-        """W walks her up the rope, S walks her back down it, both held = stop.
+    def advance(self, dt_seconds: float, walking: bool, backing: bool = False,
+                turning: float = 0.0) -> None:
+        """W walks her forward, S walks her back, both held = stop.
 
-        Backwards is a real retreat, not a turn: the yaw still comes from the
-        route tangent, so she keeps facing uphill and steps backwards down the
-        slope, the way a guide backs toward the person behind them. The gait
-        follows, because the phase is distance-locked and the distance goes
-        down.
+        ON THE ROPE she is on the line: forward is up it, and `turning` is
+        ignored because there is nowhere for her to turn to. Backwards is a real
+        retreat, not a turn -- the yaw still comes from the route tangent, so she
+        keeps facing uphill and steps backwards down the slope, the way a guide
+        backs toward the person behind them.
+
+        FREE OF THE ROPE (`free_walk`, i.e. any world with `rope=False`) she
+        walks along her OWN heading and `turning` -- A and D -- is what changes
+        it. +1 is left, matching every other yaw sign in this harness.
+
+        The gait follows either way, because the phase is distance-locked to
+        `travel_meters` and that goes down when she backs up.
         """
         dt_seconds = float(dt_seconds)
         self.direction = (1.0 if walking else 0.0) - (1.0 if backing else 0.0)
-        self.arclength_meters = float(np.clip(
-            self.arclength_meters
-            + GUIDE_SPEED_METERS_PER_SECOND * dt_seconds * self.direction,
-            0.0, self.route.length))
+        step_meters = GUIDE_SPEED_METERS_PER_SECOND * dt_seconds * self.direction
+        if self.free_walk:
+            self.free_yaw_radians += (GUIDE_TURN_RATE_RADIANS_PER_SECOND
+                                      * dt_seconds * float(turning))
+            self.free_position_world[0] += step_meters * math.cos(
+                self.free_yaw_radians)
+            self.free_position_world[1] += step_meters * math.sin(
+                self.free_yaw_radians)
+            self.travel_meters += step_meters
+        else:
+            self.arclength_meters = float(np.clip(
+                self.arclength_meters + step_meters, 0.0, self.route.length))
+            self.travel_meters = self.arclength_meters
         self.idle_seconds += dt_seconds
         target = 1.0 if self.direction != 0.0 else 0.0
         rate = 1.0 - math.exp(-dt_seconds / GUIDE_MOTION_BLEND_SECONDS)
@@ -942,7 +1088,7 @@ class Guide:
     # ------------------------------------------------------------- the gait
     def phase_radians(self) -> float:
         """One full cycle -- two steps -- per `GUIDE_STRIDE_METERS` of ground."""
-        return 2.0 * math.pi * self.arclength_meters / GUIDE_STRIDE_METERS
+        return 2.0 * math.pi * self.travel_meters / GUIDE_STRIDE_METERS
 
     def _hip_for_foot_offset(self, side, offset_meters) -> float:
         """The hip angle that puts that boot `offset_meters` in front. -> radians.
@@ -1016,7 +1162,15 @@ class Guide:
 
     # ------------------------------------------------------------ the pose
     def ground_position_world(self) -> np.ndarray:
-        """Where she stands: on the route, offset left, on the surface."""
+        """Where she stands, on the surface. -> (3,) world."""
+        if self.free_walk:
+            x = float(self.free_position_world[0])
+            y = float(self.free_position_world[1])
+            return np.array([x, y, float(self.terrain.surface_z(x, y))])
+        return self._route_ground_position()
+
+    def _route_ground_position(self) -> np.ndarray:
+        """On the route, offset left, on the surface."""
         on_rope = self.route.point_at(self.arclength_meters)
         tangent = self.route.tangent_at(self.arclength_meters)
         # Left of the direction of travel, on the ground plane.
@@ -1048,6 +1202,11 @@ class Guide:
         return point
 
     def yaw_radians(self) -> float:
+        if self.free_walk:
+            return float(self.free_yaw_radians)
+        return self._route_yaw_radians()
+
+    def _route_yaw_radians(self) -> float:
         tangent = self.route.tangent_at(self.arclength_meters)
         return math.atan2(float(tangent[1]), float(tangent[0]))
 
@@ -1083,7 +1242,7 @@ class Guide:
 
     def state(self) -> dict:
         return {
-            "human_progress_meters": float(self.arclength_meters),
+            "human_progress_meters": float(self.travel_meters),
             "at_rope_end": bool(self.at_rope_end),
         }
 
@@ -1412,7 +1571,8 @@ class WaistYaw:
         self.available = self.actuator_index >= 0
         if not self.available:
             print(f"[guide] no {WAIST_YAW_JOINT_NAME!r} actuator in this model:"
-                  " the robot cannot pan its cameras, SEARCH stays off",
+                  " the robot cannot pan its cameras; the ear layer cannot"
+                  " aim them",
                   flush=True)
             return False
         low, high = model.actuator_ctrlrange[self.actuator_index]
@@ -1438,7 +1598,7 @@ class WaistYaw:
         """CLAMPED ON ASSIGNMENT, not on use, and that is the point.
 
         Clamping inside `advance` instead left `target_radians` reading 90 deg
-        while the offset could only ever reach 60 -- so the sweep's "have I got
+        while the offset could only ever reach 60 -- so a caller's "have I got
         there yet" test never fired, the waist stuck at the limit and the robot
         stopped looking. Clamping here means every reader sees the angle that
         can actually happen, and that whole class of bug cannot recur.
@@ -1487,96 +1647,87 @@ class WaistYaw:
 
 # ------------------------------------------------------------ the decision
 class GuideFollower:
-    """FOLLOW / WAIT / SEARCH / LOST, from a range and a bearing.
+    """FOLLOW / WAIT / LOST, from a range and a bearing.
 
     THE THREE FOLLOWING BANDS overlap on purpose. A single 1.0 m threshold makes
     the robot chatter between walking and standing at exactly the distance it is
     trying to hold, because each decision changes the very number the next
-    decision reads. So the switch out of WAIT is at 1.3 m and the switch into it
-    at 1.0 m, and the 30 cm in between belongs to whichever state is running:
+    decision reads. So the switch out of WAIT is at 1.8 m and the switch into it
+    at 1.5 m, and the 30 cm in between belongs to whichever state is running:
 
-        FOLLOW   range > 1.3 m, or > 1.0 m while already following
-        WAIT     range <= 1.0 m, or <= 1.3 m while already waiting
+        FOLLOW   range > 1.8 m, or > 1.5 m while already following
+        WAIT     range <= 1.5 m, or <= 1.8 m while already waiting
+        LOST     nothing detected for a whole second
 
-    SEARCH IS WHAT HAPPENS INSTEAD OF GIVING UP. A second with no detection used
-    to mean LOST, and LOST commanded zero for ever -- the robot stood there
-    facing an empty slope. It now goes and looks, in three phases:
+    LOST MEANS STAND STILL AND LISTEN (user's ruling, 2026-08-30). There used to
+    be a SEARCH state here: on losing her the robot swung its waist through a
+    20/60/90 degree ladder hunting for the orange, then ran an acquire/realign
+    hand-over back to FOLLOW. It worked and it was measured (`flat_0` roped:
+    0.20 s to acquire, hand-over at 0.24 s, 10.2 deg of camera-bearing error;
+    `terrain_free_10` rope off: 0.40 s and 3.2 s; the 60 degree clamp above is
+    what survived that experiment) -- and it is gone, because the robot now has
+    EARS. A machine that has lost the person it is following should not wave its
+    torso about hoping; it should hold still and wait to be called, and the next
+    shout gives it a direction that a camera sweep never could. That is
+    `hearing.HearingBehaviour`'s `LISTENING` and `COMING_BY_EARS`, and this
+    class simply reports LOST and commands zero.
 
-        sweep    zero locomotion; the WAIST swings the cameras left and right at
-                 20 deg, then 60, then 90, until the detector sees her on two
-                 consecutive vision updates.
-        acquire  one tick: theta_waist + beta is the direction to her in the
-                 BODY's frame. The image bearing alone is relative to wherever
-                 the waist is pointing, which is the whole reason this step
-                 exists as a step.
-        realign  keep the waist on her, and start walking up the rope again. The
-                 waist unwinds by itself as she comes back on-axis, because its
-                 target IS the body-relative bearing. Done -> FOLLOW or WAIT by
-                 distance; lost again -> back to sweep.
-
-    Fifteen seconds of sweeping with nothing found and it stops waving the torso
-    about (`idle`), then tries again every five. That is the only place LOST-like
-    behaviour survives, and it is a rest between attempts rather than a verdict.
+    THE WAIST STAYS, because it is still the only thing that can point the
+    cameras: `hearing` aims it at the direction a shout came from. What is gone
+    is this class's use of it to hunt. In FOLLOW and WAIT the target is driven
+    back to zero, because she is in front and there is nothing to aim at; in
+    LOST the target is LEFT ALONE, because the ear layer owns it then.
 
     THE ROBOT TURNS ITS WAIST, NOT ITS BODY, unless told otherwise.
     `yaw_command_available` is False by default and for every climb world: the
     policy was trained with ang_vel_yaw ~ 0 and the palm is clipped to a fixed
     line, so commanding yaw does almost nothing (PARITY.md: +1.0 and -1.0 rad/s
     for 3 s end 10 deg apart). With it False, `ang_vel_yaw` is zero in EVERY
-    state and `realign_mode` reports "waist"; with it True the body turns too and
-    the mode is "body+waist".
+    state.
 
     Inputs  : `range_meters` (None if not detected), `bearing_radians`, dt, and
-              a `WaistYaw` to look around with.
-    Outputs : `mode` and `search_phase` (str) and `command()` -> (3,)
+              a `WaistYaw` the ear layer may aim.
+    Outputs : `mode` (str) and `command()` -> (3,)
               [lin_vel_x, lin_vel_y, ang_vel_yaw], the walking policy's layout.
     """
 
     def __init__(self, command_speed=FOLLOW_SPEED_METERS_PER_SECOND,
-                 waist=None, yaw_command_available=False):
+                 waist=None, yaw_command_available=False,
+                 vector_steering=False, rope_climb=False):
         self.command_speed = float(command_speed)
-        # THE ROBOT'S ONLY WAY TO LOOK AROUND. None on a model with no waist-yaw
-        # actuator, in which case SEARCH degrades to standing still and waiting.
+        # ROPE MODE (user's ruling, 2026-08-30): on a roped world the robot
+        # climbs the line INDEFINITELY -- there is nowhere else to go on a
+        # fixed rope -- until the eyes have her inside the WAIT band (1.5 m),
+        # which freezes the world. Not seeing her is not a reason to stop.
+        self.rope_climb = bool(rope_climb)
+        # WALK THE VECTOR, DON'T STEER WITH THE RUDDER (user's ruling,
+        # 2026-08-30). True on rope-off worlds, where the body is free to move
+        # sideways and `lin_vel_y` is a real actuator; False on every roped
+        # world, where the palm is clipped to a fixed line and a lateral command
+        # only fights the rope. See `vector_command` for the measured authority
+        # table that motivates it.
+        self.vector_steering = bool(vector_steering)
+        # THE ROBOT'S ONLY WAY TO POINT ITS CAMERAS WITHOUT TURNING. None on a
+        # model with no waist-yaw actuator; the ear layer then simply cannot aim
+        # and waits for the body to happen to face the right way.
         self.waist = waist
         # WHETHER `ang_vel_yaw` IS WORTH COMMANDING AT ALL. Mrinal's climb policy
         # was trained with ang_vel_yaw ~ 0 and the palm is clipped to a fixed
         # line, so the measured yaw authority is nil: PARITY.md records +1.0 and
         # -1.0 rad/s for 3 s ending 10 deg apart. With this False -- the DEFAULT,
         # and what every climb world gets -- `ang_vel_yaw` is held at zero in
-        # EVERY guide state and the waist does all the aiming. It is True only
-        # for a policy that was actually trained to turn.
+        # EVERY guide state. It is True only for a policy trained to turn.
         self.yaw_command_available = bool(yaw_command_available)
         self.mode = "LOST"
-        self.search_phase = ""
         self.seconds_since_detection = LOST_AFTER_SECONDS
         self.range_meters = None
         self.bearing_radians = None
-        # SEARCH bookkeeping.
-        self.search_seconds = 0.0
-        self.idle_seconds = 0.0
-        self.sweep_stage = 0
-        self.sweep_sign = 1.0
-        self.sweep_half_cycles = 0
-        self.confirmations = 0
-        self.acquired_bearing_radians = None
-
-    @property
-    def realign_mode(self) -> str:
-        return "body+waist" if self.yaw_command_available else "waist"
 
     def reset(self) -> None:
         self.mode = "LOST"
-        self.search_phase = ""
         self.seconds_since_detection = LOST_AFTER_SECONDS
         self.range_meters = None
         self.bearing_radians = None
-        self.search_seconds = 0.0
-        self.idle_seconds = 0.0
-        self.sweep_stage = 0
-        self.sweep_sign = 1.0
-        self.sweep_half_cycles = 0
-        self.confirmations = 0
-        self.acquired_bearing_radians = None
         if self.waist is not None:
             self.waist.reset()
 
@@ -1584,16 +1735,11 @@ class GuideFollower:
     def body_bearing_radians(self):
         """Where she is relative to the BODY, not the camera. -> radians or None.
 
-        THE ONE PIECE OF ARITHMETIC THE WHOLE SEARCH RESTS ON. The detector
-        reports a bearing in the IMAGE, which is relative to wherever the
-        cameras happen to be pointing -- and during a search they are pointing
-        wherever the waist put them. The direction to the human in the robot's
-        own frame is therefore
-
-            theta_waist + beta        (the ACQUIRE step of the state machine)
-
-        Using the image bearing alone would send the body 60 degrees wrong every
-        time the waist was 60 degrees out.
+        The detector reports a bearing in the IMAGE, which is relative to
+        wherever the cameras happen to be pointing -- and the ear layer may have
+        pointed them somewhere. The direction to her in the robot's own frame is
+        therefore `theta_waist + beta`. Using the image bearing alone would be
+        60 degrees wrong whenever the waist was 60 degrees out.
         """
         if self.bearing_radians is None:
             return None
@@ -1606,23 +1752,21 @@ class GuideFollower:
     def update(self, measurement, dt_seconds: float) -> None:
         """`measurement` is None on a tick with no fresh vision (the eyes run at
         10 Hz, the loop at 50): the state persists and the clocks run."""
-        fresh_detection = False
         if measurement is not None:
             if measurement["detected"]:
                 self.seconds_since_detection = 0.0
                 self.range_meters = measurement["range_meters"]
                 self.bearing_radians = measurement["bearing_radians"]
-                self.confirmations += 1
-                fresh_detection = True
             else:
                 self.seconds_since_detection += EYE_RENDER_EVERY_N_TICKS * dt_seconds
-                self.confirmations = 0
 
-        if self.mode == "SEARCH":
-            self._search(dt_seconds, measurement is not None, fresh_detection)
-        elif self.seconds_since_detection >= LOST_AFTER_SECONDS:
-            # LOST is no longer a resting place: the robot goes and looks.
-            self._enter_search()
+        if self.seconds_since_detection >= LOST_AFTER_SECONDS:
+            self.mode = "LOST"
+            self.range_meters = None
+            self.bearing_radians = None
+            # THE WAIST IS NOT TOUCHED HERE. It belongs to the ear layer while
+            # she is lost, and driving it to zero every tick would undo the aim
+            # a shout just gave it.
         else:
             self._follow_or_wait()
 
@@ -1630,7 +1774,6 @@ class GuideFollower:
             self.waist.advance(dt_seconds)
 
     def _follow_or_wait(self) -> None:
-        self.search_phase = ""
         distance = self.range_meters
         if distance is None:
             self.mode = "LOST"
@@ -1639,136 +1782,33 @@ class GuideFollower:
             self.mode = "FOLLOW" if distance > WAIT_RANGE_METERS else "WAIT"
         else:
             self.mode = "FOLLOW" if distance > FOLLOW_RANGE_METERS else "WAIT"
-        # THE WAIST STRAIGHTENS ONCE SHE IS IN FRONT, and REALIGN does not hand
-        # over until she is (`REALIGN_DONE_BODY_BEARING_RADIANS`), so this cannot
-        # throw her back out of frame.
-        #
-        # IT MUST NOT KEEP TRACKING HER HERE, tempting as that is. Tried: with
-        # the palm clipped to the rope, twisting the waist counter-rotates the
-        # PELVIS, so the image bearing never closes and the waist chases it
-        # straight to the +/-90 deg limit. On flat_0 that is a fall at 1.9 s.
-        # Losing her again and sweeping is the cheaper failure.
+        # SHE IS IN FRONT, SO THE WAIST UNWINDS. It must NOT keep tracking her
+        # here, tempting as that is. Tried: with the palm clipped to the rope,
+        # twisting the waist counter-rotates the PELVIS, so the image bearing
+        # never closes and the waist chases it straight to the limit. On flat_0
+        # that is a fall at 1.9 s.
         if self.waist is not None:
             self.waist.target_radians = 0.0
-
-    def _enter_search(self) -> None:
-        self.mode = "SEARCH"
-        self.search_phase = "sweep"
-        self.search_seconds = 0.0
-        self.idle_seconds = 0.0
-        self.sweep_stage = 0
-        self.sweep_sign = 1.0
-        self.sweep_half_cycles = 0
-        self.confirmations = 0
-        self.acquired_bearing_radians = None
-        self.range_meters = None
-        self.bearing_radians = None
-        if self.waist is not None:
-            self.waist.target_radians = (
-                self.sweep_sign * SWEEP_AMPLITUDES_RADIANS[0])
-
-    def _search(self, dt_seconds, had_vision, fresh_detection) -> None:
-        self.search_seconds += dt_seconds
-        if self.search_phase == "sweep":
-            self._sweep(dt_seconds, fresh_detection)
-        elif self.search_phase == "acquire":
-            self._acquire()
-        elif self.search_phase == "realign":
-            self._realign(had_vision)
-        elif self.search_phase == "idle":
-            self._idle(dt_seconds)
-
-    def _sweep(self, dt_seconds, fresh_detection) -> None:
-        """Zero locomotion; swing the cameras left and right, opening out."""
-        if fresh_detection and self.confirmations >= SEARCH_CONFIRMATIONS:
-            self.search_phase = "acquire"
-            return
-        if self.search_seconds >= SEARCH_TIMEOUT_SECONDS:
-            # Fifteen seconds of sweeping and nothing there. Stop waving the
-            # torso about, sit still, and try again in a while.
-            self.search_phase = "idle"
-            self.idle_seconds = 0.0
-            if self.waist is not None:
-                self.waist.target_radians = 0.0
-            return
-        if self.waist is None:
-            return
-        amplitude = SWEEP_AMPLITUDES_RADIANS[
-            min(self.sweep_stage, len(SWEEP_AMPLITUDES_RADIANS) - 1)]
-        if abs(self.waist.offset_radians - self.waist.target_radians) < SWEEP_REACHED_RADIANS:
-            self.sweep_sign = -self.sweep_sign
-            self.sweep_half_cycles += 1
-            # Two half-cycles is one full left-right sweep at this width; then
-            # open out. The last amplitude simply repeats until the timeout.
-            if self.sweep_half_cycles % 2 == 0:
-                self.sweep_stage = min(self.sweep_stage + 1,
-                                       len(SWEEP_AMPLITUDES_RADIANS) - 1)
-                amplitude = SWEEP_AMPLITUDES_RADIANS[self.sweep_stage]
-        self.waist.target_radians = self.sweep_sign * amplitude
-
-    def _acquire(self) -> None:
-        """One tick: turn the image bearing into a body-frame direction."""
-        self.acquired_bearing_radians = self.body_bearing_radians()
-        self.search_phase = "realign"
-
-    def _realign(self, had_vision) -> None:
-        """Keep the cameras on her, and start walking again.
-
-        WAIST MODE (the default, because the climb policy cannot turn): the
-        waist target tracks her bearing relative to the BODY on every vision
-        tick, rate-limited by `WaistYaw`. The waist unwinds on its own as she
-        comes back on-axis -- she is walking the same route the robot is, so the
-        geometry closes the angle without anything having to command it.
-
-        BODY+WAIST MODE (only when `yaw_command_available`): the same waist
-        tracking, plus `ang_vel_yaw` toward her. The waist unwinds because its
-        target IS the body-relative bearing, which shrinks as the body turns --
-        no separate unwind rule, and so no way for the two to disagree.
-        """
-        if self.seconds_since_detection >= LOST_AFTER_SECONDS:
-            self._enter_search()          # lost her again mid-turn
-            return
-        bearing = self.body_bearing_radians()
-        if had_vision and bearing is not None and self.waist is not None:
-            self.waist.target_radians = bearing
-        # DONE MEANS "SHE IS BACK IN FRONT OF THE BODY", which takes both
-        # numbers: centred in the PICTURE (so the cameras really are on her) AND
-        # inside the cone the cameras will still see once the waist straightens
-        # (so handing over does not immediately lose her again).
-        centred = (self.bearing_radians is not None
-                   and abs(self.bearing_radians) <= REALIGN_DONE_BEARING_RADIANS
-                   and bearing is not None
-                   and abs(bearing) <= REALIGN_DONE_BODY_BEARING_RADIANS)
-        if self.yaw_command_available:
-            # With a steerable body the waist really should come back to
-            # straight, because the BODY is meant to have taken the angle over.
-            waist_angle = (self.waist.measured_radians
-                           if self.waist is not None else 0.0)
-            centred = centred and abs(waist_angle) <= REALIGN_DONE_WAIST_RADIANS
-        if centred:
-            self._follow_or_wait()
-
-    def _idle(self, dt_seconds) -> None:
-        """Timed out. Stand still, and start sweeping again every 5 s."""
-        self.idle_seconds += dt_seconds
-        if self.idle_seconds >= SEARCH_RETRY_SECONDS:
-            self._enter_search()
 
     # ------------------------------------------------------------ the output
     def command(self) -> np.ndarray:
         """-> (3,) [lin_vel_x, lin_vel_y, ang_vel_yaw], the policy's own layout.
 
-        SWEEP and the idle wait command ZERO LOCOMOTION on purpose: a robot that
-        has lost the person it is following has no business walking, and a
-        moving base makes the bearing it is trying to measure a moving target.
+        LOST and WAIT command ZERO. A robot that has lost the person it is
+        following has no business walking off on its own -- the ear layer is
+        what gives it somewhere to go.
         """
-        if self.mode == "SEARCH":
-            if self.search_phase != "realign":
-                return np.zeros(3)
-            return np.array([self.command_speed, 0.0, self._yaw_rate(
-                self.body_bearing_radians())])
         if self.mode != "FOLLOW":
+            if self.rope_climb and self.mode == "LOST":
+                return np.array([self.command_speed, 0.0, 0.0])
             return np.zeros(3)
+        if self.vector_steering:
+            # The BODY bearing, not the image bearing: the ear layer may have
+            # panned the waist, and the legs live in the body frame.
+            bearing = self.body_bearing_radians()
+            if bearing is None:
+                bearing = 0.0
+            return vector_command(bearing, self.command_speed)
         return np.array([self.command_speed, 0.0,
                          self._yaw_rate(self.bearing_radians)])
 
@@ -1837,7 +1877,8 @@ class GuideSystem:
     """
 
     def __init__(self, scene, model, control_hz, verbose=True, enable=True,
-                 degradation=None, yaw_command_available=False):
+                 degradation=None, yaw_command_available=False,
+                 free_walk=False, vector_steering=True):
         import mujoco
         self._mujoco = mujoco
         # A legacy world has no MjSpec to operate on -- their old env hands back
@@ -1858,14 +1899,17 @@ class GuideSystem:
         # once the model is known.
         self.waist = WaistYaw()
         self.follower = GuideFollower(
-            waist=self.waist, yaw_command_available=yaw_command_available)
+            waist=self.waist, yaw_command_available=yaw_command_available,
+            vector_steering=vector_steering,
+            rope_climb=not free_walk)
         self.latest = None                 # the last vision measurement
         self.eye_jpeg = None
         self.true_range_meters = float("nan")
         self.vision_milliseconds = 0.0
         if not self.available:
             return
-        self.guide = Guide(scene.route, scene.terrain, self.model)
+        self.guide = Guide(scene.route, scene.terrain, self.model,
+                           free_walk=free_walk)
         self.waist.bind(self.model, verbose=verbose)
         self.eyes = StereoEyes(self.model, verbose=verbose,
                                degradation=degradation)
@@ -1899,17 +1943,18 @@ class GuideSystem:
         return float(np.linalg.norm(self.guide.reference_point_world() - eye))
 
     def update(self, data, tick: int, enabled: bool, walking: bool,
-               backing: bool = False) -> np.ndarray | None:
+               backing: bool = False, turning: float = 0.0,
+               eyes_enabled: bool = True) -> np.ndarray | None:
         """One control tick. -> the command to fly, or None if the guide is off.
 
         Order matters: the human moves, its body is written, and only THEN are
         the cameras rendered, so the robot sees where the human is now rather
         than where it was a tick ago.
 
-        `walking` is W and `backing` is S, and they are the HUMAN's keys, not
-        the robot's: W sends her up the rope, S brings her back down it, both
-        together stop her. What the robot does about either is the follower's
-        business.
+        `walking` is W, `backing` is S and `turning` is A/D, and they are all
+        the HUMAN's keys, not the robot's: W walks her, S backs her up, and on a
+        rope-off world A and D turn her. What the robot does about any of it is
+        the follower's business.
         """
         if not self.available:
             return None
@@ -1918,7 +1963,7 @@ class GuideSystem:
         if not self.enabled:
             self.guide.write(self.model, data)
             # UNWIND THE WAIST, and keep advancing it. Switching the guide off
-            # mid-sweep would otherwise leave the robot standing permanently
+            # mid-aim would otherwise leave the robot standing permanently
             # twisted with nothing driving it back -- the offset is added to the
             # policy's target every substep whether the guide is on or not.
             self.follower.reset()
@@ -1934,7 +1979,7 @@ class GuideSystem:
         # follower is about to compute is relative to where the cameras really
         # are, which is this number.
         self.waist.measure(data)
-        self.guide.advance(self.dt_seconds, walking, backing)
+        self.guide.advance(self.dt_seconds, walking, backing, turning)
         self.guide.write(self.model, data)
         # `mocap_pos` is an INPUT to the forward kinematics, not a pose: nothing
         # in `data` moves until something recomputes frames from it, and the
@@ -1957,8 +2002,19 @@ class GuideSystem:
         self._mujoco.mj_camlight(self.model, data)
         self.true_range_meters = self.true_range_to_guide(data)
 
+        # EYES OFF (user's ruling, 2026-08-30: an option to disable eyes): the
+        # stereo pair is not even rendered -- the robot is genuinely blind, not
+        # ignoring what it saw -- and the follower is snapped to LOST at once so
+        # the ear layer owns the approach. The stale-range trap this avoids:
+        # with no fresh non-detection arriving, `seconds_since_detection` would
+        # freeze and the follower would FOLLOW a remembered range forever.
+        self.eyes_enabled = bool(eyes_enabled)
+        if not self.eyes_enabled:
+            self.latest = None
+            self.follower.seconds_since_detection = max(
+                self.follower.seconds_since_detection, LOST_AFTER_SECONDS)
         measurement = None
-        if tick % EYE_RENDER_EVERY_N_TICKS == 0:
+        if self.eyes_enabled and tick % EYE_RENDER_EVERY_N_TICKS == 0:
             import time
             started = time.time()
             measurement = self.eyes.look(data)
@@ -1999,11 +2055,11 @@ class GuideSystem:
         return jpeg
 
     def label_text(self) -> str:
-        """The line drawn on the eye frame. Carries the SEARCH phase, because a
-        robot swinging its torso about is unreadable without it."""
+        """The line drawn on the eye frame. Carries the waist angle whenever it
+        is off centre, because a robot looking sideways is unreadable
+        without it."""
         mode = self.follower.mode
-        if mode == "SEARCH":
-            mode = f"SEARCH:{self.follower.search_phase}"
+        if abs(self.waist.degrees) > 1.0:
             mode += f" {self.waist.degrees:+.0f}°"
         if self.follower.range_meters is None:
             return f"-- m · {mode}"
@@ -2012,21 +2068,19 @@ class GuideSystem:
     def state(self) -> dict:
         """The `guide` block of the websocket state message."""
         if not self.available:
-            return {"enabled": False, "mode": "LOST", "search_phase": "",
-                    "waist_yaw_degrees": 0.0, "realign_mode": "waist",
+            return {"enabled": False, "mode": "LOST",
+                    "waist_yaw_degrees": 0.0,
                     "distance_meters": None, "bearing_degrees": None,
-                    "true_distance_meters": None, "human_progress_meters": 0.0}
+                    "true_distance_meters": None, "human_progress_meters": 0.0,
+                    "free_walk": False, "eyes": False}
         bearing = self.follower.bearing_radians
         return {
             "enabled": bool(self.enabled),
             "mode": self.follower.mode,
-            # "" unless the mode is SEARCH: "sweep" | "acquire" | "realign" |
-            # "idle" (the rest between failed sweeps).
-            "search_phase": self.follower.search_phase,
             # What the waist is actually doing, AFTER the rate limit -- the
-            # number the HUD should believe, not the target.
+            # number the HUD should believe, not the target. The ear layer is
+            # what aims it now.
             "waist_yaw_degrees": round(self.waist.degrees, 2),
-            "realign_mode": self.follower.realign_mode,
             "distance_meters": (None if self.follower.range_meters is None
                                 else round(float(self.follower.range_meters), 3)),
             "bearing_degrees": (None if bearing is None
@@ -2035,7 +2089,10 @@ class GuideSystem:
             "true_distance_meters": (None if not np.isfinite(self.true_range_meters)
                                      else round(float(self.true_range_meters), 3)),
             "human_progress_meters": round(
-                float(self.guide.arclength_meters), 3),
+                float(self.guide.travel_meters), 3),
+            # Which keys drive HER: on a rope-off world A and D turn her.
+            "free_walk": bool(self.available and self.guide.free_walk),
+            "eyes": bool(getattr(self, "eyes_enabled", True)),
         }
 
     def recorded(self) -> dict:
@@ -2048,8 +2105,6 @@ class GuideSystem:
         true_range = self.true_range_meters
         return {
             "guide_mode": float(GUIDE_MODE_CODES[self.follower.mode]),
-            "guide_search_phase": float(
-                SEARCH_PHASE_CODES.get(self.follower.search_phase, -1.0)),
             "guide_waist_yaw_degrees": float(self.waist.degrees),
             "guide_realign_body_yaw": (
                 1.0 if self.follower.yaw_command_available else 0.0),
@@ -2059,5 +2114,5 @@ class GuideSystem:
                 NO_MEASUREMENT if not (self.enabled and np.isfinite(true_range))
                 else float(true_range)),
             "guide_human_progress_meters": (
-                float(self.guide.arclength_meters) if self.available else 0.0),
+                float(self.guide.travel_meters) if self.available else 0.0),
         }

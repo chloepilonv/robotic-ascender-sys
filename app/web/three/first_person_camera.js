@@ -84,6 +84,7 @@ export const HIKER_EYE_IN_BODY_METERS = new THREE.Vector3(0.10, 0, 1.63);
 // a rolled or fully inverted horizon is nausea, not information.
 export const HIKER_YAW_LIMIT_DEGREES = null;
 
+const WORLD_UP = new THREE.Vector3(0, 0, 1);
 const YAW_DEGREES_PER_PIXEL = 0.15;      // chase_camera.AZIMUTH_DEGREES_PER_PIXEL
 const PITCH_DEGREES_PER_PIXEL = 0.12;    // chase_camera.ELEVATION_DEGREES_PER_PIXEL
 // A breath of lag on the look offset only -- not on the mount. The mount is
@@ -158,7 +159,17 @@ export class FirstPersonCamera {
   // `torsoPosition` / `torsoQuaternion` are the torso body's WORLD pose, the
   // same interpolated numbers the mesh is drawn at, so the eye never lags the
   // head it is bolted to by even one frame.
-  update(elapsedSeconds, torsoPosition, torsoQuaternion) {
+  // `lockedHeadingRadians` (optional): STABILISED MODE (user's ruling,
+  // 2026-08-30, rope maps with the guide on). The camera keeps the robot's
+  // POSITION and its gross HEADING (yaw about world z) but ignores the torso's
+  // pitch/roll/gait rock entirely -- a climbing body works the rope hard and a
+  // camera welded to it reads as falling. Pass null for the normal welded view.
+  update(elapsedSeconds, torsoPosition, torsoQuaternion, lockedHeadingRadians = null) {
+    if (lockedHeadingRadians !== null) {
+      if (!this._lockQuaternion) this._lockQuaternion = new THREE.Quaternion();
+      this._lockQuaternion.setFromAxisAngle(WORLD_UP, lockedHeadingRadians);
+      torsoQuaternion = this._lockQuaternion;
+    }
     const share = blend(LOOK_LAG_SECONDS, elapsedSeconds);
     // SHORTEST WAY ROUND, not straight subtraction: with a wrapping yaw the
     // step from +179 to -179 is two degrees, and a plain difference would spin

@@ -18,6 +18,7 @@ N_CELLS, V_CELL_MIN, V_CELL_MAX, R_INT_25 = 13, 3.0, 4.2, 0.08
 # --- thermal ---
 C_TH_MOTOR, R_TH_MOTOR = 50.0, 2.0       # J/K, K/W
 C_TH_BAT, R_TH_BAT = 2000.0, 1.5
+JACKET_PCT = 60.0     # KAILAS jacket insulation, vents closed (30 = fans/vents open, 0 = no jacket); robot shell already in R_TH_BAT
 CUTOFF_DELAY_S = 0.5      # BMS trips only after sustained under-voltage (real BMS debounce), not on one spike
 
 
@@ -39,7 +40,8 @@ class Environment:
 
     def as_dict(self):
         return {"altitude_m": self.altitude_m, "wind_kmh": self.wind_kmh, "T_amb_C": self.t_amb,
-                "T_wind_chill_C": self.t_wind_chill, "air_density": float(self.rho)}
+                "T_wind_chill_C": self.t_wind_chill, "air_density": float(self.rho),
+                "jacket_pct": JACKET_PCT}
 
 
 class BatteryThermalModel:
@@ -79,7 +81,8 @@ class BatteryThermalModel:
         if self.undervoltage_s >= CUTOFF_DELAY_S or self.soc <= 0 or f_t == 0:
             self.cutoff = True
         # thermal (first order), thinner air -> worse cooling
-        rth_m, rth_b = R_TH_MOTOR * self.env.cooling_scale, R_TH_BAT * self.env.cooling_scale
+        rth_m = R_TH_MOTOR * self.env.cooling_scale
+        rth_b = R_TH_BAT * self.env.cooling_scale / (1.0 - JACKET_PCT / 100.0)   # jacket slows the battery's cold leak
         self.t_motor += dt / C_TH_MOTOR * (p_cu - (self.t_motor - self.env.t_amb) / rth_m)
         self.t_bat += dt / C_TH_BAT * (i_pack**2 * r - (self.t_bat - self.env.t_amb) / rth_b)
         return {
