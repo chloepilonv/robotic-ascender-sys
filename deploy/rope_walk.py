@@ -194,8 +194,8 @@ class Sim:
     arm_sdk's weight does on the robot. The G1 MJCF is patched by rl.environment.robot.adapt()
     (sensors, knees_bent keyframe, RL-tuned gains) so the policy sees the plant it trained on."""
     DT = 0.002
-    HEADING_KP = 2.0                      # yaw-rate command = -KP * yaw, keeps the walk straight
-    POS_KP = 1.5                          # the policy never stands still; hold a goal x,y like StopMove does
+    HEADING_KP = 1.0                      # yaw-rate command = -KP * yaw, keeps the walk straight
+    POS_KP = 0.6                          # the policy never stands still; hold a goal x,y like StopMove does
 
     def __init__(self, viewer: bool, video: str | None):
         import mujoco, mujoco.viewer, numpy as np
@@ -210,7 +210,10 @@ class Sim:
                                 rgba=[0.35, 0.4, 0.45, 1])
         spec.worldbody.add_geom(name="rope", type=mujoco.mjtGeom.mjGEOM_CAPSULE, size=[0.008, 0, 0],
                                 fromto=[-1, ROPE_Y, ROPE_Z, 6, ROPE_Y, ROPE_Z], rgba=[0.9, 0.2, 0.1, 1],
-                                contype=0, conaffinity=0)
+                                condim=3, friction=[0.8, 0.005, 0.0001])       # solid: the hand can rest on it
+        palm = spec.body("right_wrist_yaw_link")
+        palm.add_geom(name="right_palm_pad", type=mujoco.mjtGeom.mjGEOM_SPHERE, size=[0.02, 0, 0],
+                      pos=[HAND_OFFSET + 0.04, 0, 0], rgba=[0.1, 0.8, 0.2, 0.6], group=3)
         spec.visual.global_.offwidth, spec.visual.global_.offheight = 1280, 720
         self.m = spec.compile(); self.m.opt.timestep = self.DT
         self.d = mujoco.MjData(self.m)
@@ -251,6 +254,7 @@ class Sim:
         for _ in range(max(1, int(round(s / self.DT)))):
             self.goal[0] += self.vx * self.DT                # goal advances only while "walking"
             err = self.goal - self.d.qpos[:2]
+            err = self.np.where(self.np.abs(err) < 0.05, 0.0, err)      # deadband: don't chase 5 cm
             self.walk.command[0] = max(-1.0, min(1.0, self.vx + self.POS_KP * err[0]))
             self.walk.command[1] = max(-0.5, min(0.5, self.POS_KP * err[1]))
             self.walk.command[2] = max(-0.5, min(0.5, -self.HEADING_KP * self._yaw()))
