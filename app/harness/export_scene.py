@@ -542,7 +542,7 @@ def rope_polyline(model, data):
     return [[round(float(v), 5) for v in point] for point in points]
 
 
-def open_world(world_name, plain_graphics=False):
+def open_world(world_name, plain_graphics=False, with_guide=True):
     """(model, data, meta, definition) at the world's reset pose.
 
     Uses the harness's own loaders, so a world exported here is the world the
@@ -558,6 +558,19 @@ def open_world(world_name, plain_graphics=False):
     look = None
     if definition["kind"] == "climb_scene":
         scene, meta, definition = climb_worlds_module.ClimbSceneLibrary().load(world_name)
+        # THE GUIDE'S SURGERY GOES FIRST, exactly as `runtime.open_world` does
+        # it. It recompiles the spec and appends the guide's mocap body, which
+        # takes nbody from 32 to 33 -- so an export that skipped it would hand
+        # the page a scene one body short of every pose message. Best-effort:
+        # `guide.py` is someone else's file and a broken import must not stop
+        # the exporter, only cost the picture its human.
+        if with_guide:
+            try:
+                from app.harness import guide as guide_module
+                guide_module.attach_guide(scene)
+            except Exception as error:        # pragma: no cover - reporting only
+                print(f"[export] guide NOT attached: {type(error).__name__}:"
+                      f" {error}. The scene exports without the human.", flush=True)
         model, data = scene.model, scene.data
         if not plain_graphics:
             look = graphics_module.apply_alpine_look(
@@ -589,8 +602,9 @@ def open_world(world_name, plain_graphics=False):
 
 def export_world(world_name, output_directory=SCENE_ASSETS_DIRECTORY,
                  maximum_terrain_triangles=DEFAULT_MAXIMUM_TERRAIN_TRIANGLES,
-                 plain_graphics=False):
-    model, data, meta, definition, look = open_world(world_name, plain_graphics)
+                 plain_graphics=False, with_guide=True):
+    model, data, meta, definition, look = open_world(
+        world_name, plain_graphics, with_guide)
     os.makedirs(output_directory, exist_ok=True)
 
     builder = GlbBuilder()
@@ -628,7 +642,12 @@ def export_world(world_name, output_directory=SCENE_ASSETS_DIRECTORY,
                          else f"geom_colour_{len(material_cache)}")
                 material_cache[key] = builder.add_material(
                     label, rgba, metallic, roughness)
-            node_name = f"{body_name}::{geom_name}"
+            # "__" and not "::": GLTFLoader runs every node name through
+            # PropertyBinding.sanitizeNodeName, which strips anything outside
+            # [\w-] -- so a colon silently vanishes and the sidecar's
+            # `terrain_nodes` stops matching anything in the loaded scene. That
+            # cost one debugging round; underscores survive.
+            node_name = f"{body_name}__{geom_name}"
             mesh = builder.add_mesh(node_name, positions, normals, indices,
                                     material_cache[key])
             children.append(builder.add_node(
@@ -747,6 +766,10 @@ def main(argv=None):
     parser.add_argument("--output-directory", default=SCENE_ASSETS_DIRECTORY)
     parser.add_argument("--max-terrain-triangles", type=int,
                         default=DEFAULT_MAXIMUM_TERRAIN_TRIANGLES)
+    parser.add_argument("--no-guide", action="store_true",
+                        help="export without app/harness/guide.py's mocap human"
+                             " (the runtime always attaches it, so this makes"
+                             " the GLB one body short of the pose message)")
     parser.add_argument("--plain-graphics", action="store_true",
                         help="skip apply_alpine_look (raw MuJoCo colours)")
     arguments = parser.parse_args(argv)
@@ -763,7 +786,7 @@ def main(argv=None):
         try:
             _glb, _json, sidecar = export_world(
                 name, arguments.output_directory, arguments.max_terrain_triangles,
-                arguments.plain_graphics)
+                arguments.plain_graphics, not arguments.no_guide)
         except Exception as error:            # one broken world must not stop a sweep
             print(f"[export] {name}: FAILED {type(error).__name__}: {error}", flush=True)
             continue
