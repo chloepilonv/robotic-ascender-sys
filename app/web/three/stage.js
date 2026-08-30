@@ -159,6 +159,8 @@ export class Stage {
       yawLimitDegrees: HIKER_YAW_LIMIT_DEGREES,
     });
     this.followGuide = false;
+    this.guideActive = false;   // the page's guide knob, for the rope-map camera lock
+    this.ropeWorld = false;
     this._hikerHeadNodes = null;
     this.firstPersonEnabled = false;
     this._thirdPersonNearPlaneMeters = NEAR_PLANE_METERS;
@@ -306,6 +308,7 @@ export class Stage {
     this._applyFirstPersonVisibility();
     this._posePrevious = this._poseLatest = this._poseBlend = null;
     this.slopeDegrees = sidecar.slope_degrees || 0;
+    this.ropeWorld = Boolean(sidecar.rope_enabled);
     // Fog scaled to the map: a 25 m patch and a 120 m sandbox want very
     // different densities or one is soup and the other is glass.
     const diagonal = sidecar.terrain
@@ -561,8 +564,13 @@ export class Stage {
         this._torsoPosition.copy(mountNode.position);
         this._torsoQuaternion.copy(mountNode.quaternion);
       }
+      // ROPE MAP + GUIDE ON + robot's own eyes: stabilised orientation
+      // (position and heading only -- the climb's body-rock stays out of the
+      // lens; user's ruling 2026-08-30).
+      const lockHeading = (this.ropeWorld && this.guideActive && !this.followGuide)
+        ? this.robotHeadingRadians : null;
       this.activeFirstPerson.update(elapsedSeconds, this._torsoPosition,
-                                    this._torsoQuaternion);
+                                    this._torsoQuaternion, lockHeading);
     }
     this.world.update(elapsedSeconds, this.camera.position, this._pelvis,
                       this.windEast, this.windNorth,

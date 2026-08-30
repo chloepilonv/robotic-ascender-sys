@@ -652,6 +652,7 @@ function paintGuideSwitch() {
   // boom and the first-person eye are HERS; guide off, they are the robot's again.
   // Set here rather than in the click handler so the runtime's own echo moves the
   // camera too -- a run started with `--guide` opens framed on the hiker.
+  stage.guideActive = guideState.on;
   stage.setFollowGuide(guideState.on && viewState.onGuide);
   paintViewMode();
   paintEyeViewVisibility();
