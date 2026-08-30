@@ -263,7 +263,7 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
     ),
     "rope_jerk": RewardTermCfg(func=mdp.rope_tension_rate, weight=-0.002),
     "face_uphill": RewardTermCfg(func=mdp.face_uphill, weight=0.5),
-    "facing_forward": RewardTermCfg(func=mdp.facing_forward, weight=0.3),
+    "facing_forward": RewardTermCfg(func=mdp.facing_forward, weight=0.3, params={"asset_cfg": mdp.TORSO}),
     "hiking_posture": RewardTermCfg(
       func=mdp.hiking_posture,
       weight=0.2,
