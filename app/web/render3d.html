@@ -1,0 +1,1104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>G1 Fixed-Line Ascent · 3D</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%2318181b'/%3E%3Cpath d='M3 12.5 8 3.5l5 9' fill='none' stroke='%23fafafa' stroke-width='1.6' stroke-linejoin='round'/%3E%3C/svg%3E">
+<!--
+  THE SAME COCKPIT, A DIFFERENT STAGE.
+
+  app/web/index.html shows a JPEG per control tick: MuJoCo renders on the laptop
+  and pushes the picture down the socket. This page draws the scene itself in
+  WebGL from a GLB exported once (app/harness/export_scene.py) and a 946-byte
+  pose message per tick (app/harness/pose_stream.py) -- which buys a real game
+  camera, real shadows, real snow, and a look the fixed-function renderer cannot
+  reach.
+
+  EVERYTHING ELSE IS DELIBERATELY THE SAME FILE'S CODE. The CSS, the sidebar
+  markup, the telemetry, the wind dial and its sound, the guide card and its eye
+  view, the battery card and the key handling are copied from index.html rather
+  than reinvented, so the two pages stay diffable and a judge who learned one has
+  learned the other. What is new lives in app/web/three/.
+-->
+<style>
+  /* shadcn-style neutral zinc surface. Colour is reserved for status:
+     green = good / climbing / live, red = fell / cutoff, amber = paused. */
+  :root {
+    --bg: #09090b;          /* zinc-950 */
+    --card: #18181b;        /* zinc-900 */
+    --elevated: #27272a;    /* zinc-800 */
+    --border: #27272a;      /* zinc-800 */
+    --ink: #fafafa;         /* zinc-50  */
+    --ink-2: #a1a1aa;       /* zinc-400 */
+    --ink-3: #71717a;       /* zinc-500 */
+    --good: #22c55e;
+    --bad: #ef4444;
+    --warn: #f59e0b;
+    --radius: 8px;
+    font-family: "Inter", -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-feature-settings: "cv02","cv03","cv04","cv11";
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; background: var(--bg); color: var(--ink);
+         display: grid; grid-template-columns: 1fr 320px; font-size: 13px;
+         -webkit-font-smoothing: antialiased; }
+
+  /* ---------- stage: the picture, edge to edge, and nothing else ---------- */
+  #stage { position: relative; background: #000; overflow: hidden; }
+  #canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block;
+            cursor: pointer; }
+  body.pointer-locked #canvas { cursor: none; }
+  /* the wind-ribbon layer: a transparent canvas over the WebGL view, never in
+     the way of a click. The FLAKES are in the 3-D scene now (three/world.js);
+     these long screen-space streaks are the gust language index.html invented
+     and there is no reason to redo them in world space. */
+  #snow { position: absolute; left: 0; top: 0; display: none; pointer-events: none;
+          max-width: none; max-height: none; }
+
+  #lockOverlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+                 pointer-events: none; background: rgba(9,9,11,.55); }
+  #lockOverlay > div { text-align: center; background: var(--card); border: 1px solid var(--border);
+                       border-radius: var(--radius); padding: 14px 22px; }
+  #pausedPill { display: none; margin-bottom: 9px; padding: 2px 10px; border-radius: 999px;
+                background: rgba(245,158,11,.14); border: 1px solid rgba(245,158,11,.35);
+                color: var(--warn); font-style: normal; font-weight: 600;
+                font-size: 10.5px; letter-spacing: .08em; }
+  #lockTitle { display: block; font-size: 13px; font-weight: 500; color: var(--ink); }
+  #lockSubtitle { display: block; margin-top: 4px; font-size: 11.5px; color: var(--ink-3); }
+  #banner { position: absolute; left: 0; right: 0; top: 0; display: none; padding: 9px 16px;
+            text-align: center; background: var(--bad); color: #fff;
+            font-size: 11.5px; font-weight: 600; letter-spacing: .07em; }
+  #loadingCard { position: absolute; inset: 0; display: flex; align-items: center;
+                 justify-content: center; background: #0b0d10; color: var(--ink-2);
+                 font-size: 12px; letter-spacing: .06em; }
+
+  /* ---------- sidebar: every control and every number ---------- */
+  aside { border-left: 1px solid var(--border); background: var(--bg); padding: 12px;
+          overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+  aside > *, #livePanel > *, .bmsknobs > * { flex: none; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; order: 0; }
+  .segmented { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid var(--border);
+               border-radius: var(--radius); background: var(--card); }
+  .tab { padding: 4px 13px; border-radius: 6px; font-size: 12px; color: var(--ink-2);
+         cursor: pointer; user-select: none; line-height: 1.5; text-decoration: none; display: block; }
+  .tab:hover { color: var(--ink); }
+  .tab.active { background: var(--elevated); color: var(--ink); }
+  #status { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--ink-3); }
+  #status i { width: 6px; height: 6px; border-radius: 50%; background: var(--bad); flex: none; }
+  #status.on i { background: var(--good); }
+  #realtime, #fpsOut { color: var(--ink-3); font-variant-numeric: tabular-nums; font-size: 10.5px; }
+
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+          padding: 10px; }
+  h2 { font-size: 10.5px; font-weight: 500; text-transform: uppercase; letter-spacing: .1em;
+       color: var(--ink-3); margin: 0 0 7px; }
+  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
+  .head h2 { margin: 0; }
+  .head output { font-size: 12px; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .note { font-size: 11px; color: var(--ink-3); margin-top: 7px; }
+
+  select { width: 100%; appearance: none; -webkit-appearance: none; background: var(--bg);
+           color: var(--ink); border: 1px solid var(--border); border-radius: 6px;
+           padding: 7px 30px 7px 10px; font: inherit; font-size: 12.5px; cursor: pointer;
+           background-image: url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+           background-repeat: no-repeat; background-position: right 10px center; }
+  select:hover:not(:disabled) { border-color: #3f3f46; }
+  select:disabled { color: var(--ink-3); cursor: default; opacity: .7; }
+  button { width: 100%; background: var(--elevated); color: var(--ink); border: 1px solid var(--border);
+           border-radius: 6px; padding: 8px 12px; font: inherit; font-size: 12.5px; font-weight: 500;
+           cursor: pointer; }
+  button:hover { background: #323238; }
+  button:active { background: var(--elevated); }
+
+  input[type=range] { width: 100%; appearance: none; -webkit-appearance: none; background: transparent;
+                      height: 16px; cursor: pointer; margin: 2px 0 0; }
+  input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 999px;
+    background: linear-gradient(90deg, var(--ink) 0 var(--fill,0%), var(--elevated) var(--fill,0%) 100%); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 13px; height: 13px;
+    margin-top: -4.5px; border-radius: 50%; background: var(--ink); border: none; }
+  input[type=range]::-moz-range-track { height: 4px; border-radius: 999px; background: var(--elevated); }
+  input[type=range]::-moz-range-progress { height: 4px; border-radius: 999px; background: var(--ink); }
+  input[type=range]::-moz-range-thumb { width: 13px; height: 13px; border-radius: 50%;
+    background: var(--ink); border: none; }
+
+  .windtools { display: flex; align-items: center; gap: 7px; }
+  .iconbtn { width: 22px; height: 20px; padding: 0; display: inline-flex; align-items: center;
+             justify-content: center; border: 1px solid var(--border); border-radius: 5px;
+             background: var(--bg); color: var(--ink-2); cursor: pointer; flex: none; }
+  .iconbtn:hover { background: var(--bg); color: var(--ink); border-color: #3f3f46; }
+  .iconbtn .cross { display: none; }
+  .iconbtn.muted { color: var(--ink-3); }
+  .iconbtn.muted .wave { display: none; }
+  .iconbtn.muted .cross { display: inline; }
+  .switchrow { width: auto; display: inline-flex; align-items: center; gap: 5px; padding: 0;
+               border: none; background: none; color: var(--ink-3); font-size: 10px;
+               font-weight: 500; text-transform: uppercase; letter-spacing: .08em; cursor: pointer; }
+  .switchrow:hover { background: none; color: var(--ink-2); }
+  .switch { width: 24px; height: 14px; border-radius: 999px; border: 1px solid var(--border);
+            background: var(--elevated); position: relative; flex: none; transition: background .12s; }
+  .switch::after { content: ""; position: absolute; top: 1px; left: 1px; width: 10px; height: 10px;
+                   border-radius: 50%; background: var(--ink-3); transition: transform .12s, background .12s; }
+  .switchrow[aria-checked="true"] { color: var(--ink); }
+  .switchrow[aria-checked="true"] .switch { background: var(--good); border-color: var(--good); }
+  .switchrow[aria-checked="true"] .switch::after { transform: translateX(10px); background: #fff; }
+
+  #windDial { width: 78px; height: 78px; display: block; margin: 0 auto 2px;
+              cursor: grab; touch-action: none; }
+
+  #telemetry { order: 2; }
+  .hero { display: flex; align-items: baseline; gap: 6px; margin: -1px 0 8px; }
+  .hero b { font-size: 30px; font-weight: 600; letter-spacing: -.02em; line-height: 1;
+            font-variant-numeric: tabular-nums; }
+  .hero span { font-size: 12px; color: var(--ink-3); }
+  .kv { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; align-items: baseline;
+        font-size: 12px; color: var(--ink-2); }
+  .kv b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; }
+  .kv b em { font-style: normal; color: var(--ink-3); font-weight: 400; margin-left: 3px; }
+  .bar { grid-column: 1 / -1; height: 3px; border-radius: 999px; background: var(--elevated);
+         overflow: hidden; margin: -2px 0 1px; }
+  .bar i { display: block; height: 100%; width: 0%; background: var(--ink); transition: width .08s linear; }
+  #motionBadge { margin-top: 11px; padding-top: 10px; border-top: 1px solid var(--border);
+                 font-size: 12px; color: var(--ink-3); display: flex; align-items: center; gap: 7px; }
+  #motionBadge::before { content: ""; width: 6px; height: 6px; border-radius: 50%;
+                         background: currentColor; flex: none; }
+  #motionBadge.climbing { color: var(--good); }
+  #motionBadge.waiting { color: var(--warn); }
+  #motionBadge.fell { color: var(--bad); }
+
+  #guideCard { order: 3; }
+  #guideReadout { display: none; }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-style: normal;
+          font-weight: 600; font-size: 10px; letter-spacing: .1em;
+          background: var(--elevated); border: 1px solid var(--border); color: var(--ink-2); }
+  .pill.follow { background: rgba(34,197,94,.14); border-color: rgba(34,197,94,.4); color: var(--good); }
+  .pill.wait { background: rgba(245,158,11,.14); border-color: rgba(245,158,11,.35); color: var(--warn); }
+  .pill.lost { background: rgba(239,68,68,.14); border-color: rgba(239,68,68,.4); color: var(--bad); }
+  #guideReadout .kv { margin-top: 9px; }
+  #eyeView { display: none; width: 100%; aspect-ratio: 4 / 3; margin-top: 10px;
+             border: 1px solid var(--border); border-radius: 6px; background: #000; }
+
+  #bmsCard { display: none; order: 4; }
+  #bmsCard.cutoff { border-color: rgba(239,68,68,.5); }
+  #bmsSoc { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .bmsbar { grid-column: auto; margin: 1px 0 0; }
+  .socline { display: flex; align-items: baseline; gap: 7px; }
+  #bmsRuntime { font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .bmsrows { display: grid; gap: 5px; margin-top: 8px; font-size: 11.5px; color: var(--ink-2); }
+  .bmsrows span { display: flex; justify-content: space-between; gap: 10px; white-space: nowrap; }
+  .bmsrows b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; }
+  .bmsrows b em { font-style: normal; color: var(--ink-3); font-weight: 400; margin-left: 5px; }
+  .bmsrows b.hot { color: var(--warn); }
+  .bmsrows b.critical { color: var(--bad); }
+  .bmsknobs { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);
+              display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .bmsknobs .head { margin-bottom: 4px; }
+  #bmsCutoffPill { display: none; margin-top: 10px; padding: 2px 10px; border-radius: 999px;
+                   background: rgba(239,68,68,.14); border: 1px solid rgba(239,68,68,.4);
+                   color: var(--bad); font-style: normal; font-weight: 600;
+                   font-size: 10.5px; letter-spacing: .08em; }
+
+  #liveFooter { order: 5; margin-top: auto; position: sticky; bottom: -12px; z-index: 1;
+                background: var(--bg); padding: 8px 0 12px; display: flex;
+                flex-direction: column; gap: 9px; }
+  #liveFooter::before { content: ""; position: absolute; left: 0; right: 0; top: -10px;
+                        height: 10px; background: linear-gradient(transparent, var(--bg)); }
+  .keys { display: flex; align-items: center; gap: 3px; flex-wrap: wrap;
+          font-size: 10.5px; color: var(--ink-3); }
+  .keycap { display: inline-flex; align-items: center; justify-content: center; min-width: 18px;
+            height: 18px; padding: 0 4px; border: 1px solid var(--border); border-radius: 5px;
+            background: var(--card); color: var(--ink-2); font-size: 10px; font-weight: 600;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #climbKey { cursor: pointer; user-select: none; transition: background .05s, color .05s; }
+  #climbKey.down { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .keys s { text-decoration: none; color: #3f3f46; }
+  #livePanel { display: flex; order: 1; flex-direction: column; gap: 10px; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="canvas"></canvas>
+  <canvas id="snow"></canvas>
+  <div id="loadingCard">loading the mountain…</div>
+  <div id="lockOverlay"><div><i id="pausedPill">Paused</i><b id="lockTitle">click to take control</b><span id="lockSubtitle">Esc to release</span></div></div>
+  <div id="banner">FELL</div>
+</div>
+<aside>
+  <div class="topbar">
+    <div class="segmented"><div class="tab active">3D</div><a class="tab" href="/app/web/index.html">2D · replay</a></div>
+    <div id="status"><i></i><span id="statusText">offline</span><span id="realtime"></span><span id="fpsOut"></span></div>
+  </div>
+
+  <div id="livePanel">
+    <section class="card">
+      <h2>Map</h2>
+      <select id="worldSelect"></select>
+      <div class="note" id="worldStatus" style="display:none"></div>
+    </section>
+
+    <section class="card">
+      <div class="head"><h2>Wind</h2>
+        <span class="windtools">
+          <button class="iconbtn" id="soundToggle" aria-pressed="true" title="wind sound">
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor"
+                 stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4.2 6.2H2.2v3.6h2l2.9 2.4V3.8L4.2 6.2z"/>
+              <path class="wave" d="M9.8 5.8a3 3 0 0 1 0 4.4"/>
+              <path class="wave" d="M11.8 4a6 6 0 0 1 0 8"/>
+              <path class="cross" d="M10 6.2l3.6 3.6M13.6 6.2L10 9.8"/>
+            </svg>
+          </button>
+          <button class="switchrow" id="naturalSwitch" role="switch" aria-checked="false">natural<i class="switch"></i></button>
+        </span>
+        <output id="windOut">0.0 m/s</output></div>
+      <svg id="windDial" viewBox="-70 -70 140 140">
+        <circle r="55" fill="none" stroke="var(--border)" stroke-width="3"/>
+        <text x="0" y="-60" text-anchor="middle" font-size="15" fill="var(--ink-3)">N</text>
+        <text x="64" y="5" text-anchor="middle" font-size="15" fill="var(--ink-3)">E</text>
+        <line id="windDialArrow" x1="0" y1="0" x2="0" y2="0" stroke="var(--ink-2)" stroke-width="5" stroke-linecap="round"/>
+        <circle id="windDot" cx="55" cy="0" r="11" fill="var(--ink)"/>
+      </svg>
+      <input type="range" id="windStrength" min="0" max="25" step="0.5" value="0">
+    </section>
+
+    <section class="card">
+      <div class="head"><h2>Friction</h2><output id="frictionOut">0.80</output></div>
+      <input type="range" id="friction" min="0.05" max="1.5" step="0.05" value="0.8">
+    </section>
+  </div>
+
+  <section class="card" id="telemetry">
+    <h2>Telemetry</h2>
+    <div class="hero"><b id="hudClimb">0.00</b><span>m up the line</span></div>
+    <div class="kv">
+      <span>Height gained</span><b id="hudHeight">0.0<em>m</em></b>
+      <span>Rope load</span><b id="hudRope">0<em>N</em></b>
+      <div class="bar"><i id="ropeBar"></i></div>
+      <span>Time</span><b id="hudTime">0.00<em>s</em></b>
+      <span>Wind</span><b id="hudWind">0.0 m/s · calm</b>
+    </div>
+    <div id="motionBadge">holding</div>
+  </section>
+
+  <section class="card" id="guideCard">
+    <div class="head"><h2>Guide</h2>
+      <button class="switchrow" id="guideSwitch" role="switch" aria-checked="false" title="follow a human guide"><i class="switch"></i></button></div>
+    <div id="guideReadout">
+      <i class="pill" id="guideMode">WAIT</i>
+      <div class="kv">
+        <span>Distance</span><b id="guideDistance">—<em></em></b>
+        <span>Bearing</span><b id="guideBearing">—</b>
+      </div>
+    </div>
+    <canvas id="eyeView" width="320" height="240"></canvas>
+  </section>
+
+  <section class="card" id="bmsCard">
+    <div class="head"><h2>Battery</h2>
+      <span class="socline"><span id="bmsRuntime">—</span><output id="bmsSoc">—</output></span></div>
+    <div class="bar bmsbar"><i id="bmsSocBar"></i></div>
+    <div class="bmsrows">
+      <span id="bmsPackRow">Pack<b id="bmsPack">—</b></span>
+      <span id="bmsPowerRow">Power<b id="bmsPower">—</b></span>
+      <span id="bmsTempRow">Pack temp<b id="bmsTemp">—</b></span>
+      <span id="bmsWindingRow">Winding<b id="bmsWinding">—</b></span>
+    </div>
+    <i id="bmsCutoffPill">Cutoff</i>
+    <div class="bmsknobs">
+      <div>
+        <div class="head"><h2>Ambient</h2><output id="ambientOut">15 °C</output></div>
+        <input type="range" id="ambient" min="-40" max="30" step="1" value="15">
+      </div>
+      <div>
+        <div class="head"><h2>Start SOC</h2><output id="startSocOut">100%</output></div>
+        <input type="range" id="startSoc" min="5" max="100" step="5" value="100">
+      </div>
+    </div>
+  </section>
+
+  <div id="liveFooter">
+    <button id="resetBtn">Reset climber</button>
+    <div class="keys">
+      <span class="keycap" id="climbKey" data-key="w">W</span><span id="climbLabel"> climb </span><s id="keySeparator"> · </s>
+      <span class="keycap" id="turnLeftKey" data-key="a">A</span><span class="keycap" id="turnRightKey" data-key="d">D</span><span id="turnLabel"> turn </span><s> · </s>
+      <span class="keycap">R</span> reset <s>·</s>
+      <span class="keycap">F</span> fullscreen <s>·</s>
+      <span class="keycap">G</span> graphics <s>·</s>
+      <span class="keycap">Esc</span> pause
+    </div>
+  </div>
+</aside>
+
+<script type="importmap">
+{ "imports": { "three": "/app/web/three/vendor/three.module.js" } }
+</script>
+<script type="module">
+import { Stage } from '/app/web/three/stage.js';
+import { fnv1a32 } from '/app/web/three/world.js';
+
+const $ = id => document.getElementById(id);
+const canvas = $('canvas'), stage = new Stage(canvas);
+const stageElement = $('stage');
+window.stage = stage;                             // the verifier reads this
+
+const ROPE_LOAD_FULL_SCALE_NEWTONS = 800;
+const CAMERA_MESSAGE_INTERVAL_MILLISECONDS = 20;
+const DEFAULT_AZIMUTH_DEGREES = 180;
+const DEFAULT_ELEVATION_DEGREES = -15;
+const WORLD_ARRIVAL_TIMEOUT_MILLISECONDS = 60000;
+// The runtime still renders its own JPEG for episode.mp4 and we do not show it,
+// so ask for a cheap one rather than the stage's real size: a 1920x1080 render
+// costs the sim loop ~15 ms of its 20 ms tick for a picture nobody looks at.
+const RECORDING_VIEWPORT = { width: 960, height: 540 };
+
+const state = {
+  socket: null, keys: new Set(), slopeDegrees: null,
+  worlds: {}, world: null, pendingWorld: null, loadedWorld: null,
+  paused: true, pauseIntent: true, loading: false,
+  windNow: null, actuatorNames: null, worldKey: 0,
+};
+
+// ---------- HUD (index.html, verbatim) ----------
+function paintHud(frame) {
+  const climb = Number(frame.rope_travel_meters !== undefined ? frame.rope_travel_meters : (frame.climb_meters || 0));
+  const height = Number(frame.height_gained_meters || 0);
+  const rope = Number(frame.rope_force_newtons || 0);
+  const windVelocity = windVelocityFromFrame(frame);
+  const command = frame.command || [0, 0, 0];
+  $('hudClimb').textContent = climb.toFixed(2);
+  $('hudHeight').innerHTML = height.toFixed(1) + '<em>m</em>';
+  $('hudRope').innerHTML = rope.toFixed(0) + '<em>N</em>';
+  $('ropeBar').style.width = Math.max(0, Math.min(100, rope / ROPE_LOAD_FULL_SCALE_NEWTONS * 100)).toFixed(1) + '%';
+  $('hudTime').innerHTML = Number(frame.time_seconds || 0).toFixed(2) + '<em>s</em>';
+  const magnitude = Math.hypot(windVelocity[0], windVelocity[1]);
+  $('hudWind').textContent = magnitude < 0.05
+    ? '0.0 m/s · calm'
+    : magnitude.toFixed(1) + ' m/s · ' + compassPointName(windVelocity[0], windVelocity[1]);
+  noteWindVelocity(windVelocity);
+  state.windNow = { speed: instantaneousWindSpeed(frame, magnitude),
+                    east: windVelocity[0], north: windVelocity[1] };
+  paintWindReadout();
+  noteWindSpeed(state.windNow.speed);
+  paintBatteryCard(frame);
+  paintGuideCard(frame);
+  const climbing = Number(command[0]) > 0;
+  const fell = Boolean(frame.fell);
+  const motion = $('motionBadge');
+  const followerWord = guideState.on ? GUIDE_MODE_STATUS_WORDS[guideState.mode] : null;
+  motion.textContent = fell ? 'hanging'
+    : state.paused ? 'paused'
+    : followerWord ? followerWord
+    : climbing ? 'climbing' : 'holding';
+  motion.classList.toggle('climbing',
+    !fell && !state.paused && (followerWord ? guideState.mode === 'FOLLOW' : climbing));
+  motion.classList.toggle('waiting', !fell && !state.paused && guideState.mode === 'WAIT' && Boolean(followerWord));
+  motion.classList.toggle('fell', fell || (!state.paused && Boolean(followerWord) && guideState.mode === 'LOST'));
+  if (frame.slope_degrees !== undefined && frame.slope_degrees !== null) state.slopeDegrees = frame.slope_degrees;
+  const banner = $('banner');
+  banner.textContent = 'HANGING ON THE ROPE — PRESS R';
+  banner.style.display = fell ? 'block' : 'none';
+}
+
+function windVelocityFromFrame(frame) {
+  const velocity = frame.wind_velocity_world_meters_per_second;
+  if (Array.isArray(velocity) && Number.isFinite(Number(velocity[0])))
+    return [Number(velocity[0]) || 0, Number(velocity[1]) || 0];
+  // natural_wind.py builds the heading as atan2(north, east), i.e. measured
+  // COUNTERCLOCKWISE FROM EAST -- so east is the cosine.
+  const speed = Number(frame.wind_speed_mps), heading = Number(frame.wind_heading_degrees);
+  if (Number.isFinite(speed) && Number.isFinite(heading)) {
+    const radians = heading * Math.PI / 180;
+    return [speed * Math.cos(radians), speed * Math.sin(radians)];
+  }
+  const force = frame.wind_force_world_newtons;
+  if (Array.isArray(force)) {
+    const size = Math.hypot(Number(force[0]) || 0, Number(force[1]) || 0);
+    if (size > 1e-6) return [Number(force[0]) / size * wind.strength, Number(force[1]) / size * wind.strength];
+  }
+  return [0, 0];
+}
+const WIND_DRAG_COEFFICIENT = 0.3675;
+function instantaneousWindSpeed(frame, velocityMagnitude) {
+  const speed = Number(frame.wind_speed_mps);
+  if (Number.isFinite(speed)) return Math.max(0, speed);
+  const force = frame.wind_force_world_newtons;
+  if (Array.isArray(force)) {
+    const size = Math.hypot(Number(force[0]) || 0, Number(force[1]) || 0);
+    if (size > 1e-6) return Math.sqrt(size / WIND_DRAG_COEFFICIENT);
+  }
+  return velocityMagnitude;
+}
+const COMPASS_POINT_NAMES = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE',
+                             'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+function compassPointName(eastMetersPerSecond, northMetersPerSecond) {
+  const bearing = Math.atan2(eastMetersPerSecond, northMetersPerSecond) * 180 / Math.PI;
+  return COMPASS_POINT_NAMES[(Math.round(((bearing % 360) + 360) % 360 / 22.5) % 16)];
+}
+
+// ---------- BMS (index.html, verbatim) ----------
+function paintBatteryCard(frame) {
+  const bms = frame.bms;
+  const card = $('bmsCard');
+  if (Array.isArray(frame.actuator_names)) state.actuatorNames = frame.actuator_names;
+  if (!bms || typeof bms !== 'object' || Array.isArray(bms)) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  const stateOfCharge = Number(bms.soc_pct);
+  const stateOfChargeKnown = Number.isFinite(stateOfCharge);
+  $('bmsSoc').textContent = stateOfChargeKnown ? stateOfCharge.toFixed(0) + '%' : '—';
+  const fill = $('bmsSocBar');
+  fill.style.width = (stateOfChargeKnown ? Math.max(0, Math.min(100, stateOfCharge)) : 0).toFixed(1) + '%';
+  fill.style.background = !stateOfChargeKnown ? 'var(--ink-3)'
+    : stateOfCharge <= 15 ? 'var(--bad)'
+    : stateOfCharge <= 35 ? 'var(--warn)'
+    : 'var(--good)';
+  $('bmsRuntime').textContent = formatTimeToEmpty(bms.time_to_empty_min);
+
+  const packVolts = Number(bms.pack_V), packAmps = Number(bms.current_A);
+  setBatteryRow('bmsPackRow', 'bmsPack',
+    joinKnown([Number.isFinite(packVolts) ? packVolts.toFixed(1) + ' V' : null,
+               Number.isFinite(packAmps) ? packAmps.toFixed(1) + ' A' : null]));
+  const power = Number(bms.power_W), mechanicalPower = Number(bms.mech_power_W);
+  setBatteryRow('bmsPowerRow', 'bmsPower',
+    Number.isFinite(power) ? power.toFixed(0) + ' W' : null,
+    Number.isFinite(mechanicalPower) ? 'mech ' + mechanicalPower.toFixed(0) + ' W' : null);
+  const packTemperature = Number(bms.t_bat_C);
+  const ambientTemperature = Number(bms.t_amb_C !== undefined ? bms.t_amb_C : bms.T_amb_C);
+  setBatteryRow('bmsTempRow', 'bmsTemp',
+    joinKnown([Number.isFinite(packTemperature) ? packTemperature.toFixed(0) + ' °C' : null,
+               Number.isFinite(ambientTemperature) ? 'amb ' + ambientTemperature.toFixed(0) + ' °C' : null]));
+  const winding = Number(bms.max_temp_winding_C);
+  setBatteryRow('bmsWindingRow', 'bmsWinding',
+    Number.isFinite(winding) ? winding.toFixed(0) + ' °C' : null,
+    hotJointName(bms.hot_joint));
+  const windingValue = $('bmsWinding');
+  windingValue.classList.toggle('hot', Number.isFinite(winding) && winding >= 70 && winding < 90);
+  windingValue.classList.toggle('critical', Number.isFinite(winding) && winding >= 90);
+  const cutoff = Boolean(bms.bms_cutoff !== undefined ? bms.bms_cutoff
+                       : bms.cutoff !== undefined ? bms.cutoff : frame.bms_cutoff);
+  $('bmsCutoffPill').style.display = cutoff ? 'inline-block' : 'none';
+  card.classList.toggle('cutoff', cutoff);
+}
+function joinKnown(parts) { const kept = parts.filter(Boolean); return kept.length ? kept.join(' · ') : null; }
+function formatTimeToEmpty(minutes) {
+  const value = Number(minutes);
+  if (minutes === null || minutes === undefined || !Number.isFinite(value)) return '—';
+  return value < 120 ? Math.round(value) + ' min' : (value / 60).toFixed(1) + ' h';
+}
+function hotJointName(hotJoint) {
+  if (typeof hotJoint === 'string') return hotJoint || null;
+  if (!Number.isInteger(hotJoint)) return null;
+  const names = state.actuatorNames;
+  return (names && names[hotJoint]) || 'actuator_' + hotJoint;
+}
+function setBatteryRow(rowElementId, valueElementId, text, mutedNote = null) {
+  $(rowElementId).style.display = text === null ? 'none' : 'flex';
+  if (text === null) return;
+  const value = $(valueElementId);
+  value.textContent = text;
+  if (!mutedNote) return;
+  const note = document.createElement('em');
+  note.textContent = mutedNote;
+  value.appendChild(note);
+}
+
+// ---------- GUIDE (index.html, verbatim) ----------
+const GUIDE_MODE_CLASSES = { FOLLOW: 'follow', WAIT: 'wait', LOST: 'lost' };
+const GUIDE_MODE_STATUS_WORDS = { FOLLOW: 'following', WAIT: 'waiting', LOST: 'lost' };
+const EYE_FRAME_STALE_MILLISECONDS = 2000;
+const guideState = { on: false, mode: null, lastEyeFrameMilliseconds: 0 };
+const eyeCanvas = $('eyeView'), eyeContext = eyeCanvas.getContext('2d');
+
+function paintGuideSwitch() {
+  $('guideSwitch').setAttribute('aria-checked', String(guideState.on));
+  $('climbLabel').textContent = guideState.on ? '' : ' climb ';
+  $('keySeparator').style.display = guideState.on ? 'none' : '';
+  $('turnLabel').textContent = guideState.on ? ' move the guide ' : ' turn ';
+  paintEyeViewVisibility();
+}
+$('guideSwitch').addEventListener('click', () => {
+  guideState.on = !guideState.on;
+  paintGuideSwitch();
+  paintGuideCard({});
+  send({ type: 'knob', name: 'guide', value: guideState.on ? 1 : 0 });
+});
+function paintGuideCard(frame) {
+  const guide = frame.guide;
+  const readout = $('guideReadout');
+  if (!guide || typeof guide !== 'object' || Array.isArray(guide)) {
+    readout.style.display = 'none';
+    guideState.mode = null;
+    paintEyeViewVisibility();
+    return;
+  }
+  if (guide.enabled !== undefined && Boolean(guide.enabled) !== guideState.on) {
+    guideState.on = Boolean(guide.enabled);
+    paintGuideSwitch();
+  }
+  readout.style.display = 'block';
+  const mode = typeof guide.mode === 'string' ? guide.mode.toUpperCase() : null;
+  guideState.mode = mode;
+  const pill = $('guideMode');
+  pill.textContent = mode || '—';
+  pill.className = 'pill ' + (GUIDE_MODE_CLASSES[mode] || '');
+  const distance = Number(guide.distance_meters);
+  const truth = Number(guide.true_distance_meters);
+  $('guideDistance').textContent = Number.isFinite(distance) ? distance.toFixed(1) + ' m' : '—';
+  const truthNote = document.createElement('em');
+  truthNote.textContent = Number.isFinite(truth) ? 'truth ' + truth.toFixed(2) + ' m' : '';
+  $('guideDistance').appendChild(truthNote);
+  const bearing = Number(guide.bearing_degrees);
+  $('guideBearing').textContent = Number.isFinite(bearing) ? bearing.toFixed(0) + '°' : '—';
+  paintEyeViewVisibility();
+}
+const EYE_FRAME_MAGIC = [0x45, 0x59, 0x45, 0x30];   // "EYE0"
+const POSE_FRAME_MAGIC = [0x50, 0x4F, 0x53, 0x30];  // "POS0"
+function hasMagic(bytes, magic) {
+  return bytes.length > magic.length && magic.every((byte, index) => bytes[index] === byte);
+}
+function paintEyeFrame(jpegBuffer) {
+  createImageBitmap(new Blob([jpegBuffer], { type: 'image/jpeg' })).then(bitmap => {
+    guideState.lastEyeFrameMilliseconds = performance.now();
+    eyeContext.drawImage(bitmap, 0, 0, eyeCanvas.width, eyeCanvas.height);
+    paintEyeViewVisibility();
+  }).catch(() => {});
+}
+let eyeViewShown = false;
+function paintEyeViewVisibility() {
+  const fresh = performance.now() - guideState.lastEyeFrameMilliseconds < EYE_FRAME_STALE_MILLISECONDS;
+  const shown = guideState.on && fresh;
+  if (shown === eyeViewShown) return;
+  eyeViewShown = shown;
+  eyeCanvas.style.display = shown ? 'block' : 'none';
+}
+
+// ---------- WIND RIBBONS (index.html, verbatim; the flakes are in the 3-D scene) ----------
+const snowCanvas = $('snow'), snowContext = snowCanvas.getContext('2d');
+const BLIZZARD_METERS_PER_SECOND = 20;
+const WIND_RIBBON_COUNT = 26;
+const REFERENCE_HEIGHT_PIXELS = 720;
+const WIND_SMOOTHING_SECONDS = 0.30;
+const windVelocityWorld = [0, 0];
+const windScreen = { lateral: 0, towardViewer: 0, speed: 0 };
+function noteWindVelocity(velocity) {
+  windVelocityWorld[0] = velocity[0]; windVelocityWorld[1] = velocity[1];
+  stage.setWind(velocity[0], velocity[1]);
+}
+function updateWindScreen(elapsedSeconds) {
+  const azimuthRadians = stage.cameraAzimuthDegrees * Math.PI / 180;
+  const forwardX = -Math.cos(azimuthRadians), forwardY = -Math.sin(azimuthRadians);
+  const rightX = forwardY, rightY = -forwardX;
+  const lateral = windVelocityWorld[0] * rightX + windVelocityWorld[1] * rightY;
+  const towardViewer = -(windVelocityWorld[0] * forwardX + windVelocityWorld[1] * forwardY);
+  const blend = elapsedSeconds > 0 ? 1 - Math.exp(-elapsedSeconds / WIND_SMOOTHING_SECONDS) : 0;
+  windScreen.lateral += (lateral - windScreen.lateral) * blend;
+  windScreen.towardViewer += (towardViewer - windScreen.towardViewer) * blend;
+  windScreen.speed = Math.hypot(windScreen.lateral, windScreen.towardViewer);
+}
+function makeWindRibbon() {
+  return { x: Math.random(), y: Math.random(), depth: Math.random(), velocityX: 0, velocityY: 0,
+           gustPhase: Math.random() * Math.PI * 2, gustRate: 0.25 + Math.random() * 0.55 };
+}
+const windRibbons = Array.from({ length: WIND_RIBBON_COUNT }, makeWindRibbon);
+const weatherVelocityScratch = [0, 0];
+function weatherVelocity(normalizedX, normalizedY, depth, pixelScale, out) {
+  const towardShare = Math.max(-1, Math.min(1, windScreen.towardViewer / BLIZZARD_METERS_PER_SECOND));
+  const speedShare = Math.min(1, windScreen.speed / BLIZZARD_METERS_PER_SECOND);
+  const radial = towardShare * (70 + depth * 150) * pixelScale;
+  out[0] = windScreen.lateral * (13 + depth * 30) * pixelScale + (normalizedX - 0.5) * 2 * radial;
+  out[1] = (26 + depth * 95) * pixelScale * (1 + 0.45 * speedShare) + (normalizedY - 0.5) * 2 * radial;
+  return out;
+}
+function updateWindRibbons(elapsedSeconds, widthPixels, heightPixels) {
+  const pixelScale = heightPixels / REFERENCE_HEIGHT_PIXELS;
+  for (const ribbon of windRibbons) {
+    weatherVelocity(ribbon.x, ribbon.y, 0.4 + ribbon.depth * 0.6, pixelScale, weatherVelocityScratch);
+    ribbon.velocityX = weatherVelocityScratch[0] * 1.35;
+    ribbon.velocityY = weatherVelocityScratch[1] * 0.5;
+    ribbon.gustPhase += ribbon.gustRate * elapsedSeconds;
+    ribbon.x += ribbon.velocityX * elapsedSeconds / widthPixels;
+    ribbon.y += ribbon.velocityY * elapsedSeconds / heightPixels;
+    if (ribbon.x < -0.4 || ribbon.x > 1.4 || ribbon.y < -0.4 || ribbon.y > 1.4) {
+      ribbon.x = windScreen.lateral >= 0 ? -0.2 : 1.2;
+      ribbon.y = Math.random();
+      ribbon.depth = Math.random();
+    }
+  }
+}
+function drawWindRibbons(widthPixels, heightPixels) {
+  const strength = Math.max(0, Math.min(1,
+    (windScreen.speed - 1.5) / (BLIZZARD_METERS_PER_SECOND - 1.5)));
+  if (strength <= 0.001) return;
+  const pixelScale = heightPixels / REFERENCE_HEIGHT_PIXELS;
+  const diagonalPixels = Math.hypot(widthPixels, heightPixels);
+  snowContext.lineCap = 'round';
+  for (const ribbon of windRibbons) {
+    const speed = Math.hypot(ribbon.velocityX, ribbon.velocityY);
+    if (speed < 1) continue;
+    const gust = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(ribbon.gustPhase));
+    const length = diagonalPixels * (0.05 + 0.34 * strength) * (0.45 + ribbon.depth);
+    const directionX = ribbon.velocityX / speed, directionY = ribbon.velocityY / speed;
+    const pointX = ribbon.x * widthPixels, pointY = ribbon.y * heightPixels;
+    const tailX = pointX - directionX * length, tailY = pointY - directionY * length;
+    const alpha = ((0.10 + 0.17 * ribbon.depth) * strength * gust).toFixed(3);
+    const gradient = snowContext.createLinearGradient(pointX, pointY, tailX, tailY);
+    gradient.addColorStop(0, 'rgba(228,228,231,' + alpha + ')');
+    gradient.addColorStop(1, 'rgba(228,228,231,0)');
+    snowContext.strokeStyle = gradient;
+    snowContext.lineWidth = (1.1 + ribbon.depth * 2.4) * pixelScale;
+    snowContext.beginPath();
+    snowContext.moveTo(pointX, pointY);
+    snowContext.lineTo(tailX, tailY);
+    snowContext.stroke();
+  }
+}
+const snowLayout = { width: 0, height: 0, ratio: 0, shown: false };
+function syncSnowCanvas() {
+  const rectangle = canvas.getBoundingClientRect();
+  if (rectangle.width < 4 || rectangle.height < 4) {
+    if (snowLayout.shown) { snowCanvas.style.display = 'none'; snowLayout.shown = false; }
+    return false;
+  }
+  const width = Math.round(rectangle.width), height = Math.round(rectangle.height);
+  const ratio = Math.min(2, window.devicePixelRatio || 1);
+  if (width !== snowLayout.width || height !== snowLayout.height || ratio !== snowLayout.ratio) {
+    snowLayout.width = width; snowLayout.height = height; snowLayout.ratio = ratio;
+    snowCanvas.style.width = width + 'px'; snowCanvas.style.height = height + 'px';
+    snowCanvas.width = Math.round(width * ratio); snowCanvas.height = Math.round(height * ratio);
+    snowContext.setTransform(ratio, 0, 0, ratio, 0, 0);
+  }
+  if (!snowLayout.shown) { snowCanvas.style.display = 'block'; snowLayout.shown = true; }
+  return true;
+}
+function weatherIsFrozen() { return document.hidden || state.paused; }
+
+// ---------- WIND SOUND (index.html, verbatim) ----------
+const WIND_SOUND_SILENT_METERS_PER_SECOND = 1.0;
+const WIND_SOUND_FULL_METERS_PER_SECOND = 20.0;
+const WIND_GAIN_TIME_CONSTANT_SECONDS = 0.15;
+const WIND_SOUND_UPDATE_INTERVAL_MILLISECONDS = 60;
+const windSound = { context: null, master: null, bandPass: null, lowPass: null, muted: false, speed: 0 };
+function readWindSoundMuted() {
+  try { return localStorage.getItem('windSoundMuted') === '1'; } catch { return false; }
+}
+function writeWindSoundMuted(muted) {
+  try { localStorage.setItem('windSoundMuted', muted ? '1' : '0'); } catch { /* private mode */ }
+}
+function makePinkNoiseBuffer(context) {
+  const buffer = context.createBuffer(1, Math.floor(context.sampleRate * 3), context.sampleRate);
+  const samples = buffer.getChannelData(0);
+  let row0 = 0, row1 = 0, row2 = 0;
+  for (let index = 0; index < samples.length; index++) {
+    const white = Math.random() * 2 - 1;
+    row0 = 0.99765 * row0 + white * 0.0990460;
+    row1 = 0.96300 * row1 + white * 0.2965164;
+    row2 = 0.57000 * row2 + white * 1.0526913;
+    samples[index] = (row0 + row1 + row2 + white * 0.1848) * 0.22;
+  }
+  return buffer;
+}
+function startWindSound() {
+  if (windSound.context) {
+    if (windSound.context.state === 'suspended') windSound.context.resume();
+    return;
+  }
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return;
+  const context = new AudioContextClass();
+  const source = context.createBufferSource();
+  source.buffer = makePinkNoiseBuffer(context);
+  source.loop = true;
+  const bandPass = context.createBiquadFilter();
+  bandPass.type = 'bandpass'; bandPass.frequency.value = 300; bandPass.Q.value = 0.7;
+  const lowPass = context.createBiquadFilter();
+  lowPass.type = 'lowpass'; lowPass.frequency.value = 700;
+  const master = context.createGain();
+  master.gain.value = 0;
+  const lfo = context.createOscillator();
+  lfo.frequency.value = 0.13;
+  const lfoDepth = context.createGain();
+  lfoDepth.gain.value = 90;
+  lfo.connect(lfoDepth); lfoDepth.connect(bandPass.frequency);
+  source.connect(bandPass); bandPass.connect(lowPass);
+  lowPass.connect(master); master.connect(context.destination);
+  source.start(); lfo.start();
+  Object.assign(windSound, { context, master, bandPass, lowPass });
+  updateWindSound();
+}
+function updateWindSound() {
+  const context = windSound.context;
+  if (!context) return;
+  const share = Math.max(0, Math.min(1.25,
+    (windSound.speed - WIND_SOUND_SILENT_METERS_PER_SECOND) /
+    (WIND_SOUND_FULL_METERS_PER_SECOND - WIND_SOUND_SILENT_METERS_PER_SECOND)));
+  const silent = windSound.muted || weatherIsFrozen() || share <= 0;
+  const now = context.currentTime;
+  const gain = silent ? 0 : Math.min(0.85, 0.9 * Math.pow(share, 1.5));
+  windSound.master.gain.setTargetAtTime(gain, now, WIND_GAIN_TIME_CONSTANT_SECONDS);
+  windSound.bandPass.frequency.setTargetAtTime(300 + 1100 * share, now, 0.25);
+  windSound.bandPass.Q.setTargetAtTime(0.7 + 2.3 * share, now, 0.25);
+  windSound.lowPass.frequency.setTargetAtTime(700 + 5200 * share, now, 0.25);
+}
+let lastWindSoundMilliseconds = 0;
+function noteWindSpeed(speedMetersPerSecond) {
+  windSound.speed = Number(speedMetersPerSecond) || 0;
+  const now = performance.now();
+  if (now - lastWindSoundMilliseconds < WIND_SOUND_UPDATE_INTERVAL_MILLISECONDS) return;
+  lastWindSoundMilliseconds = now;
+  updateWindSound();
+}
+function setWindSoundMuted(muted) {
+  windSound.muted = muted;
+  $('soundToggle').classList.toggle('muted', muted);
+  $('soundToggle').setAttribute('aria-pressed', String(!muted));
+  writeWindSoundMuted(muted);
+  updateWindSound();
+}
+$('soundToggle').addEventListener('click', () => {
+  const muted = !windSound.muted;
+  setWindSoundMuted(muted);
+  if (!muted) startWindSound();
+});
+document.addEventListener('visibilitychange', updateWindSound);
+
+// ---------- THE SOCKET ----------
+function connect() {
+  const url = 'ws://' + location.hostname + ':' + (Number(location.port) - 1);
+  const socket = new WebSocket(url); socket.binaryType = 'arraybuffer'; state.socket = socket;
+  socket.onopen = () => {
+    $('status').classList.add('on'); $('statusText').textContent = 'live';
+    $('status').title = url;
+    sendInput(); setPaused(!pointerIsLocked(), { force: true });
+  };
+  socket.onclose = () => {
+    $('status').classList.remove('on'); $('statusText').textContent = 'offline';
+    $('realtime').textContent = ''; setTimeout(connect, 1500);
+  };
+  socket.onmessage = event => {
+    if (typeof event.data === 'string') {
+      const message = JSON.parse(event.data);
+      if (message.loading !== undefined && Boolean(message.loading) !== state.loading) {
+        state.loading = Boolean(message.loading); paintWorldStatus();
+      }
+      if (message.world !== undefined && !state.loading) noteWorldArrived(message.world);
+      if (message.paused !== undefined) noteServerPaused(Boolean(message.paused));
+      if (message.slope_degrees !== undefined) state.slopeDegrees = message.slope_degrees;
+      paintHud(message);
+      if (message.realtime_factor !== undefined)
+        $('realtime').textContent = '· ' + Number(message.realtime_factor).toFixed(2) + 'x';
+      return;
+    }
+    const bytes = new Uint8Array(event.data);
+    if (hasMagic(bytes, POSE_FRAME_MAGIC)) { readPoseFrame(event.data); return; }
+    if (hasMagic(bytes, EYE_FRAME_MAGIC)) { paintEyeFrame(event.data.slice(4)); return; }
+    // Anything else is the runtime's own JPEG for episode.mp4. This page draws
+    // the scene itself, so the picture is DROPPED WITHOUT DECODING -- a
+    // createImageBitmap per tick for a frame nobody shows is pure heat.
+  };
+}
+
+// app/harness/pose_stream.py's message, byte for byte:
+//   "POS0" | u32 world key | u32 tick | u32 nbody | u32 nfoot
+//         | f32[nbody*7] xyz + wxyz, world frame | u8[nfoot] contact
+function readPoseFrame(buffer) {
+  const view = new DataView(buffer);
+  const key = view.getUint32(4, true);
+  const bodyCount = view.getUint32(12, true);
+  const footCount = view.getUint32(16, true);
+  // A frame from a world we have not loaded is dropped rather than painted onto
+  // the wrong mesh: a first-time map build takes ~1.6 s and the poses for the
+  // NEW world start arriving before its GLB has finished downloading.
+  if (!state.loadedWorld || key !== state.worldKey) return;
+  const poses = new Float32Array(buffer, 20, bodyCount * 7);
+  const contacts = footCount
+    ? new Uint8Array(buffer, 20 + bodyCount * 7 * 4, footCount) : null;
+  stage.notePoses(poses, contacts, performance.now());
+}
+
+function send(payload) { if (state.socket && state.socket.readyState === 1) state.socket.send(JSON.stringify(payload)); }
+let lastCameraSendMilliseconds = 0, cameraSendPending = false;
+function sendInput() {
+  lastCameraSendMilliseconds = performance.now(); cameraSendPending = false;
+  send({ type: 'input', keys: [...state.keys],
+         camera: { azimuth_degrees: stage.cameraAzimuthDegrees,
+                   elevation_degrees: stage.cameraElevationDegrees },
+         viewport: RECORDING_VIEWPORT });
+}
+function queueCameraMessage() {
+  const now = performance.now();
+  if (now - lastCameraSendMilliseconds >= CAMERA_MESSAGE_INTERVAL_MILLISECONDS) { sendInput(); return; }
+  if (cameraSendPending) return;
+  cameraSendPending = true;
+  setTimeout(() => { if (cameraSendPending) sendInput(); },
+             CAMERA_MESSAGE_INTERVAL_MILLISECONDS - (now - lastCameraSendMilliseconds));
+}
+
+// ---------- KEYS, POINTER LOCK (index.html, verbatim in behaviour) ----------
+const HELD_KEY_KEYCAP_IDS = { w: 'climbKey', a: 'turnLeftKey', d: 'turnRightKey' };
+let climbHeldByPointer = false;
+function setHeldKey(name, down) {
+  if (down === state.keys.has(name)) return;
+  if (down) state.keys.add(name); else state.keys.delete(name);
+  $(HELD_KEY_KEYCAP_IDS[name]).classList.toggle('down', down);
+  sendInput();
+}
+function clearHeldKeys() {
+  let changed = false;
+  for (const name of Object.keys(HELD_KEY_KEYCAP_IDS)) {
+    if (state.keys.delete(name)) changed = true;
+    $(HELD_KEY_KEYCAP_IDS[name]).classList.remove('down');
+  }
+  climbHeldByPointer = false;
+  if (changed) sendInput();
+}
+document.addEventListener('keydown', event => {
+  const name = event.key.toLowerCase();
+  if (HELD_KEY_KEYCAP_IDS[name] && !event.repeat) setHeldKey(name, true);
+});
+document.addEventListener('keyup', event => {
+  const name = event.key.toLowerCase();
+  if (!HELD_KEY_KEYCAP_IDS[name]) return;
+  if (name === 'w') climbHeldByPointer = false;
+  setHeldKey(name, false);
+});
+window.addEventListener('blur', clearHeldKeys);
+$('climbKey').addEventListener('pointerdown', event => { event.preventDefault(); climbHeldByPointer = true; setHeldKey('w', true); });
+document.addEventListener('pointerup', () => { if (climbHeldByPointer) { climbHeldByPointer = false; setHeldKey('w', false); } });
+
+function pointerIsLocked() { return document.pointerLockElement === canvas; }
+function paintLockState() {
+  const locked = pointerIsLocked();
+  document.body.classList.toggle('pointer-locked', locked);
+  $('lockOverlay').style.display = locked ? 'none' : 'flex';
+  $('pausedPill').style.display = state.paused ? 'inline-block' : 'none';
+  $('lockTitle').textContent = state.paused ? 'click to resume' : 'click to take control';
+  $('lockSubtitle').textContent = state.paused ? 'Esc pauses the climb' : 'Esc to release';
+  updateWindSound();
+}
+function setPaused(paused, { force = false } = {}) {
+  if (paused === state.pauseIntent && !force) return;
+  state.pauseIntent = paused;
+  state.paused = paused;
+  stage.setPaused(paused);
+  send({ type: 'pause', value: paused });
+  paintLockState();
+}
+function noteServerPaused(paused) {
+  if (paused === state.paused) return;
+  state.paused = paused;
+  stage.setPaused(paused);
+  paintLockState();
+}
+stageElement.addEventListener('click', () => {
+  startWindSound();
+  if (!pointerIsLocked() && canvas.requestPointerLock) canvas.requestPointerLock();
+});
+document.addEventListener('pointerlockchange', () => {
+  paintLockState();
+  if (!pointerIsLocked()) { clearHeldKeys(); sendInput(); }
+  setPaused(!pointerIsLocked());
+});
+document.addEventListener('mousemove', event => {
+  if (!pointerIsLocked()) return;
+  stage.look(event.movementX, event.movementY);
+  queueCameraMessage();
+});
+document.addEventListener('keydown', event => {
+  const key = event.key.toLowerCase();
+  if (key === 'r' && !event.repeat) {
+    stage.recentreCamera();
+    sendInput();
+    send({ type: 'reset' });
+  } else if (key === 'f' && !event.repeat) {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else stageElement.requestFullscreen?.();
+  } else if (key === 'g' && !event.repeat) {
+    // The one graphics escape hatch a venue needs: drop the whole post chain if
+    // the machine we end up demoing on cannot hold 60 fps.
+    stage.setPostProcessing(!stage.postProcessing);
+    $('fpsOut').title = 'post-processing ' + (stage.postProcessing ? 'on' : 'off');
+  }
+});
+
+// ---------- KNOBS (index.html, verbatim) ----------
+function paintSliderFill(slider) {
+  const minimum = Number(slider.min), maximum = Number(slider.max);
+  const share = maximum > minimum ? (Number(slider.value) - minimum) / (maximum - minimum) : 0;
+  slider.style.setProperty('--fill', (share * 100).toFixed(1) + '%');
+}
+$('friction').addEventListener('input', e => {
+  paintSliderFill(e.target);
+  $('frictionOut').textContent = Number(e.target.value).toFixed(2);
+  send({ type: 'knob', name: 'friction', value: Number(e.target.value) });
+});
+const wind = { angle: 0, strength: 0 };
+function sendWind() {
+  const x = wind.strength * Math.cos(wind.angle), y = wind.strength * Math.sin(wind.angle);
+  $('windDot').setAttribute('cx', 55 * Math.cos(wind.angle)); $('windDot').setAttribute('cy', -55 * Math.sin(wind.angle));
+  const reach = 50 * wind.strength / 25;
+  $('windDialArrow').setAttribute('x2', reach * Math.cos(wind.angle)); $('windDialArrow').setAttribute('y2', -reach * Math.sin(wind.angle));
+  paintWindReadout();
+  send({ type: 'knob', name: 'wind_x', value: x }); send({ type: 'knob', name: 'wind_y', value: y });
+  noteWindVelocity([x, y]);
+}
+const naturalWind = { on: false };
+const GUSTING_SHARE_OF_TARGET = 1.15;
+function paintWindReadout() {
+  const output = $('windOut');
+  const now = state.windNow;
+  if (naturalWind.on && now) {
+    if (now.speed < 0.05) { output.textContent = '0.0 m/s'; return; }
+    const gusting = now.speed > wind.strength * GUSTING_SHARE_OF_TARGET && now.speed > 1;
+    output.textContent = now.speed.toFixed(1) + ' m/s · '
+      + (gusting ? 'gusting' : compassPointName(now.east, now.north));
+    return;
+  }
+  output.textContent = wind.strength < 0.05 ? '0.0 m/s'
+    : wind.strength.toFixed(1) + ' m/s · '
+      + compassPointName(wind.strength * Math.cos(wind.angle), wind.strength * Math.sin(wind.angle));
+}
+$('naturalSwitch').addEventListener('click', () => {
+  naturalWind.on = !naturalWind.on;
+  $('naturalSwitch').setAttribute('aria-checked', String(naturalWind.on));
+  send({ type: 'knob', name: 'wind_natural', value: naturalWind.on ? 1 : 0 });
+  paintWindReadout();
+});
+const dial = $('windDial'); let dragging = false;
+function dialAngle(e) { const r = dial.getBoundingClientRect(); return Math.atan2(-(e.clientY - r.top - r.height / 2), e.clientX - r.left - r.width / 2); }
+dial.addEventListener('pointerdown', e => { dragging = true; dial.setPointerCapture(e.pointerId); wind.angle = dialAngle(e); sendWind(); });
+dial.addEventListener('pointermove', e => { if (dragging) { wind.angle = dialAngle(e); sendWind(); } });
+dial.addEventListener('pointerup', () => dragging = false);
+$('windStrength').addEventListener('input', e => { paintSliderFill(e.target); wind.strength = Number(e.target.value); sendWind(); });
+$('resetBtn').onclick = () => send({ type: 'reset' });
+function wireBatteryKnob(sliderId, outputId, knobName, format) {
+  const slider = $(sliderId), output = $(outputId);
+  paintSliderFill(slider);
+  slider.addEventListener('input', () => {
+    paintSliderFill(slider);
+    output.textContent = format(Number(slider.value));
+  });
+  slider.addEventListener('change', () => send({ type: 'knob', name: knobName, value: Number(slider.value) }));
+}
+wireBatteryKnob('ambient', 'ambientOut', 't_amb', value => value.toFixed(0) + ' °C');
+wireBatteryKnob('startSoc', 'startSocOut', 'soc0', value => value.toFixed(0) + '%');
+
+// ---------- MAPS ----------
+// Same contract as index.html, plus one thing that page does not have to do:
+// the GLB for the newly chosen world has to be fetched and swapped in. Only
+// worlds with an exported scene are offered -- a map with no GLB would draw a
+// black screen, which is a worse answer than not being in the list.
+let worldArrivalTimer = null;
+function paintWorldStatus() {
+  const status = $('worldStatus');
+  const waiting = Boolean(state.pendingWorld);
+  const label = (state.worlds[state.pendingWorld] || {}).label || state.pendingWorld;
+  status.textContent = !waiting ? ''
+    : state.loading ? `building ${label} — first time only…`
+    : 'loading…';
+  status.style.display = waiting ? 'block' : 'none';
+  $('worldSelect').disabled = waiting;
+}
+async function showWorld(name) {
+  $('loadingCard').style.display = 'flex';
+  $('loadingCard').textContent = `loading ${name}…`;
+  try {
+    const sidecar = await stage.loadWorld(name);
+    state.loadedWorld = name;
+    state.worldKey = fnv1a32(name);
+    state.slopeDegrees = sidecar.slope_degrees;
+    $('loadingCard').style.display = 'none';
+  } catch (error) {
+    $('loadingCard').textContent = `no exported scene for ${name} — run`
+      + ` python -m app.harness.export_scene --world ${name}`;
+    console.error(error);
+  }
+}
+function noteWorldArrived(name) {
+  if (state.pendingWorld === name) {
+    state.pendingWorld = null; clearTimeout(worldArrivalTimer); paintWorldStatus();
+  }
+  if (name === state.world) return;
+  state.world = name;
+  const known = state.worlds[name];
+  if (known && known.slope_degrees !== undefined) state.slopeDegrees = known.slope_degrees;
+  if (known && $('worldSelect').value !== name) $('worldSelect').value = name;
+  if (name !== state.loadedWorld) showWorld(name);
+}
+async function listWorlds() {
+  let entries = [], exported = new Set();
+  try { entries = (await (await fetch('/api/worlds')).json()).worlds || []; } catch { /* offline */ }
+  try {
+    const index = await (await fetch('/app/harness/scene_assets/index.json',
+                                     { cache: 'no-store' })).json();
+    for (const scene of index.scenes || []) exported.add(scene.world);
+  } catch { /* no index yet */ }
+  state.worlds = Object.fromEntries(entries.map(entry => [entry.name, entry]));
+  const select = $('worldSelect'); select.innerHTML = '';
+  for (const entry of entries) {
+    if (exported.size && !exported.has(entry.name)) continue;
+    const option = document.createElement('option');
+    option.value = entry.name;
+    option.textContent = entry.label || entry.name;
+    select.appendChild(option);
+  }
+  if (!select.options.length) {
+    const status = $('worldStatus');
+    status.textContent = 'no exported scenes — run app.harness.export_scene';
+    status.style.display = 'block';
+  } else if (state.world && state.worlds[state.world]) select.value = state.world;
+}
+$('worldSelect').addEventListener('change', event => {
+  const name = event.target.value;
+  state.pendingWorld = name;
+  state.loading = false;
+  paintWorldStatus();
+  clearTimeout(worldArrivalTimer);
+  worldArrivalTimer = setTimeout(() => { state.pendingWorld = null; paintWorldStatus(); },
+                                 WORLD_ARRIVAL_TIMEOUT_MILLISECONDS);
+  send({ type: 'world', name });
+});
+
+// ---------- THE FRAME LOOP ----------
+let lastAnimationMilliseconds = performance.now();
+let lastResizeCheck = 0, lastCanvasWidth = 0, lastCanvasHeight = 0;
+function frame(nowMilliseconds) {
+  requestAnimationFrame(frame);
+  const wallSeconds = Math.min(0.05, Math.max(0, (nowMilliseconds - lastAnimationMilliseconds) / 1000));
+  lastAnimationMilliseconds = nowMilliseconds;
+
+  // Resize is checked rather than listened for: fullscreen, the sidebar and a
+  // devicePixelRatio change all move the canvas, and one poll a quarter second
+  // is cheaper than getting every event right.
+  if (nowMilliseconds - lastResizeCheck > 250) {
+    lastResizeCheck = nowMilliseconds;
+    if (canvas.clientWidth !== lastCanvasWidth || canvas.clientHeight !== lastCanvasHeight) {
+      lastCanvasWidth = canvas.clientWidth; lastCanvasHeight = canvas.clientHeight;
+      stage.resize();
+    }
+  }
+
+  stage.render(nowMilliseconds);
+  $('fpsOut').textContent = stage.fps ? '· ' + stage.fps.toFixed(0) + ' fps' : '';
+
+  if (syncSnowCanvas()) {
+    const elapsedSeconds = weatherIsFrozen() ? 0 : wallSeconds;
+    paintEyeViewVisibility();
+    updateWindScreen(elapsedSeconds);
+    updateWindRibbons(elapsedSeconds, snowLayout.width, snowLayout.height);
+    snowContext.clearRect(0, 0, snowLayout.width, snowLayout.height);
+    drawWindRibbons(snowLayout.width, snowLayout.height);
+  }
+}
+
+setWindSoundMuted(readWindSoundMuted());
+paintGuideSwitch();
+paintGuideCard({});
+paintWindReadout();
+paintSliderFill($('friction'));
+paintSliderFill($('windStrength'));
+paintLockState();
+listWorlds();
+connect();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
