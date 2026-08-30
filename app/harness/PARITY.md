@@ -1147,7 +1147,7 @@ Measured 2026-08-30: corpus median rms 0.0975 against a declared 0.115, -1.4 dB.
 ### The physics claim
 
 `test_hearing` section 5, the `test_guide` section D convention: the same
-scripted command flown twice on `terrain_free_0`, once with hearing off and once
+scripted command flown twice on `flat_free`, once with hearing off and once
 with it ON and a real utterance injected so the detectors fire.
 
 | array | max abs difference |
@@ -1180,44 +1180,67 @@ So the steady-state cost is about 1% of the tick and the utterance cost is a one
 -off 7 ms, against a 20 ms budget that the eye render (13 ms per stereo pair at
 10 Hz) already dominates.
 
-### What the plant cannot do, and it is not the ears
+### What the plant can and cannot do
 
-The ear layer's only body actuator is `ang_vel_yaw`, and on this robot that is
-close to useless. `test_hearing` table 4a, a pure yaw command for 4 s from the
-spawn, with the drift at zero command as the noise floor:
+The ear layer's only body actuator is `ang_vel_yaw`. `test_hearing` table 4a, a
+pure yaw command for 4 s from the spawn, with the drift at zero command as the
+noise floor:
 
 | world | +1.0 rad/s | 0.0 | -1.0 rad/s | separation | drift at 0 |
 |---|---|---|---|---|---|
+| `flat_free` <- flown | +13° | +174° | -39° | +52° | 1.65 m |
 | `terrain_free_0` | +2° | -43° | -36° | +38° | 0.52 m |
-| `flat_0` | -13° | -15° | -50° | +37° | 1.04 m |
+| `flat_0` (roped) | -13° | -15° | -50° | +37° | 1.04 m |
 | `terrain_free_5` | -76° | +45° | -35° | -41° | 2.39 m |
 | `sandbox_free` | +171° | +28° | -161° | +332° | 2.19 m |
 
-Three further measurements, all on `terrain_free_0` unless stated:
+**On `flat_free` the whole loop closes: 5 of 9 end-to-end runs reach her, mean
+36.8 s.** On `terrain_free_0` -- the SAME flat ground with 11 cm of measured
+Lhotse roughness on it -- the identical experiment arrives 0 of 9 and never gets
+closer than 5.5 m of 6. Same ear model, same bearings (+0.3° to +3.0° there,
++3.3° to +6.8° on `flat_free` where the robot is actually moving), same
+behaviour. The difference is entirely the walker, and it is worth saying plainly
+because it would otherwise be read as an ear failure.
+
+Three further measurements, all now constants in `hearing.py`:
 
 * **The robot cannot turn on the spot.** Yaw comes out of the stepping gait, so
-  a `[0, 0, +0.5]` command is a robot standing still. With a pivot-first rule the
-  heading error sat at +80° for **85 seconds**, the waist pinned at its limit,
-  the base not moving. The ear layer therefore always walks while it turns.
-* **Walking and turning together is what tips it.** `sandbox_free` has the only
-  real yaw response in the catalogue and `[0.5, 0, ±0.2…±0.5]` tips the robot
-  over inside four seconds. `terrain_free_0` survives, which is why section 4
-  flies it.
+  a `[0, 0, +0.5]` command is a robot standing still. With a pivot-first rule
+  the heading error sat at +80° for **85 seconds**, the waist pinned at its
+  limit, the base not moving. The ear layer therefore always walks while it
+  turns.
+* **Walking and turning together is what tips it.** `sandbox_free` has the
+  largest yaw response in the catalogue and `[0.5, 0, ±0.2…±0.5]` tips the robot
+  over inside four seconds.
 * **The ear-driven waist aim has to be gentler than the sweep's was.**
   `guide.WAIST_LIMIT_RADIANS` (60°) was measured on a robot standing still; a
   robot walking and turning at the same time adds the two loads. Ear-driven
   approach, 90 s budget: 60° -> fell at 4.5 s, 25° -> fell at 89.8 s, 15° ->
   survived, 0° -> survived. `EAR_WAIST_AIM_LIMIT_RADIANS` is 20°.
 
-**Consequence, stated plainly:** the ears work and the walker does not. The
-bearing is right to about a degree, the word is decoded, the state machine goes
-where it should, and the robot then fails to close six metres because the stock
-mels policy on this jacketed robot cannot hold a heading -- a heading-hold probe
-with the ear layer's own gains covers 3.2 m of a 45° approach in 30 s at a mean
-heading error of 55°, and the same controller closed by 0.5 m in 20 s once the
-plant's own drift was in the loop. **ASK to Mrinal, and it is the same ASK the
-retired SEARCH section made:** randomise `ang_vel_yaw` in the training commands.
-A policy that could turn would make this whole layer work as designed.
+**ASK to Mrinal, and it is the same ASK the retired SEARCH section made:**
+randomise `ang_vel_yaw` in the training commands. On smooth ground the layer
+works as designed; on anything with texture the walker cannot hold the heading
+the ears hand it.
+
+### One more bug the browser found: the ring has to be primed
+
+The page and the simulation both run at nominally 16000 samples a second and
+neither runs at exactly that. A ring drained the instant anything arrives
+therefore punches SILENT HOLES into the middle of words -- and a `stop` with a
+hole in it is not a `stop`. MEASURED through the browser before
+`MICROPHONE_PRIME_SECONDS` existed: `stop_1.mp3`, which decodes at confidence
+**1.000** offline and in `--inject-voice`, came back through the live socket as
+an ordinary `voice`, twice in a row, with the robot walking on. Priming the ring
+to 150 ms converts jitter into a fixed latency nobody can hear, and the same
+click now reads `heard=stop (1.00)` and `STOPPED`.
+
+The same run found the browser side of it: a page throttled to 1 Hz timers (a
+background or occluded tab, which is what a headless screenshot run is) took
+160 seconds to stream a 2 second clip with a one-block-per-tick sender. The
+sender is paced by ELAPSED TIME now, so a throttled tab delivers a second of
+audio in one go and the ring -- which is exactly what a ring is for -- plays it
+out at the right speed.
 
 ### The two bugs this found, both worth keeping written down
 

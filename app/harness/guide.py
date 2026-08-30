@@ -153,6 +153,10 @@ GUIDE_OUTFIT_RGBA = {
 }
 
 GUIDE_SPEED_METERS_PER_SECOND = 1.0  # W walks her forward, S walks her back
+# HOW FAST A AND D TURN HER, on a world with no rope. A person changing
+# direction while walking briskly turns at roughly 60-90 deg/s; 70 is in the
+# middle and it is slow enough that the figure does not pirouette.
+GUIDE_TURN_RATE_RADIANS_PER_SECOND = math.radians(70.0)
 GUIDE_LATERAL_METERS = 0.6           # left of the rope, looking uphill
 GUIDE_LEAD_METERS = 2.5              # where it is placed on reset
 
@@ -845,10 +849,23 @@ class Guide:
               `write()` puts both into `MjData`.
     """
 
-    def __init__(self, route, terrain, model=None):
+    def __init__(self, route, terrain, model=None, free_walk=False):
         self.route = route
         self.terrain = terrain
+        # FREE WALK: on a world with no rope there is no line for her to be on,
+        # so W/S walk her along her OWN heading and A/D turn it (user's ruling,
+        # 2026-08-30). On a roped world she stays on the rope exactly as before
+        # and A/D do nothing to her. She is still initialised from the route in
+        # both cases -- only the DRIVING changes, so the spawn is unmoved.
+        self.free_walk = bool(free_walk)
+        self.free_position_world = np.zeros(2)
+        self.free_yaw_radians = 0.0
         self.arclength_meters = 0.0
+        # HOW FAR SHE HAS WALKED, signed, and the ONLY thing the gait phase
+        # reads. On the rope it tracks the arc length; free of it, it tracks
+        # ground covered. Keeping them separate is what stops the walk cycle
+        # freezing when free-walking past the end of the rope's length.
+        self.travel_meters = 0.0
         self.enabled = False
         self.body_id = -1
         self.mocap_id = -1
@@ -881,22 +898,45 @@ class Guide:
         start, _ = self.route.project_arclen(np.asarray(position_world, dtype=float))
         self.arclength_meters = float(np.clip(
             start + lead_meters, 0.0, self.route.length))
+        self.travel_meters = self.arclength_meters
+        # Seed the free-walk pose from the rope route, so she stands exactly
+        # where she always did and only the controls differ.
+        on_route = self._route_ground_position()
+        self.free_position_world[:] = on_route[:2]
+        self.free_yaw_radians = self._route_yaw_radians()
 
-    def advance(self, dt_seconds: float, walking: bool, backing: bool = False) -> None:
-        """W walks her up the rope, S walks her back down it, both held = stop.
+    def advance(self, dt_seconds: float, walking: bool, backing: bool = False,
+                turning: float = 0.0) -> None:
+        """W walks her forward, S walks her back, both held = stop.
 
-        Backwards is a real retreat, not a turn: the yaw still comes from the
-        route tangent, so she keeps facing uphill and steps backwards down the
-        slope, the way a guide backs toward the person behind them. The gait
-        follows, because the phase is distance-locked and the distance goes
-        down.
+        ON THE ROPE she is on the line: forward is up it, and `turning` is
+        ignored because there is nowhere for her to turn to. Backwards is a real
+        retreat, not a turn -- the yaw still comes from the route tangent, so she
+        keeps facing uphill and steps backwards down the slope, the way a guide
+        backs toward the person behind them.
+
+        FREE OF THE ROPE (`free_walk`, i.e. any world with `rope=False`) she
+        walks along her OWN heading and `turning` -- A and D -- is what changes
+        it. +1 is left, matching every other yaw sign in this harness.
+
+        The gait follows either way, because the phase is distance-locked to
+        `travel_meters` and that goes down when she backs up.
         """
         dt_seconds = float(dt_seconds)
         self.direction = (1.0 if walking else 0.0) - (1.0 if backing else 0.0)
-        self.arclength_meters = float(np.clip(
-            self.arclength_meters
-            + GUIDE_SPEED_METERS_PER_SECOND * dt_seconds * self.direction,
-            0.0, self.route.length))
+        step_meters = GUIDE_SPEED_METERS_PER_SECOND * dt_seconds * self.direction
+        if self.free_walk:
+            self.free_yaw_radians += (GUIDE_TURN_RATE_RADIANS_PER_SECOND
+                                      * dt_seconds * float(turning))
+            self.free_position_world[0] += step_meters * math.cos(
+                self.free_yaw_radians)
+            self.free_position_world[1] += step_meters * math.sin(
+                self.free_yaw_radians)
+            self.travel_meters += step_meters
+        else:
+            self.arclength_meters = float(np.clip(
+                self.arclength_meters + step_meters, 0.0, self.route.length))
+            self.travel_meters = self.arclength_meters
         self.idle_seconds += dt_seconds
         target = 1.0 if self.direction != 0.0 else 0.0
         rate = 1.0 - math.exp(-dt_seconds / GUIDE_MOTION_BLEND_SECONDS)
@@ -913,7 +953,7 @@ class Guide:
     # ------------------------------------------------------------- the gait
     def phase_radians(self) -> float:
         """One full cycle -- two steps -- per `GUIDE_STRIDE_METERS` of ground."""
-        return 2.0 * math.pi * self.arclength_meters / GUIDE_STRIDE_METERS
+        return 2.0 * math.pi * self.travel_meters / GUIDE_STRIDE_METERS
 
     def _hip_for_foot_offset(self, side, offset_meters) -> float:
         """The hip angle that puts that boot `offset_meters` in front. -> radians.
@@ -987,7 +1027,15 @@ class Guide:
 
     # ------------------------------------------------------------ the pose
     def ground_position_world(self) -> np.ndarray:
-        """Where she stands: on the route, offset left, on the surface."""
+        """Where she stands, on the surface. -> (3,) world."""
+        if self.free_walk:
+            x = float(self.free_position_world[0])
+            y = float(self.free_position_world[1])
+            return np.array([x, y, float(self.terrain.surface_z(x, y))])
+        return self._route_ground_position()
+
+    def _route_ground_position(self) -> np.ndarray:
+        """On the route, offset left, on the surface."""
         on_rope = self.route.point_at(self.arclength_meters)
         tangent = self.route.tangent_at(self.arclength_meters)
         # Left of the direction of travel, on the ground plane.
@@ -1019,6 +1067,11 @@ class Guide:
         return point
 
     def yaw_radians(self) -> float:
+        if self.free_walk:
+            return float(self.free_yaw_radians)
+        return self._route_yaw_radians()
+
+    def _route_yaw_radians(self) -> float:
         tangent = self.route.tangent_at(self.arclength_meters)
         return math.atan2(float(tangent[1]), float(tangent[0]))
 
@@ -1054,7 +1107,7 @@ class Guide:
 
     def state(self) -> dict:
         return {
-            "human_progress_meters": float(self.arclength_meters),
+            "human_progress_meters": float(self.travel_meters),
             "at_rope_end": bool(self.at_rope_end),
         }
 
@@ -1667,7 +1720,8 @@ class GuideSystem:
     """
 
     def __init__(self, scene, model, control_hz, verbose=True, enable=True,
-                 degradation=None, yaw_command_available=False):
+                 degradation=None, yaw_command_available=False,
+                 free_walk=False):
         import mujoco
         self._mujoco = mujoco
         # A legacy world has no MjSpec to operate on -- their old env hands back
@@ -1695,7 +1749,8 @@ class GuideSystem:
         self.vision_milliseconds = 0.0
         if not self.available:
             return
-        self.guide = Guide(scene.route, scene.terrain, self.model)
+        self.guide = Guide(scene.route, scene.terrain, self.model,
+                           free_walk=free_walk)
         self.waist.bind(self.model, verbose=verbose)
         self.eyes = StereoEyes(self.model, verbose=verbose,
                                degradation=degradation)
@@ -1729,17 +1784,17 @@ class GuideSystem:
         return float(np.linalg.norm(self.guide.reference_point_world() - eye))
 
     def update(self, data, tick: int, enabled: bool, walking: bool,
-               backing: bool = False) -> np.ndarray | None:
+               backing: bool = False, turning: float = 0.0) -> np.ndarray | None:
         """One control tick. -> the command to fly, or None if the guide is off.
 
         Order matters: the human moves, its body is written, and only THEN are
         the cameras rendered, so the robot sees where the human is now rather
         than where it was a tick ago.
 
-        `walking` is W and `backing` is S, and they are the HUMAN's keys, not
-        the robot's: W sends her up the rope, S brings her back down it, both
-        together stop her. What the robot does about either is the follower's
-        business.
+        `walking` is W, `backing` is S and `turning` is A/D, and they are all
+        the HUMAN's keys, not the robot's: W walks her, S backs her up, and on a
+        rope-off world A and D turn her. What the robot does about any of it is
+        the follower's business.
         """
         if not self.available:
             return None
@@ -1764,7 +1819,7 @@ class GuideSystem:
         # follower is about to compute is relative to where the cameras really
         # are, which is this number.
         self.waist.measure(data)
-        self.guide.advance(self.dt_seconds, walking, backing)
+        self.guide.advance(self.dt_seconds, walking, backing, turning)
         self.guide.write(self.model, data)
         # `mocap_pos` is an INPUT to the forward kinematics, not a pose: nothing
         # in `data` moves until something recomputes frames from it, and the
@@ -1845,7 +1900,8 @@ class GuideSystem:
             return {"enabled": False, "mode": "LOST",
                     "waist_yaw_degrees": 0.0,
                     "distance_meters": None, "bearing_degrees": None,
-                    "true_distance_meters": None, "human_progress_meters": 0.0}
+                    "true_distance_meters": None, "human_progress_meters": 0.0,
+                    "free_walk": False}
         bearing = self.follower.bearing_radians
         return {
             "enabled": bool(self.enabled),
@@ -1862,7 +1918,9 @@ class GuideSystem:
             "true_distance_meters": (None if not np.isfinite(self.true_range_meters)
                                      else round(float(self.true_range_meters), 3)),
             "human_progress_meters": round(
-                float(self.guide.arclength_meters), 3),
+                float(self.guide.travel_meters), 3),
+            # Which keys drive HER: on a rope-off world A and D turn her.
+            "free_walk": bool(self.available and self.guide.free_walk),
         }
 
     def recorded(self) -> dict:
@@ -1884,5 +1942,5 @@ class GuideSystem:
                 NO_MEASUREMENT if not (self.enabled and np.isfinite(true_range))
                 else float(true_range)),
             "guide_human_progress_meters": (
-                float(self.guide.arclength_meters) if self.available else 0.0),
+                float(self.guide.travel_meters) if self.available else 0.0),
         }

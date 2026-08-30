@@ -139,6 +139,16 @@ because she is a mocap body with no degrees of freedom and no collision. The
 guide is on: the follower owns the yaw command, and the camera-follow
 controller stands down.
 
+**Off the rope, all four keys are HERS** (user's ruling, 2026-08-30). On any
+world with `rope=False` — `flat_free`, `terrain_free_*`, `sandbox_free`,
+`lhotse_B_free` — W and S walk her forward and back along HER OWN heading and
+**A and D turn it**, at 70°/s. Those two keys were already doing nothing while
+the guide was on (the follower owns the robot's command), so this hands two idle
+keys to the one body that can use them, and the legend says
+`W S A D move the guide`. On a roped world nothing changes: she is on the line,
+forward is up it, and A/D do nothing to her. She is initialised from the rope
+route in both cases, so the spawn is identical and only the driving differs.
+
 **The walk is distance-locked**, which is why the feet do not skate: the gait
 phase is `2π × travel / 1.05 m`, a function of how far she has WALKED and never
 of the clock, so one stride of ground is exactly one stride of animation
@@ -396,32 +406,42 @@ whole 4 x 3 grid of wind 0/6/12/20 m/s against 2/5/10 m.
 **The threshold is CHOSEN, not guessed.** The rule is declared before the table
 is read — maximise `detection − 3 × false-stop`, the weight being the brief
 ("`top`, `shop`, `drop` … must NOT trigger", so a false stop costs three
-misses) — and the sweep picks **0.93**, which is what
+misses) — and the sweep picks **0.90**, which is what
 `hearing.STOP_CONFIDENCE_THRESHOLD` is set to. The test prints AGREES/DISAGREES
 against the constant every run.
 
 | `stop` DETECTED | 2 m | 5 m | 10 m |
 |---|---|---|---|
 | **0 m/s** | 98.9% | 94.5% | 85.7% |
-| **6 m/s** | 97.8% | 93.4% | 53.8% |
-| **12 m/s** | 79.1% | 62.6% | 3.3% |
+| **6 m/s** | 98.9% | 93.4% | 56.0% |
+| **12 m/s** | 81.3% | 74.7% | 3.3% |
 | **20 m/s** | 60.4% | 15.4% | 0.0% |
 
 | FALSE STOP (near-misses + ordinary calls) | 2 m | 5 m | 10 m |
 |---|---|---|---|
 | **0 m/s** | 17.9% | 14.2% | 12.8% |
 | **6 m/s** | 16.1% | 12.0% | 5.8% |
-| **12 m/s** | 10.6% | 5.8% | 0.0% |
+| **12 m/s** | 12.4% | 7.3% | 0.0% |
 | **20 m/s** | 6.9% | 0.4% | 0.0% |
 
 **Read that second table with its parts separated, because pooling hides the
 finding.** The false-stop rate on ORDINARY CALLS — "come here", "over here",
-"help", and all five demo clips — is **0.0%** at 0.93 and never above 0.4%
+"help", and all five demo clips — is **0.0%** at 0.90 and never above 0.4%
 anywhere in the sweep. Every point of it is the near-miss set, which fires
-25.9% of the time at threshold **1.00**: "top", "shop" and "drop" differ from
+26.7% of the time at threshold **1.00**: "top", "shop" and "drop" differ from
 the keyword by one phoneme and a 40 MB model asked a two-way question gets it
 wrong about a quarter of the time whatever the confidence. **No threshold fixes
 that**, which is exactly why the sweep is printed rather than a number asserted.
+The top of the ladder is also nearly flat — 0.85, 0.90 and 0.93 sit within
+0.2 points of each other — so do not read the chosen value as precise; read it
+as "somewhere above 0.85, and the exact number does not matter".
+
+A rule that DID look decisive and was measured and dropped: requiring the
+utterance to BEGIN with the keyword (`"top"` decodes as `[[unk] 0.62, stop
+0.93]`, so it would be rejected). Over the whole corpus and the whole grid it
+moved the near-miss rate 27.9% → 27.7% and cost 1.4 points of detection. Most
+near-misses come back as a BARE `stop`, so the rule was paying for a class of
+failure that barely exists.
 
 **The five demo clips**, each on the whole grid (`S` decoded as `stop`, `v`
 heard as an ordinary voice, `·` not heard at all; cells are 2 m / 5 m / 10 m):
@@ -465,80 +485,74 @@ window (0.2–7°) while at 10 m it does not (41–56°). The **confidence colum
 what makes this safe**: it tracks the failure exactly, 0.59 → 0.02, and the
 behaviour refuses any cue below 0.25.
 
-**End to end**, `terrain_free_0`, the hiker 6 m away at 45° off the nose, one
-shout, five speakers:
+**End to end**, `flat_free` (perfectly flat, no rope), the hiker 6 m away at
+45° off the nose, one shout, five speakers, then a visibility ladder and a close
+arm:
+
+| visibility | start | ear bearing vs truth, in the array's own frame | eyes acquire her | arrived (≤ 1.3 m) |
+|---|---|---|---|---|
+| 3 m | 6.0 m | +3.3° … +6.8° (four of five speakers) | never (fog) | 1 of 5, at 43.0 s |
+| 3 m | 6.0 m | — (fifth speaker: cue below the confidence gate) | never | no — correctly went `LISTENING` instead of walking |
+| 10 m | 6.0 m | +5.1° | 37.4 s | **43.3 s** |
+| 100 m | 6.0 m | +5.1° | 1.3 s | **44.9 s** |
+| 3 m | 2.5 m | +6.1° | never (fog) | **34.4 s** |
+| 100 m | 2.5 m | +6.1° | 1.3 s | **18.3 s** |
+
+**5 of 9 arrived**, mean 36.8 s, min 18.3 s, max 44.9 s — the robot hears her,
+turns, walks over, and the follower stops it in the 1 m band. One fall in nine
+(at 68 s, on a run that was still walking). The 3 m arm is the one that matters:
+**the eyes never see her at all and the ears are the only sensor in play.**
+
+The fifth speaker (Moira) is worth reading as a pass, not a miss: her cue's
+peak sharpness came in under `EAR_BEARING_MINIMUM_CONFIDENCE`, so the behaviour
+took no cue and stood in `LISTENING` — which is precisely what it should do
+with a direction it does not believe.
 
 | what | result |
 |---|---|
-| ear bearing vs the truth in the array's own frame | **+0.3° to +3.0°** (four of five speakers; the fifth's cue fell below the confidence gate and the robot correctly went `LISTENING` instead of walking) |
-| `stop` mid-walk → command zero | **0.80 s, 40 ticks** — the clip's own length plus 0.20 s of silence before the segment closes plus one detector tick. The word is decided on the WHOLE utterance, so the robot cannot stop before the speaker has finished saying it |
-| the robot reaching her | **0 of 9.** Not the ears — see below |
+| `stop` mid-walk → command zero | **0.90 s, 45 ticks** — the clip's own length plus 0.20 s of silence before the segment closes plus one detector tick. The word is decided on the WHOLE utterance, so the robot cannot stop before the speaker has finished saying it |
 | physics parity, hearing off vs on with an utterance decoded | **0.000e+00** on `qpos`, `qvel`, `ctrl`, `sensordata`, `qfrc_constraint`, `cfrc_ext` |
 
-**Per-tick cost**, measured in the live loop: ear synthesis **0.12–0.22 ms every
-tick**, the detectors **0.06–0.09 ms** on a detector tick (VAD 0.04 ms), and per
-utterance a one-off **5.7 ms of vosk + 1.6 ms of GCC-PHAT**. About 1% of a 20 ms
-tick, against an eye render that already costs 13 ms per stereo pair at 10 Hz.
+**Per-tick cost**, measured in the live loop: ear synthesis **0.12–0.31 ms every
+tick**, the detectors **0.06–0.19 ms** on a detector tick (VAD 0.04 ms), and per
+utterance a one-off **3.5–9.7 ms of vosk + 1.6–2.0 ms of GCC-PHAT**. About 1% of
+a 20 ms tick, against an eye render that already costs 13 ms per stereo pair at
+10 Hz.
 
-### The ears work; the walker does not
+### The ground the walker can and cannot hold a heading on
 
-The robot hears her, gets the direction right to about a degree, turns toward
-it — and then fails to cross six metres, because the stock mels policy on this
-jacketed robot cannot hold a heading. This is the plant, it is measured, and it
-is the same ASK the retired sweep made. A pure yaw command for 4 s from the
-spawn, with the drift at zero command as the noise floor:
+`flat_free` is flown because it is the one world where the plant is not the
+story. Everywhere else it is. A pure yaw command for 4 s from the spawn, with
+the drift at zero command as the noise floor:
 
 | world | +1.0 rad/s | 0.0 | −1.0 rad/s | separation | drift at 0 |
 |---|---|---|---|---|---|
-| `terrain_free_0` ← flown | +2° | −43° | −36° | +38° | 0.52 m |
-| `flat_0` | −13° | −15° | −50° | +37° | 1.04 m |
+| `flat_free` ← flown | +13° | +174° | −39° | +52° | 1.65 m |
+| `terrain_free_0` | +2° | −43° | −36° | +38° | 0.52 m |
+| `flat_0` (roped) | −13° | −15° | −50° | +37° | 1.04 m |
 | `terrain_free_5` | −76° | +45° | −35° | −41° | 2.39 m |
 | `sandbox_free` | +171° | +28° | −161° | +332° | 2.19 m |
 
-Three consequences, each measured and each now a constant in `hearing.py`:
+**On `terrain_free_0` — the same flat ground with 11 cm of Lhotse roughness on
+it — the identical run arrives 0 times in 9 and gets no closer than 5.5 m of 6.**
+Same ears, same bearings (+0.3° to +3.0° there), same behaviour; the difference
+is entirely the walker. Three further measurements, each now a constant in
+`hearing.py`:
 
 * **It cannot turn on the spot.** Yaw comes out of the stepping gait, so
   `[0, 0, +0.5]` is a robot standing still. With a pivot-first rule the heading
   error sat at +80° for **85 seconds** with the waist pinned at its limit. The
   ear layer therefore always walks while it turns.
 * **Walking and turning together is what tips it over.** `sandbox_free` has the
-  only real yaw response in the catalogue and it falls inside four seconds under
-  a walk-and-turn command; `terrain_free_0` survives, which is why it is flown.
+  largest yaw response in the catalogue and falls inside four seconds under a
+  walk-and-turn command.
 * **The ear-driven waist aim is capped at 20°, not the sweep's 60°.**
   `WAIST_LIMIT_RADIANS` was measured on a robot standing still; walking and
   turning adds the loads. 60° → fell at 4.5 s, 25° → 89.8 s, 15° → survived.
 
-**ASK to Mrinal, and it is the same one:** randomise `ang_vel_yaw` in the
-training commands. A policy that could turn would make this whole layer work as
-designed — everything upstream of the command already does.
-
-    python -m app.harness.hearing_corpus     # the say(1) corpus, first
-    python -m app.harness.test_hearing       # the tables above
-
-The corpus is 360 `say` clips (10 English voices x 3 speaking rates x 12
-utterances: three ways of saying `stop`, six ordinary calls, and the near-misses
-"top", "shop" and "drop" that a false-stop rate is actually made of) **plus the
-five recordings the sidebar plays**, which are in the corpus because they are
-the utterances the demo will be judged on. Generated audio is gitignored.
-    python -m app.harness.runtime --world terrain_free_0 --duration 20 --guide \
-        --hearing --inject-voice app/harness/hearing_corpus/stop/Samantha_150_stop.wav@1.0
-
-### Two things that were bugs, and are worth not re-introducing
-
-* **The onset must be pre-rolled.** The VAD runs at 10 Hz, so it is up to 100 ms
-  late, and the recogniser was handed a `stop` with its `/s/` missing — which is
-  "top", one of the near-misses the grammar exists to reject. Measured: a `stop`
-  spoken at a robot 6 m away came back `[unk]`, confidence 0.000, while the same
-  clip with 300 ms of silence in front of it came back 1.000. The offline tables
-  were passing only because their clips were padded; the live path had no pad and
-  no chance. `SEGMENT_PREROLL_SECONDS` is 0.30.
-* **The bearing table needs angles that are not multiples of 45°.** The first
-  version measured 0/45/90/135/180 and reported an error of **0.0° in every
-  cell**, which is not an array that is perfect — at those angles the two pairs'
-  delays are equal in magnitude or one is zero, so `atan2` returns the exact
-  answer for *any* common scaling of the two components. A 20% calibration error
-  in the baseline, the speed of sound or the sample rate would have gone straight
-  through. 25°, 70° and 160° are in the table for that reason.
+**ASK to Mrinal:** randomise `ang_vel_yaw` in the training commands. On smooth
+ground this layer works as designed; on anything with texture the walker cannot
+hold the heading the ears hand it.
 
 ### The models this needs installed
 

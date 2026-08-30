@@ -95,6 +95,9 @@ SAMPLES_PER_TICK = int(round(hearing_module.SAMPLE_RATE_HZ / CONTROL_HZ))
 
 # Section 4.
 # WHICH WORLD SECTION 4 FLIES, and it is a MEASURED choice -- table 4a below.
+# `flat_free` (added 2026-08-30: perfectly flat, zero roughness, no rope) is the
+# default because it removes the terrain as a variable entirely; the ladder
+# below still measures the alternatives so the choice stays evidenced.
 # The ear layer's only body actuator is `ang_vel_yaw`, so it needs a world where
 # a commanded turn produces a turn AND the robot stays upright long enough to
 # walk six metres. On the roped worlds a turn does nothing (PARITY.md: the palm
@@ -103,7 +106,7 @@ SAMPLES_PER_TICK = int(round(hearing_module.SAMPLE_RATE_HZ / CONTROL_HZ))
 # -- the flat Lhotse-roughness ground, rope off, added 2026-08-30 -- is the one
 # world in the catalogue where the robot neither falls nor is deaf to the
 # command, and it is what section 4 flies.
-DEFAULT_SIM_WORLD = "terrain_free_0"
+DEFAULT_SIM_WORLD = "flat_free"
 SIM_CALL_DISTANCE_METERS = 6.0
 SIM_CALL_AZIMUTH_DEGREES = 45.0
 SIM_WHITEOUT_VISIBILITY_METERS = 3.0
@@ -521,7 +524,7 @@ def print_bearing_table(rows) -> None:
 
 
 # --------------------------------------------------------- 4: the whole thing
-YAW_LADDER_WORLDS = ("terrain_free_0", "flat_0", "terrain_free_5",
+YAW_LADDER_WORLDS = ("flat_free", "terrain_free_0", "flat_0", "terrain_free_5",
                      "sandbox_free")
 YAW_LADDER_SECONDS = 4.0
 
