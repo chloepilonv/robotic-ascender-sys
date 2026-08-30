@@ -370,7 +370,9 @@ function makeWindRibbon() {
 const snowFlakes = Array.from({ length: SNOW_FLAKE_MAXIMUM }, makeSnowFlake);
 const windRibbons = Array.from({ length: WIND_RIBBON_COUNT }, makeWindRibbon);
 
+const SNOW_ENABLED = false;                     // user's call 2026-08-29: no snow particles (wind ribbons + HUD stay)
 function activeFlakeCount() {
+  if (!SNOW_ENABLED) return 0;
   const share = Math.max(0, Math.min(1, windScreen.speed / BLIZZARD_METERS_PER_SECOND));
   return Math.round(SNOW_FLAKE_CALM_COUNT + (SNOW_FLAKE_MAXIMUM - SNOW_FLAKE_CALM_COUNT) * share);
 }
