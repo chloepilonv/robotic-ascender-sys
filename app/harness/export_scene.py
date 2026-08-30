@@ -40,6 +40,19 @@ WHAT IS SKIPPED, and why it is safe
       flag so a "free walk" world exports without a rope hanging in the air.
 Neither is a physics change; both are what the existing render already shows.
 
+THE SNOW SHELL (2026-08-30). Some worlds stand the robot on a perfectly smooth
+physics ground -- `flat_free`'s zero-elevation heightfield, and the tilted PLANE
+under every chloe/mrinal ascender world -- which draws as a featureless slab.
+Those worlds get a second, DECORATIVE terrain mesh: the measured Lhotse relief
+(`rl.environment.terrain.load_patch("B").rough`, mean-zero, RMS 0.1138 m) laid
+2 cm above the ground in the ground geom's own frame, so it tilts with the
+slope. The feet then sink into it while the robot really stands on the flat
+plane -- which is what walking in powder looks like. It cannot touch physics:
+this file only READS a compiled model and writes a display file the browser
+draws. Detection is geometric (a plane, or a heightfield whose relief standard
+deviation is under 1 cm), never a list of world names, so a rough world can
+never pick it up by accident.
+
 TERRAIN DECIMATION. The measured Lhotse patches are 25 x 15 m at 5 cm, which is
 ~300k triangles -- kept whole, because the roughness IS the terrain. The 120 m
 sandbox at the same resolution would be 11.5M, so the grid is strided down
@@ -77,6 +90,36 @@ MUJOCO_DEFAULT_GEOM_RGBA = (0.5, 0.5, 0.5, 1.0)
 DEFAULT_MAXIMUM_TERRAIN_TRIANGLES = 500_000
 # An infinite MuJoCo plane has size 0; give it something a camera can stand on.
 INFINITE_PLANE_HALF_EXTENT_METERS = 120.0
+
+# ------------------------------------------------------- the snow shell
+# A world whose PHYSICS ground is a perfectly smooth plane (flat_free, and
+# every chloe/mrinal ascender world, whose floor is one tilted plane) draws as
+# a featureless slab. The shell is the measured Lhotse relief laid a couple of
+# centimetres ABOVE that plane, VISUAL ONLY: it is a mesh in a .glb, the file
+# the browser draws, and nothing here or downstream is ever compiled into
+# MuJoCo. Physics is bit-identical with or without it -- the robot still stands
+# on the flat plane, and the shell simply closes over its feet, which is what
+# walking in powder looks like.
+SNOW_SHELL_NODE_NAME = "snow_shell"
+SNOW_SHELL_PATCH_NAME = "B"
+# Mean-zero relief, so this is the height of the shell's MEAN plane above the
+# physics plane. Crests then stand ~0.25 m proud and dips fall BELOW the floor,
+# where the floor -- still drawn, still opaque -- hides them.
+SNOW_SHELL_LIFT_METERS = 0.02
+# 1.0 = the measured patch at full amplitude (RMS 0.1138 m).
+SNOW_SHELL_AMPLITUDE_SCALE = 1.0
+# The slab is 25 x 15 m and the climb runs uphill out of the spawn, so the slab
+# is pushed this far along the route: the whole climb stays on snow.
+SNOW_SHELL_FORWARD_OFFSET_METERS = 8.0
+# The rim fades to the mean plane over this distance, so the boundary is a 2 cm
+# lip rather than a row of crests sliced off in mid-air.
+SNOW_SHELL_EDGE_TAPER_METERS = 1.5
+# Decoration gets a smaller budget than the terrain it imitates. The patch is
+# 300 x 500 at 5 cm = 298k triangles, which fits whole.
+SNOW_SHELL_MAXIMUM_TRIANGLES = 300_000
+# Below this relief standard deviation a ground geom is FLAT for our purposes:
+# flat_free's floor is a heightfield whose elevation scale is exactly 0.
+SMOOTH_TERRAIN_STANDARD_DEVIATION_METERS = 0.01
 
 # glTF component types
 UNSIGNED_INT = 5125
@@ -279,6 +322,34 @@ def mujoco_mesh(model, mesh_id):
             indices)
 
 
+def grid_surface_mesh(sampled, x, y):
+    """A regular height grid -> (positions (n,3), normals (n,3), indices (m,3)).
+
+    `sampled[row, column]` is the height in metres at (`x[column]`, `y[row]`),
+    all three in the SAME local frame; row runs along +y and column along +x,
+    which is MuJoCo's heightfield convention. Shared by the terrain itself and
+    by the decorative snow shell, so the two get identical triangulation and
+    identical (analytic, central-difference) normals.
+    """
+    grid_x, grid_y = np.meshgrid(x, y)
+    positions = np.stack([grid_x, grid_y, sampled], axis=-1).astype(np.float32)
+
+    # Central differences on the SAMPLED grid, so the normals belong to the
+    # triangles actually written rather than to a resolution nobody can see.
+    gradient_y, gradient_x = np.gradient(sampled, y, x)
+    normals = np.stack([-gradient_x, -gradient_y, np.ones_like(sampled)], axis=-1)
+    normals /= np.maximum(np.linalg.norm(normals, axis=-1, keepdims=True), 1e-12)
+
+    height, width = sampled.shape
+    corner = (np.arange(height - 1)[:, None] * width + np.arange(width - 1)[None, :])
+    indices = np.stack([
+        np.stack([corner, corner + 1, corner + width], axis=-1),
+        np.stack([corner + 1, corner + width + 1, corner + width], axis=-1),
+    ], axis=-2).reshape(-1, 3).astype(np.uint32)
+    return (positions.reshape(-1, 3), normals.reshape(-1, 3).astype(np.float32),
+            indices)
+
+
 def heightfield_mesh(model, hfield_id, maximum_triangles):
     """The terrain grid, with analytic normals. -> (positions, normals, indices, report)
 
@@ -308,22 +379,9 @@ def heightfield_mesh(model, hfield_id, maximum_triangles):
 
     x = (2.0 * column_index / (columns - 1) - 1.0) * radius_x
     y = (2.0 * row_index / (rows - 1) - 1.0) * radius_y
-    grid_x, grid_y = np.meshgrid(x, y)
-    positions = np.stack([grid_x, grid_y, sampled], axis=-1).astype(np.float32)
-
-    # Central differences on the SAMPLED grid, so the normals belong to the
-    # triangles actually written rather than to a resolution nobody can see.
-    gradient_y, gradient_x = np.gradient(sampled, y, x)
-    normals = np.stack([-gradient_x, -gradient_y, np.ones_like(sampled)], axis=-1)
-    normals /= np.maximum(np.linalg.norm(normals, axis=-1, keepdims=True), 1e-12)
+    positions, normals, indices = grid_surface_mesh(sampled, x, y)
 
     height, width = sampled.shape
-    corner = (np.arange(height - 1)[:, None] * width + np.arange(width - 1)[None, :])
-    indices = np.stack([
-        np.stack([corner, corner + 1, corner + width], axis=-1),
-        np.stack([corner + 1, corner + width + 1, corner + width], axis=-1),
-    ], axis=-2).reshape(-1, 3).astype(np.uint32)
-
     report = {
         "rows": rows, "columns": columns, "stride": stride,
         "sampled_rows": int(height), "sampled_columns": int(width),
@@ -333,8 +391,147 @@ def heightfield_mesh(model, hfield_id, maximum_triangles):
         "half_extent_meters": [radius_x, radius_y],
         "elevation_meters": elevation_z,
     }
-    return (positions.reshape(-1, 3), normals.reshape(-1, 3).astype(np.float32),
-            indices, report)
+    return positions, normals, indices, report
+
+
+# -------------------------------------------------------------- the snow shell
+_SNOW_PATCH_CACHE = {}
+
+
+def _snow_patch(patch_name):
+    """The measured Lhotse patch, loaded once. -> rl.environment.terrain.Terrain
+
+    `patch.rough` is the mean-zero relief grid with the macro slope already
+    removed (25 x 15 m at 5 cm for patch B, RMS 0.1138 m). That grid IS the
+    Lhotse ground shape; nothing here invents noise.
+    """
+    if patch_name not in _SNOW_PATCH_CACHE:
+        from rl.environment import terrain as terrain_module
+        _SNOW_PATCH_CACHE[patch_name] = terrain_module.load_patch(patch_name)
+    return _SNOW_PATCH_CACHE[patch_name]
+
+
+def terrain_relief_standard_deviation(model, geom_id):
+    """How rough this ground geom really is, in metres. -> float or None
+
+    0.0 for a PLANE (perfectly smooth by construction), and the standard
+    deviation of the scaled elevation for a HFIELD -- which is 0 for
+    flat_free, whose floor is a heightfield with elevation scale 0, and
+    ~0.11 m for every measured Lhotse patch. None when the geom is not ground.
+    """
+    geom_type = int(model.geom_type[geom_id])
+    if geom_type == mujoco.mjtGeom.mjGEOM_PLANE:
+        return 0.0
+    if geom_type != mujoco.mjtGeom.mjGEOM_HFIELD:
+        return None
+    hfield_id = int(model.geom_dataid[geom_id])
+    rows = int(model.hfield_nrow[hfield_id])
+    columns = int(model.hfield_ncol[hfield_id])
+    address = int(model.hfield_adr[hfield_id])
+    elevation_z = float(model.hfield_size[hfield_id][2])
+    grid = np.asarray(
+        model.hfield_data[address:address + rows * columns], np.float64)
+    return float(np.std(grid * elevation_z))
+
+
+def _smoothstep(edge_low, edge_high, value):
+    ramp = np.clip((value - edge_low) / max(edge_high - edge_low, 1e-9), 0.0, 1.0)
+    return ramp * ramp * (3.0 - 2.0 * ramp)
+
+
+def snow_shell_mesh(center_local_xy, lift_meters=SNOW_SHELL_LIFT_METERS,
+                    amplitude_scale=SNOW_SHELL_AMPLITUDE_SCALE,
+                    patch_name=SNOW_SHELL_PATCH_NAME,
+                    maximum_triangles=SNOW_SHELL_MAXIMUM_TRIANGLES,
+                    edge_taper_meters=SNOW_SHELL_EDGE_TAPER_METERS):
+    """The decorative snow surface. -> (positions, normals, indices, report)
+
+    Built in the TERRAIN GEOM'S LOCAL FRAME -- the node carries that geom's own
+    pos/quat, so on a tilted chloe world the whole slab tilts with the displayed
+    slope for free and the lift stays perpendicular to the ground the robot
+    stands on. `center_local_xy` slides the 25 x 15 m slab along the route.
+    """
+    patch = _snow_patch(patch_name)
+    rough = np.asarray(patch.rough, np.float64)
+    resolution = float(patch.res)
+    rows, columns = rough.shape
+
+    stride = 1
+    while ((rows - 1) // stride) * ((columns - 1) // stride) * 2 > maximum_triangles:
+        stride += 1
+    row_index = np.arange(0, rows, stride)
+    column_index = np.arange(0, columns, stride)
+    if row_index[-1] != rows - 1:
+        row_index = np.append(row_index, rows - 1)
+    if column_index[-1] != columns - 1:
+        column_index = np.append(column_index, columns - 1)
+
+    x = (column_index - (columns - 1) / 2.0) * resolution + float(center_local_xy[0])
+    y = (row_index - (rows - 1) / 2.0) * resolution + float(center_local_xy[1])
+    sampled = rough[np.ix_(row_index, column_index)] * float(amplitude_scale)
+
+    # Fade the rim back to the mean plane, so the slab ends in a 2 cm lip
+    # instead of a row of crests sliced off in mid-air.
+    distance_x = np.minimum(x - x[0], x[-1] - x)
+    distance_y = np.minimum(y - y[0], y[-1] - y)
+    window = (_smoothstep(0.0, edge_taper_meters, distance_y)[:, None]
+              * _smoothstep(0.0, edge_taper_meters, distance_x)[None, :])
+    relief = sampled * window
+    heights = relief + float(lift_meters)
+
+    positions, normals, indices = grid_surface_mesh(heights, x, y)
+    report = {
+        "patch": patch_name,
+        "amplitude_scale": float(amplitude_scale),
+        "lift_meters": float(lift_meters),
+        "stride": int(stride),
+        "resolution_meters": float(resolution * stride),
+        "extent_meters": [float(x[-1] - x[0]), float(y[-1] - y[0])],
+        "center_local_meters": [round(float(center_local_xy[0]), 4),
+                                round(float(center_local_xy[1]), 4)],
+        "relief_rms_meters": float(np.sqrt(np.mean(relief ** 2))),
+        "relief_minimum_meters": float(relief.min()),
+        "relief_maximum_meters": float(relief.max()),
+        "triangles": int(indices.shape[0]),
+        "vertices": int(positions.shape[0]),
+    }
+    return positions, normals, indices, report
+
+
+def snow_shell_center_local(model, data, terrain_geom_id, half_extent_meters,
+                            slab_extent_meters,
+                            forward_offset=SNOW_SHELL_FORWARD_OFFSET_METERS):
+    """Where to park the slab, in the terrain geom's local x/y. -> (x, y)
+
+    Centred on the robot's spawn and pushed `forward_offset` along the route
+    (the rope's far end when there is a rope, the local +x fall line when there
+    is not -- the chloe robots gain ~6 m uphill in 15 s, so a slab centred on
+    the spawn would run out from under them). Then clamped so the slab never
+    hangs off the ground geom it decorates: on flat_free, whose floor is
+    exactly 25 x 15 m, that pins it dead centre.
+    """
+    rotation = np.asarray(data.geom_xmat[terrain_geom_id], np.float64).reshape(3, 3)
+    origin = np.asarray(data.geom_xpos[terrain_geom_id], np.float64)
+
+    def to_local(point):
+        return rotation.T @ (np.asarray(point, np.float64) - origin)
+
+    spawn_local = to_local(data.qpos[0:3])
+    forward = np.array([1.0, 0.0])
+    polyline = rope_polyline(model, data)
+    if len(polyline) >= 2:
+        ends = [to_local(polyline[0])[:2], to_local(polyline[-1])[:2]]
+        far = max(ends, key=lambda end: float(np.linalg.norm(end - spawn_local[:2])))
+        direction = far - spawn_local[:2]
+        if np.linalg.norm(direction) > 1e-6:
+            forward = direction / np.linalg.norm(direction)
+
+    center = spawn_local[:2] + forward * float(forward_offset)
+    for axis in (0, 1):
+        room = max(float(half_extent_meters[axis])
+                   - 0.5 * float(slab_extent_meters[axis]), 0.0)
+        center[axis] = float(np.clip(center[axis], -room, room))
+    return center
 
 
 # ------------------------------------------------------------- the glb writer
@@ -629,13 +826,16 @@ def open_world(world_name, plain_graphics=False, with_guide=True):
 
 def export_world(world_name, output_directory=SCENE_ASSETS_DIRECTORY,
                  maximum_terrain_triangles=DEFAULT_MAXIMUM_TERRAIN_TRIANGLES,
-                 plain_graphics=False, with_guide=True):
+                 plain_graphics=False, with_guide=True,
+                 snow_shell=True,
+                 snow_shell_scale=SNOW_SHELL_AMPLITUDE_SCALE,
+                 snow_shell_lift=SNOW_SHELL_LIFT_METERS):
     model, data, meta, definition, look = open_world(
         world_name, plain_graphics, with_guide)
     os.makedirs(output_directory, exist_ok=True)
 
     builder = GlbBuilder()
-    material_cache, terrain_report = {}, None
+    material_cache, terrain_report, snow_report = {}, None, None
     terrain_node_names, rope_node_names = [], []
     body_nodes, root_nodes = [], []
     triangles_written = 0
@@ -685,6 +885,48 @@ def export_world(world_name, output_directory=SCENE_ASSETS_DIRECTORY,
             if report is not None:
                 terrain_report = dict(report, geom=geom_name, node=node_name)
                 terrain_node_names.append(node_name)
+                # THE SNOW SHELL, and it is DECORATION ONLY. A ground geom with
+                # no relief of its own (a plane, or flat_free's zero-elevation
+                # heightfield) draws as a featureless slab, so the measured
+                # Lhotse shape goes on top of it as a second mesh in this .glb.
+                # The file is display-only -- the page reads it, MuJoCo never
+                # does -- so physics is bit-identical either way, and the flat
+                # floor stays drawn underneath to hide the shell's dips.
+                relief_deviation = terrain_relief_standard_deviation(model, geom_id)
+                is_smooth = (relief_deviation is not None and relief_deviation
+                             < SMOOTH_TERRAIN_STANDARD_DEVIATION_METERS)
+                if snow_shell and is_smooth and snow_report is None:
+                    patch = _snow_patch(SNOW_SHELL_PATCH_NAME)
+                    slab_extent = [(patch.rough.shape[1] - 1) * float(patch.res),
+                                   (patch.rough.shape[0] - 1) * float(patch.res)]
+                    center_local = snow_shell_center_local(
+                        model, data, geom_id, report["half_extent_meters"],
+                        slab_extent)
+                    (shell_positions, shell_normals, shell_indices,
+                     snow_report) = snow_shell_mesh(
+                        center_local, lift_meters=snow_shell_lift,
+                        amplitude_scale=snow_shell_scale)
+                    shell_node_name = f"{body_name}__{SNOW_SHELL_NODE_NAME}"
+                    shell_mesh = builder.add_mesh(
+                        shell_node_name, shell_positions, shell_normals,
+                        shell_indices, material_cache[key])
+                    children.append(builder.add_node(
+                        shell_node_name, translation=model.geom_pos[geom_id],
+                        rotation_wxyz=model.geom_quat[geom_id], mesh=shell_mesh))
+                    triangles_written += int(shell_indices.shape[0])
+                    # In `terrain_nodes` ON PURPOSE. app/web/three/world.js reads
+                    # that list to hand a mesh the snow/rock shader, the
+                    # footprint decals and castShadow=false -- which is exactly
+                    # the treatment the shell needs to match the real terrain.
+                    # The list drives no bounds: the footprint canvas and the
+                    # camera's terrain bounds come from `sidecar.terrain`, which
+                    # stays the REAL ground geom's report. The chase camera's
+                    # height field does read every terrain mesh, so it now
+                    # clears the drifts by a few centimetres.
+                    terrain_node_names.append(shell_node_name)
+                    snow_report = dict(snow_report, node=shell_node_name,
+                                       over_geom=geom_name,
+                                       ground_relief_std_meters=relief_deviation)
             if geom_name.startswith("ropeseg"):
                 rope_node_names.append(node_name)
 
@@ -737,6 +979,9 @@ def export_world(world_name, output_directory=SCENE_ASSETS_DIRECTORY,
         "terrain": (dict(terrain_report, **(terrain_bounds or {}))
                     if terrain_report else None),
         "terrain_nodes": terrain_node_names,
+        # Display-only: the measured Lhotse relief laid over a smooth physics
+        # ground. Null on worlds whose ground already has shape of its own.
+        "snow_shell": snow_report,
         "rope": {
             "radius_meters": float(meta.get("rope_radius_meters", 0.025)),
             "polyline_world": rope_polyline(model, data) if definition["rope"] else [],
@@ -772,6 +1017,20 @@ def export_world(world_name, output_directory=SCENE_ASSETS_DIRECTORY,
               f" {terrain_report['triangles']:,} tris,"
               f" half-extent {terrain_report['half_extent_meters']} m,"
               f" relief {terrain_report['elevation_meters']:.2f} m", flush=True)
+    if snow_report:
+        print(f"[export]   snow shell (VISUAL ONLY, physics untouched):"
+              f" patch {snow_report['patch']} x{snow_report['amplitude_scale']:.2f},"
+              f" relief RMS {snow_report['relief_rms_meters']:.4f} m"
+              f" (range {snow_report['relief_minimum_meters']:+.3f} to"
+              f" {snow_report['relief_maximum_meters']:+.3f} m),"
+              f" lift {snow_report['lift_meters']:.3f} m,"
+              f" slab {snow_report['extent_meters'][0]:.2f} x"
+              f" {snow_report['extent_meters'][1]:.2f} m at"
+              f" {snow_report['resolution_meters'] * 100:.0f} cm centred"
+              f" {snow_report['center_local_meters']} local,"
+              f" {snow_report['triangles']:,} tris"
+              f" (ground relief std"
+              f" {snow_report['ground_relief_std_meters']:.4f} m)", flush=True)
     rope_points = len(sidecar["rope"]["polyline_world"])
     print(f"[export]   rope {rope_points} polyline points,"
           f" spawn pelvis {sidecar['spawn']['pelvis_position_world']},"
@@ -799,6 +1058,16 @@ def main(argv=None):
                              " the GLB one body short of the pose message)")
     parser.add_argument("--plain-graphics", action="store_true",
                         help="skip apply_alpine_look (raw MuJoCo colours)")
+    parser.add_argument("--no-snow-shell", action="store_true",
+                        help="do not lay the measured Lhotse relief over a"
+                             " smooth physics ground (display only either way)")
+    parser.add_argument("--snow-shell-scale", type=float,
+                        default=SNOW_SHELL_AMPLITUDE_SCALE,
+                        help="amplitude of that relief, 1.0 = as measured")
+    parser.add_argument("--snow-shell-lift", type=float,
+                        default=SNOW_SHELL_LIFT_METERS,
+                        help="metres the shell's mean plane sits above the"
+                             " physics ground")
     arguments = parser.parse_args(argv)
 
     if arguments.all:
@@ -813,7 +1082,10 @@ def main(argv=None):
         try:
             _glb, _json, sidecar = export_world(
                 name, arguments.output_directory, arguments.max_terrain_triangles,
-                arguments.plain_graphics, not arguments.no_guide)
+                arguments.plain_graphics, not arguments.no_guide,
+                snow_shell=not arguments.no_snow_shell,
+                snow_shell_scale=arguments.snow_shell_scale,
+                snow_shell_lift=arguments.snow_shell_lift)
         except Exception as error:            # one broken world must not stop a sweep
             print(f"[export] {name}: FAILED {type(error).__name__}: {error}", flush=True)
             continue
