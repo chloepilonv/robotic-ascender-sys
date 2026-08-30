@@ -1,128 +1,136 @@
-# G1 Wind Locomotion — MuJoCo Playground
+# Robot Yeti — autonomy in extreme altitude
 
-Unitree G1 locomotion on MuJoCo Playground with a continuous-wind variant of
-the G1 joystick task, an interactive WASD viewer, and a vendored PPO trainer
-wired for wind-robustness RL.
+![Robot Yeti: a Unitree G1 climbing a fixed rope on a snow slope with a mechanical ascender on its wrist](img/robot-yeti.png)
 
-Everything runs in the conda env `everest` (Python 3.12; `playground==0.2.0`,
-`mujoco==3.12.0`, `brax==0.14.2`). Menagerie assets were downloaded once into
-site-packages (automatic on first env load); nothing else to install.
+Teaching a Unitree G1 to climb where humans can't: up a fixed rope on a Himalayan
+snow slope, with a real mechanical **ascender** on its right wrist. The ascender is
+a one-way cam — it slides up the rope and locks under load — so the robot can push
+it ahead, weight it, and step up, the way a climber does on the Lhotse Face.
 
-## Layout
+Built at the **Himalaya Robotics Hack** (Robot Everest × Iterate). Everything here
+runs in simulation today; the walking half has been on real hardware.
 
-- `rl/` — all reinforcement-learning code:
-  - `rl/environment/wind_env.py` — `G1JoystickWind` env: upstream G1 joystick
-    task + quadratic-drag wind force on the torso (`F = ½·ρ·Cd·A·
-    |v_wind − v_torso|·(v_wind − v_torso)`), written to `xfrc_applied` each
-    control step. Random impulse pushes are disabled; wind is the
-    perturbation source. Registered as `G1JoystickWindFlatTerrain` /
-    `G1JoystickWindRoughTerrain`. `rl/environment/climb_env.py` registers the
-    fixed-rope `G1ClimbAscender` env the same way.
-  - `rl/scripts/viewer.py` — interactive viewer (below).
-  - `rl/scripts/train_jax_ppo.py` — upstream playground v0.2.0 trainer with
-    wind-env aliases and a `--num_videos 0` video guard.
-  - `rl/policies/` — saved policy weights (`mels_g1_joystick.npz` baseline).
-  - `rl/tests/` — headless smoke tests (`test_wind_env.py`,
-    `test_climb_env.py`, `test_viewer_internals.py`).
-- `assets/environments/lhotse_face/` — real Everest terrain for the fixed-rope
-  / ascender task. Nine patches on the **Lhotse Face between Camp II and
-  Camp III**, from Copernicus GLO-30 + OpenStreetMap route nodes, loaded into
-  MuJoCo as an `hfield`. Four are real measurements; five have the slope
-  overridden for curriculum. See its README — in particular the REAL vs
-  SYNTHETIC section before quoting the terrain anywhere.
+## What actually works
+
+| | Status |
+|---|---|
+| **Ascender climb policy** (mjlab PPO, `rl/chloe`) | Climbs a 20° slope in sim: ~0.3 m/s uphill, ascender pushed 3–4 m in 10 s, no falls under wind + ice randomisation. Verified in plain MuJoCo (sim2sim). |
+| **Interactive climber in the browser** (`app/harness`) | The merged Lhotse scene at 50 Hz on a laptop, streamed to a three.js page — wind, visibility, first/third person. |
+| **Walking on the real G1** (`deploy/`) | Pure-NumPy policy inference on the robot, a gated hardware session, and a scripted rope-hold mime. Ran on the gantry G1. |
+| **Battery + thermal panel** (`app/bms`, `app/bms_ui`) | Real DDS telemetry off the robot, and a simulated pack model driven by the harness's own joint torques. |
+| **Human safety gate** (`human-safety/`) | The robot may not climb *up* while a person is in front of it. |
+| **Climb policy on hardware** | Not yet. See `rl/chloe/ROADMAP.md`. |
+
+## Two RL stacks, on purpose
+
+This trips people up, so it's worth stating plainly. The repo has **two separate
+reinforcement-learning stacks** that do not share code, envs, or policy formats:
+
+- **`rl/chloe/` — mjlab + rsl_rl (PyTorch).** The **ascender climb** task. 4096
+  robots on one GPU, slope as tilted gravity, the rope and cam as a real
+  mechanism. This is where the climb policies come from. Trains on Hugging Face
+  Jobs. → [`rl/chloe/README.md`](rl/chloe/README.md)
+- **`rl/environment/` — MuJoCo Playground + brax (JAX).** The **walking and wind**
+  work: the G1 joystick task with domain randomisation, wind as quadratic drag,
+  and a climb task on the measured Lhotse terrain. The pretrained `mels` walker
+  lives here and is the legs of the deployed mime. → [`rl/README.md`](rl/README.md)
+
+A policy from one will not load into the other. Check which stack a script belongs
+to before reaching for an interpreter.
+
+## Repo map
+
+| Path | What's in it |
+|---|---|
+| `rl/chloe/` | Ascender climb task, rewards, domain randomisation, trained policies, ONNX export, sim2sim |
+| `rl/environment/` | Playground envs: `G1JoystickWalkDR`, `G1JoystickWind*`, `G1ClimbTerrain` |
+| `rl/scripts/` | Playground trainer, GPU trainer, interactive WASD viewer |
+| `rl/policies/` | Saved weights, including `mels_g1_joystick.npz` (the baseline walker) |
+| `app/harness/` | The interactive climber — builds the merged scene, steps physics, streams to the browser |
+| `app/web/` | `render3d.html`: the three.js page, sky, sounds |
+| `app/bms/`, `app/bms_ui/` | Battery/thermal — real DDS readings, and the simulated pack panel |
+| `deploy/` | On-robot code: NumPy inference, safety, the gated hardware session, per-joint diagnostics |
+| `human-safety/` | The human-detection gate (standalone; not part of any policy) |
+| `assets/robots/` | G1 MJCF/USD, the ascender, and the shared rope + rail mechanism |
+| `assets/environments/` | Real Lhotse Face heightfield (MuJoCo) and the Isaac Sim test pad |
+| `assets/ascender/` | Ascender CAD, textures, mount contract |
+
+## Quickstart
+
+**Climb policy — train, watch, export.** Needs a CUDA GPU and mjlab.
+
+```bash
+python -m rl.chloe.scripts.train_mjlab_ppo Himalayas-Ascender-Slope20-G1 \
+    --env.scene.num-envs 512 --agent.max-iterations 5000
+python -m rl.chloe.scripts.play_mjlab Himalayas-Ascender-Slope20-G1 \
+    --checkpoint-file rl/chloe/policies/g1_ascender_slope20_v3_2026-08-30_04-35-59.pt
+python -m rl.chloe.scripts.export_onnx Himalayas-Ascender-Slope20-G1 <ckpt.pt> policy.onnx
+```
+
+**The interactive climber**, on localhost:
+
+```bash
+pip install websockets pillow            # the only extras the harness needs
+python -m app.harness.runtime --live --world lhotse_B
+```
+
+Then open **http://localhost:8766/**. Click the view to take the pointer, hold **W**
+to walk/climb, mouse to look, **R** resets, **Esc** pauses. Twelve `ClimbScene`
+worlds in the selector, plus four legacy flat-plane ones.
+
+**The WASD viewer** with the baseline walker (Playground stack):
+
+```bash
+python -m rl.scripts.viewer --policy mels
+```
+
+`W`/`S` forward/back, `Q`/`E` strafe, `A`/`D` turn, `↑`/`↓` wind ±2 m/s,
+`←`/`→` wind heading ±15°, `0` wind off, `X` zero command.
+
+**Real terrain**, straight from Copernicus GLO-30 + OSM route nodes:
 
 ```bash
 cd assets/environments/lhotse_face
-python mujoco_scene.py --list      # all nine, with their class
-python mujoco_scene.py --patch B   # real Lhotse Face, 38.8 deg
+python mujoco_scene.py --list        # all nine patches, with their class
+python mujoco_scene.py --patch B     # real Lhotse Face, 38.8 deg
 ```
 
-## Interactive viewer (WASD + live wind)
+Four patches are real measurements and five have the slope overridden for
+curriculum — read that folder's REAL vs SYNTHETIC section before quoting a
+number anywhere.
 
-From the repo root, with the baseline walking policy:
+## Two rules worth knowing before you touch anything
 
-```bash
-/home/mrinal/miniconda3/envs/everest/bin/python -m rl.scripts.viewer --policy mels
-```
+**A policy is only valid with the rope model it was trained on.** The ascender's
+position is in the observation, so any change to `assets/robots/mujoco/rope_rail.py`
+changes what those numbers mean and silently invalidates the network. v1 climbed
+happily in its own world and falls on the fixed rope. Retrain, or don't touch the
+geometry.
 
-With a trained policy checkpoint instead:
+**Report per joint and per dimension, never a max across all 29.** During the first
+gantry session a single scalar `|q − target|max` produced two confident and
+completely wrong diagnoses before per-joint reporting settled it in one run. Every
+tool in `deploy/diagnostics/` preserves the breakdown, and so should anything new.
 
-```bash
-/home/mrinal/miniconda3/envs/everest/bin/python -m rl.scripts.viewer \
-    --policy logs/<experiment>/checkpoints/<step> --wind_speed 10
-```
+## Environments
 
-Without `--policy` the G1 runs zero actions and will sag/fall — expected.
-The baseline policy is described in the next section.
+Python versions differ per stack, which is the main setup friction:
 
-Keys (press = set, press again = clear; no key-release events exist in the
-passive viewer):
+- **mjlab stack** (`rl/chloe`) — `pip install mjlab onnx onnxscript` in a Python 3.11
+  venv. Needs a CUDA GPU; there is no CPU fallback worth using.
+- **Playground stack** (`rl/environment`, `rl/scripts`, `app/harness`) —
+  `pip install -r requirements.txt` (jax 0.11.1 + `playground==0.2.0`,
+  `mujoco==3.12.0`, `brax==0.14.2`).
+- **On the robot** (`deploy/`) — the **system** interpreter, not a conda env: conda
+  shadows `python3` and the Unitree SDK is only installed on the system one.
+  `pip install unitree_sdk2py cyclonedds`.
 
-| Key | Action |
-|-----|--------|
-| `W` / `S` | forward / backward, lin_vel_x = ±1·mult |
-| `Q` / `E` | strafe left / right, lin_vel_y = ±0.5·mult |
-| `A` / `D` | turn left / right, ang_vel_yaw = ±1·mult |
-| `X` | zero all commands |
-| `R` | cycle speed multiplier 1× / 2× |
-| `↑` / `↓` | wind speed ±2 m/s (clip 0–40) |
-| `←` / `→` | wind heading ±15° |
-| `0` | wind off |
+`brax==0.14.2` calls `jax.device_put_replicated`, which JAX 0.11 removed; the call
+in `brax/training/agents/ppo/train.py` is patched in place with a `device_put` +
+stack shim. A brax or JAX upgrade may obsolete or revert that patch.
 
-HUD: red arrow = wind (world frame, above origin), blue arrow = command (at
-pelvis; vertical component = yaw). Current command/wind prints to stdout on
-every keypress. Hold-to-move semantics would require `pynput` (not installed).
+## The team
 
-## Baseline walking policy (`--policy mels`)
-
-`rl/policies/mels_g1_joystick.npz` is the Unitree G1 joystick policy from the
-official MuJoCo Playground live demo (research.mels.ai), extracted from the
-demo's published config: MLP 103→512→256→128→58 with swish activations and
-an obs normalizer. Its observation layout matches the playground
-G1Joystick `state` obs exactly, so it drops into `G1JoystickWind*` unmodified.
-Verified: stands indefinitely, walks forward/backward/strafes at command
-(0.75 m/s at cmd 1.0), survives ~8 m/s wind, falls at ~10 m/s sustained
-wind — the baseline your wind-robustness training should beat.
-
-The viewer also accepts any brax PPO checkpoint dir from the vendored
-trainer via `--policy logs/<exp>/checkpoints/<step>`.
-
-## Wind config
-
-`wind_config` keys (set at launch via `--wind_speed`/`--wind_heading` in the
-viewer, or `--playground_config_overrides` in the trainer):
-`enable` (bool), `wind_speed` (m/s), `wind_heading` (rad),
-`rho` (1.225 kg/m³), `cd_torso` (1.2), `area_torso` (0.5 m²).
-Reference: 15 m/s on a stationary G1 ⇒ ~69 N on a 33.3 kg robot.
-
-## Training (PPO)
-
-JAX is currently CPU-only in this env. Install `jax[cuda12]` before real
-training; the RTX 4070 (8 GB) may need `--num_envs 2048–4096` (default 8192)
-to avoid OOM. Also set `JAX_DEFAULT_MATMUL_PRECISION=highest` (upstream
-recommendation for Ampere+ GPUs).
-
-```bash
-/home/mrinal/miniconda3/envs/everest/bin/python rl/scripts/train_jax_ppo.py \
-  --env_name G1JoystickWindFlatTerrain \
-  --playground_config_overrides '{"wind_config.enable": true, "wind_config.wind_speed": 10.0}' \
-  --num_timesteps 200_000_000 --num_videos 0 --logdir logs
-```
-
-The wind env reuses the tuned G1Joystick PPO recipe (512/256/128 networks,
-privileged value obs). Checkpoints land in `logs/<exp>/checkpoints/<step>`;
-load them in the viewer with `--policy`.
-
-### Randomized wind during training (not yet implemented)
-
-Static wind only right now. For wind randomization add
-`wind_speed_range=[min,max]` / `wind_heading_range` to `wind_config`, sample
-in `reset()` into `info["wind"]`, and call `env.use_wind_from_info(True)` —
-the step-time wind path already reads from `info["wind"]`.
-
-### Local brax patch note
-
-`brax==0.14.2` calls `jax.device_put_replicated`, removed in JAX 0.11.
-The call in `brax/training/agents/ppo/train.py` (~line 756) was replaced
-in-place with a `jax.device_put` + stack shim (semantics verified). A brax
-or JAX upgrade may obsolete or revert this patch.
+Built by **Ines Dormoy** (perception, Waymo), **Chloe Pilon Vaillancourt**
+(simulation, physical AI), **Mrinal Jain** (autonomy, Applied Intuition), and
+**Jingxi "Samuel" Deng** (agentic systems, Wondera) at the Himalaya Robotics Hack.
