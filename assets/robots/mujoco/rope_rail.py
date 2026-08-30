@@ -149,11 +149,17 @@ def add_rope_rail(
     type=mujoco.mjtGeom.mjGEOM_CYLINDER,
     size=[ROPE_RADIUS, 1.0, 0.0],
     rgba=[0.9, 0.3, 0.1, 1.0],
-    contype=0,
-    conaffinity=0,
+    # Collides with the robot's body (legs, torso...) so it cannot walk through
+    # the rope — EXCEPT the wrist/tool (excluded below): rope-in-channel contact
+    # would fight the weld and jitter. Note: a rigid cylinder, not a sagging rope.
+    contype=1,
+    conaffinity=1,
+    condim=3,
+    friction=[0.2, 0.005, 0.0001],
     group=2,
   )
   rg.fromto = [-ROPE_TAIL, 0, 0, ROPE_LENGTH, 0, 0]
+  spec.add_exclude(name="rope_vs_tool", bodyname1=ROPE_BODY, bodyname2=WRIST_BODY)
 
   carrier = wb_spec.add_body(name=CARRIER_BODY, pos=grip_w)
   sj = carrier.add_joint(
