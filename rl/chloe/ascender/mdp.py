@@ -116,3 +116,13 @@ def wind_on_torso(
   asset.write_external_wrench_to_sim(
     forces, torques, env_ids=env_ids, body_ids=asset_cfg.body_ids
   )
+
+
+# ----------------------------------------------------------------------------
+# Metrics (logged, not rewarded)
+# ----------------------------------------------------------------------------
+
+
+def rope_tension(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = SLIDE) -> torch.Tensor:
+  """|constraint force| on the rope slide dof, N — the sim twin of the load cell."""
+  return env.sim.data.qfrc_constraint[:, env._slide_dadr].abs()  # type: ignore[attr-defined]

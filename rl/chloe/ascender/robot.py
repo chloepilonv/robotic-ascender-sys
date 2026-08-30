@@ -5,7 +5,7 @@ Model layout (one MjSpec, one mjlab entity called "robot"):
   world
   ├── pelvis (freejoint) ... right_wrist_yaw_link (+ ascender meshes)   <- the G1
   ├── rope            static visual cylinder along world +x (no collision)
-  └── ascender_carrier  body with ONE slide joint along +x (the physics rope)
+  └── rope_carriage   body with ONE slide joint along +x (the physics rope)
         `connect` equality: carrier origin == right_wrist_yaw_link origin
 
 The wrist origin is the rope axis by design (see assets/ascender/MOUNT.md: the
@@ -34,15 +34,15 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 G1_ASCENDER_XML = REPO_ROOT / "assets/robots/mujoco/g1_unitree_ascender.xml"
 
 ROPE_BODY = "rope"
-CARRIER_BODY = "ascender_carrier"
-SLIDE_JOINT = "ascender_slide"  # no "_joint" suffix: ".*_joint" regexes skip it.
+CARRIER_BODY = "rope_carriage"
+SLIDE_JOINT = "rope_slide"  # no "_joint" suffix: ".*_joint" regexes skip it.
 WRIST_BODY = "right_wrist_yaw_link"
 TORSO_BODY = "torso_link"
 FOOT_GEOM_REGEX = ".*_foot_[0-3]"
 
 ROPE_LENGTH = 30.0  # m of rope uphill of the start.
 ROPE_TAIL = 1.0  # m of rope downhill of the start.
-ROPE_RADIUS = 0.01
+ROPE_RADIUS = 0.0055  # 11 mm static rope (Petzl Basic takes 8-13 mm)
 CARRIER_MASS = 0.05
 
 # Joint angles at reset (mjlab knees-bent pose; ankles adapted per slope in env_cfg).
@@ -110,7 +110,7 @@ def get_spec(slope_deg: float = 0.0) -> mujoco.MjSpec:
     type=mujoco.mjtJoint.mjJNT_SLIDE,
     axis=[1, 0, 0],
     range=[-ROPE_LENGTH, ROPE_LENGTH],  # symmetric: mjlab soft limits (0.9) must include 0
-    damping=0.5,
+    damping=2.0,
     frictionloss=0.1,
   )
   carrier.add_geom(
@@ -166,3 +166,4 @@ def get_robot_cfg(slope_deg: float) -> EntityCfg:
     spec_fn=functools.partial(get_spec, slope_deg),
     articulation=g1.G1_ARTICULATION,
   )
+

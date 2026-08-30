@@ -1,6 +1,6 @@
 """Export a trained rsl_rl checkpoint to ONNX for the real G1 (or any runtime).
 
-    python -m rl.scripts.export_onnx Himalayas-Ascender-Slope20-G1 \
+    python -m rl.chloe.scripts.export_onnx Himalayas-Ascender-Slope20-G1 \
         logs/rsl_rl/g1_ascender_slope20/<run>/model_5000.pt policy.onnx
 
 Input  "obs"    : float32 [1, obs_dim]  (actor observation vector, raw — the
@@ -19,7 +19,7 @@ import torch
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
 
-import rl.mjlab_tasks.ascender as ascender
+import rl.chloe.ascender as ascender
 
 
 class _Actor(torch.nn.Module):
