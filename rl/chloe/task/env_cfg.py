@@ -43,14 +43,34 @@ class RatchetEnv(ManagerBasedRlEnv):
   what a real ascender does under load.
   """
 
+  MAX_ACTION_DELAY = 2  # policy steps (0-2 @ 50 Hz = 0-40 ms, the real G1 pipeline)
+
   def __init__(self, cfg, device: str, **kwargs):
     super().__init__(cfg, device=device, **kwargs)
+    n, a = self.num_envs, self.action_manager.total_action_dim
+    self._act_hist = torch.zeros(self.MAX_ACTION_DELAY + 1, n, a, device=self.device)
+    self._act_delay = torch.randint(0, self.MAX_ACTION_DELAY + 1, (n,), device=self.device)
     model = self.sim.mj_model
     jid = model.joint(f"robot/{R.SLIDE_JOINT}").id
     self._slide_qadr = int(model.jnt_qposadr[jid])
     self._slide_dadr = int(model.jnt_dofadr[jid])
     self._sim_step = self.sim.step
     self.sim.step = self._ratcheted_step  # type: ignore[method-assign]
+
+  def step(self, action: torch.Tensor):
+    """Apply the action from `delay` steps ago (delay random per env, 0..2)."""
+    self._act_hist = torch.roll(self._act_hist, 1, dims=0)
+    self._act_hist[0] = action
+    idx = torch.arange(self.num_envs, device=self.device)
+    delayed = self._act_hist[self._act_delay, idx]
+    out = super().step(delayed)
+    done = self.reset_buf.nonzero(as_tuple=False).flatten()
+    if len(done):
+      self._act_hist[:, done] = 0.0
+      self._act_delay[done] = torch.randint(
+        0, self.MAX_ACTION_DELAY + 1, (len(done),), device=self.device
+      )
+    return out
 
   def _ratcheted_step(self) -> None:
     qpos = self.sim.data.qpos
@@ -147,6 +167,32 @@ def make_env_cfg(slope_deg: float = 20.0, play: bool = False) -> ManagerBasedRlE
         "operation": "abs",
         "ranges": (0.4, 0.9),  # v0: packed snow..crampons; widen to 0.2 (ice) once it climbs
         "shared_random": True,
+      },
+    ),
+    # Motor strength: PD gains +-20 % per env (sim-to-real: gains never match).
+    "motor_strength": EventTermCfg(
+      mode="startup",
+      func=dr.pd_gains,
+      params={
+        "asset_cfg": SceneEntityCfg("robot", actuator_names=(".*",)),
+        "operation": "scale",
+        "kp_range": (0.8, 1.2),
+        "kd_range": (0.8, 1.2),
+      },
+    ),
+    # Payload: torso mass +-10 % and CoM +-3 cm (battery, jacket, rope drag).
+    "torso_mass": EventTermCfg(
+      mode="startup",
+      func=dr.body_mass,
+      params={"asset_cfg": mdp.TORSO, "operation": "scale", "ranges": (0.9, 1.1)},
+    ),
+    "torso_com": EventTermCfg(
+      mode="startup",
+      func=dr.body_com_offset,
+      params={
+        "asset_cfg": mdp.TORSO,
+        "operation": "add",
+        "ranges": {0: (-0.03, 0.03), 1: (-0.03, 0.03), 2: (-0.03, 0.03)},
       },
     ),
     # Wind: steady, random horizontal direction, resampled each episode.

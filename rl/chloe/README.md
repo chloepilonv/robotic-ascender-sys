@@ -42,3 +42,5 @@ Policy I/O (50 Hz): obs = ang_vel(3) + projected_gravity(3) + joint_pos(29) +
 joint_vel(29) + last_action(29) + ascender_pos_in_pelvis_frame(3) = 96;
 action = 29 joint-position offsets (`default + action * G1_ACTION_SCALE`).
 Everything in the obs is available on the real G1 (IMU, encoders, wrist FK).
+
+Next steps: see `ROADMAP.md`.
