@@ -137,6 +137,17 @@ _USE_WANDB = flags.DEFINE_boolean(
     False,
     "Use Weights & Biases for logging (ignored in play-only mode)",
 )
+_WANDB_ENTITY = flags.DEFINE_string(
+    "wandb_entity", None, "Weights & Biases entity (team/user name)"
+)
+_WANDB_PROJECT = flags.DEFINE_string(
+    "wandb_project", "mjxrl", "Weights & Biases project name"
+)
+_WANDB_EVAL_VIDEOS = flags.DEFINE_integer(
+    "wandb_eval_videos", 0,
+    "Log N eval-rollout videos to W&B at every eval point",
+)
+
 _USE_TB = flags.DEFINE_boolean(
     "use_tb", False, "Use TensorBoard for logging (ignored in play-only mode)"
 )
@@ -233,7 +244,6 @@ _RL_ENV_ALIASES = {
     # Same task/obs as upstream G1Joystick (fine-tune compatible).
     "G1JoystickWalkDR": "G1JoystickFlatTerrain",
     # 103/216-dim obs, 29 actions: same recipe as G1Joystick.
-    "G1ClimbAscender": "G1JoystickFlatTerrain",
     "G1ClimbTerrain": "G1JoystickFlatTerrain",
 }
 
@@ -464,7 +474,11 @@ def main(argv):
           "wandb is required for --use_wandb. "
           "Install via: pip install wandb"
       )
-    wandb.init(project="mjxrl", name=exp_name)
+    wandb.init(
+        project=_WANDB_PROJECT.value,
+        entity=_WANDB_ENTITY.value,
+        name=exp_name,
+    )
     wandb.config.update(env_cfg.to_dict())
     wandb.config.update({"env_name": _ENV_NAME.value})
 
@@ -580,12 +594,75 @@ def main(argv):
   times = [time.monotonic()]
 
   # Progress function for logging
+  eval_video_env = None
+  eval_video_rollout = None
+  def log_eval_video(num_steps, metrics, rollout_env):
+    """Render a short rollout of the current policy and log it to W&B.
+
+    Uses the latest policy snapshot (set by `policy_params_fn` at every
+    eval point) on a dedicated rollout env; renders EGL frames and ships
+    them as a wandb.Video under "eval/video". Failures are contained by
+    the caller.
+    """
+    make_policy = _latest_policy["make_policy"]
+    snap_params = _latest_policy["params"]
+    if make_policy is None or snap_params is None:
+      return  # first progress call happens before any snapshot
+    inference_fn = make_policy(
+        snap_params,
+        deterministic=True,
+    )
+    jit_inference_fn = jax.jit(inference_fn)
+    rollout_env = wrapper.wrap_for_brax_training(
+        rollout_env,
+        episode_length=ppo_params.episode_length,
+        action_repeat=ppo_params.get("action_repeat", 1),
+    )
+    jit_reset = jax.jit(rollout_env.reset)
+    jit_step = jax.jit(rollout_env.step)
+    render_every = 5  # 50 Hz physics -> 10 fps video
+    rng = jax.random.PRNGKey(_SEED.value)
+    state = jit_reset(jax.random.PRNGKey(_SEED.value + num_steps))
+    frames = []
+    max_steps = min(ppo_params.episode_length, 500)  # ~20 s of sim
+    for i in range(max_steps):
+      rng, act_rng = jax.random.split(rng)
+      if bool(state.done):
+        state = jax.jit(rollout_env.reset)(
+            jax.random.PRNGKey(_SEED.value + num_steps + i)
+        )
+      obs = state.obs["state"] if isinstance(state.obs, dict) else state.obs
+      action, _ = jit_inference_fn(obs, rng)
+      state = jit_step(state, action)
+      if i % render_every == 0:
+        scene_option = mujoco.MjvOption()
+        scene_option.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = False
+        frames.append(rollout_env.render([state], height=360, width=640, scene_option=scene_option)[0])
+    wandb.log(
+        {"eval/video": wandb.Video(np.stack(frames), fps=10, format="mp4")},
+        step=num_steps,
+    )
+
+  if _WANDB_EVAL_VIDEOS.value > 0 and _USE_WANDB.value and not _PLAY_ONLY.value:
+    # A dedicated rollout env for the eval videos: rendered with EGL into
+    # frames that go straight to W&B at every eval point.
+    eval_video_env = registry.load(
+        _ENV_NAME.value,
+        config=registry.get_default_config(_ENV_NAME.value),
+        config_overrides=dict(env_cfg_overrides),
+    )
+
   def progress(num_steps, metrics):
     times.append(time.monotonic())
 
     # Log to Weights & Biases
     if _USE_WANDB.value and not _PLAY_ONLY.value:
       wandb.log(metrics, step=num_steps)
+      if _WANDB_EVAL_VIDEOS.value > 0 and eval_video_env is not None:
+        try:
+          log_eval_video(num_steps, metrics, eval_video_env)
+        except Exception as exc:  # never kill training over a video
+          print(f"eval video logging failed: {exc}", flush=True)
 
     # Log to TensorBoard
     if _USE_TB.value and not _PLAY_ONLY.value and writer is not None:
@@ -610,7 +687,13 @@ def main(argv):
       config_overrides=eval_env_overrides,
   )
 
-  policy_params_fn = lambda *args: None
+  # Latest policy snapshot, refreshed by policy_params_fn at every eval
+  # point. The eval-video logger below uses it to render rollouts.
+  _latest_policy = {"make_policy": None, "params": None}
+
+  def policy_params_fn(current_step, make_policy, params):  # pylint: disable=unused-argument
+    _latest_policy["make_policy"] = make_policy
+    _latest_policy["params"] = params
   if _RSCOPE_ENVS.value:
     # Interactive visualisation of policy checkpoints
     from rscope import brax as rscope_utils
@@ -640,7 +723,8 @@ def main(argv):
 
     def policy_params_fn(current_step, make_policy, params):  # pylint: disable=unused-argument
       rscope_handle.set_make_policy(make_policy)
-      # rscope_handle.dump_rollout(params) # Disabled to prevent rendering slice crash
+      _latest_policy["make_policy"] = make_policy
+      _latest_policy["params"] = params
 
   # Train or load the model
   make_inference_fn, params, _ = train_fn(  # pylint: disable=no-value-for-parameter

@@ -1,7 +1,7 @@
 """G1 wind/climb locomotion built on MuJoCo Playground.
 
 Importing this package registers `G1JoystickWindFlatTerrain`,
-`G1JoystickWindRoughTerrain`, `G1ClimbAscender`, and `G1JoystickWalkDR` in the
+`G1JoystickWindRoughTerrain`, `G1JoystickWalkDR`, and `G1ClimbTerrain` in the
 playground registry so `mujoco_playground.registry.load` resolves them.
 `G1JoystickWalkDR` also gets a domain randomizer registered in
 `locomotion._randomizer` for `--domain_randomization` training.
@@ -24,7 +24,6 @@ from mujoco_playground._src import locomotion
 PLAYGROUND_IMPORT_ERROR: ImportError | None = None
 
 try:
-    from rl.environment import climb_env  # noqa: F401  registers the climb env
     from rl.environment import climb_terrain_env  # noqa: F401
     from rl.environment import walk_dr_env  # noqa: F401  registers the DR walk env on import
     from rl.environment import wind_env  # noqa: F401  registers the wind envs

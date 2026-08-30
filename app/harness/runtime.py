@@ -5,13 +5,13 @@
 
 Two layers, kept strictly apart:
 
-THEIR STEP SEMANTICS (never re-derived; see team_env.py and PARITY.md)
+STEP SEMANTICS (the ClimbScene worlds; see climb_worlds.py and PARITY.md)
     command (3,)                     -> the joystick command their obs carries
     observation = 103-d `state`      -> playground_policy.PlaygroundObservation
     action = policy(observation)     -> 29 raw values
-    ctrl = default_pose + 0.5*action -> climb_env.py:359
-    10 x (mj_step + ascender ratchet)-> climb_env.py:268-285
-    phase += 2*pi*dt*gait_freq       -> climb_env.py:388-389
+    ctrl = default_pose + 0.5*action -> climb_worlds.ClimbSceneEpisode
+    carrier projection + ratchet     -> ClimbScene.step (climb_scene.py:245)
+    phase += 2*pi*dt*gait_freq       -> walk_policy.WalkController
     fall = _get_termination          -> joystick.py:426-442
   No `mj_forward` between the substeps and the next observation: their MJX
   `step` reads sensors that are one substep stale, and so do we.
@@ -56,7 +56,6 @@ import mujoco  # noqa: E402
 from PIL import Image  # noqa: E402
 
 from app.harness import ratchet as ratchet_module  # noqa: E402
-from app.harness import team_env  # noqa: E402
 from app.harness.playground_policy import (  # noqa: E402
     GaitPhase, MelsPolicy, PlaygroundObservation, TerminationCheck,
     default_policy_path,
@@ -160,240 +159,6 @@ def root_yaw_radians(quaternion_wxyz) -> float:
     return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
 
-class Episode:
-    """One spawn-to-outcome run on the team env. Owns model, data, readouts."""
-
-    def __init__(self, model, meta, policy, wind_drag, definition,
-                 world_name, seed=0, randomise_reset_velocity=False):
-        self.model = model
-        self.meta = meta
-        self.definition = definition
-        self.world_name = world_name
-        # The ONE thing that separates a "free" world from a climbing one: the
-        # grip equality's runtime enable. Applied to MjData every reset, never
-        # to their model. See app/harness/worlds.py.
-        self.rope_enabled = bool(definition["rope"])
-        self.policy = policy
-        self.wind_drag_coefficient = wind_drag
-        self.random = np.random.default_rng(seed)
-        self.randomise_reset_velocity = randomise_reset_velocity
-
-        self.data = mujoco.MjData(model)
-        self.observation_builder = PlaygroundObservation(model, meta, noise_level=0.0)
-        self.termination = TerminationCheck(meta)
-        self.ratchet = ratchet_module.AscenderRatchet(
-            meta["slide_qpos_address"], meta["slide_dof_address"]
-        )
-        self.gait_phase = GaitPhase(meta["control_dt_seconds"], GAIT_FREQUENCY_HZ)
-        self.substeps = meta["substeps_per_control_step"]
-        self.control_hz = 1.0 / meta["control_dt_seconds"]
-        self.default_pose = np.asarray(meta["default_pose_radians"])
-        self.action_scale = meta["action_scale"]
-        self.torso_body_id = meta["torso_body_id"]
-        self.pelvis_body_id = meta["pelvis_body_id"]
-        self.palm_site_id = meta["palm_site_id"]
-        self.slide_qpos_address = meta["slide_qpos_address"]
-        self.grip_equality_id = meta["grip_equality_id"]
-        # The wind law needs the torso's world velocity; the sensor is looked
-        # up by ROLE in team_env, never by a name typed here.
-        self.global_linvel_torso_slice = slice(
-            *meta["sensor_addresses"]["torso_global_linvel"])
-        self.slope_degrees = meta["slope_degrees"]
-        # THE PHYSICS-STEP SEAM (Chloe: your BMS plugs in here).
-        # Each hook is `callable(model, data) -> dict | None`, called after
-        # EVERY mj_step -- i.e. at model.opt.timestep, the rate a battery or
-        # thermal model integrates at, not the 50 Hz control rate. The last
-        # non-None dict any hook returns during a control tick becomes
-        # `latest_bms`, which is broadcast as state["bms"] and recorded as one
-        # hud.json entry per tick. Append to this list; nothing else to touch.
-        self.physics_step_hooks = []
-        self.latest_bms = None
-        self.wind_velocity_world = np.zeros(2)
-        self.wind_force_world_newtons = np.zeros(3)
-        # Two worlds can SHARE an MjModel (climb_30/free_30, climb_0/free_0), and
-        # both of these write to the model, so re-apply them for every episode
-        # or the previous world's friction slider and rope visibility leak in.
-        self.set_foot_friction(meta["foot_friction"])
-        self._set_ascender_visible(self.rope_enabled)
-        self.reset()
-
-    def _set_ascender_visible(self, visible: bool) -> None:
-        """Show/hide the carrier + visual rope. Cosmetic alpha only.
-
-        A "free walk" world still has the carrier body and the rope cylinder in
-        the model -- their `_build_model` always makes them and we do not edit
-        their model's structure. Drawing a rope the robot is not attached to
-        just misleads the viewer, so the apparatus geoms go transparent. Nothing
-        about the physics changes: both are already contype=0/conaffinity=0
-        (climb_env.py:181-182, :206-207), i.e. collision-free either way.
-        """
-        if not hasattr(self, "_ascender_geom_ids"):
-            self._ascender_geom_ids = worlds_module.ascender_geom_ids(
-                self.model, self.meta)
-            self._ascender_geom_alpha = [
-                float(self.model.geom_rgba[geom_id, 3])
-                for geom_id in self._ascender_geom_ids
-            ]
-        for geom_id, alpha in zip(self._ascender_geom_ids, self._ascender_geom_alpha):
-            self.model.geom_rgba[geom_id, 3] = alpha if visible else 0.0
-
-    # ------------------------------------------------------------- state
-    def reset(self) -> None:
-        """Their deterministic reset -- climb_env.py:291-312.
-
-        qpos = the `knees_bent` keyframe (palm exactly on the carrier, slide 0),
-        qvel = 0. Theirs additionally draws base velocity U(-0.5, 0.5) on
-        qvel[0:6]; a demo wants the same spawn every time, so that is OFF by
-        default and switchable with --randomise-reset-velocity.
-        """
-        mujoco.mj_resetData(self.model, self.data)
-        self.data.qpos[:] = self.meta["keyframe_qpos"]
-        self.data.qvel[:] = 0.0
-        if self.randomise_reset_velocity:
-            self.data.qvel[0:6] = self.random.uniform(-0.5, 0.5, 6)
-        self.data.ctrl[:] = self.meta["keyframe_qpos"][7:self.slide_qpos_address]
-        self.data.xfrc_applied[:] = 0.0
-        # THE ROPE FLAG. mj_resetData restores eq_active from model.eq_active0
-        # (their default: on), so a "free" world switches it off here, per
-        # MjData, leaving their model untouched. The ratchet keeps running
-        # either way -- with the grip off it simply parks the unloaded carrier
-        # at travel 0 instead of letting gravity drag it down the line.
-        self.data.eq_active[self.grip_equality_id] = 1 if self.rope_enabled else 0
-        mujoco.mj_forward(self.model, self.data)
-        self.ratchet.reset(self.data)
-        self.gait_phase.reset()
-        self.last_action = np.zeros(self.meta["action_size"])
-        self.spawn_position_world = self.data.qpos[0:3].copy()
-        self.fell_at_seconds = None
-        self.fall_reason = None
-        self.maximum_rope_force_newtons = 0.0
-        self.tick = 0
-
-    def set_foot_friction(self, friction: float) -> None:
-        """Live friction knob. Training pins this at climb_config.foot_friction."""
-        for geom_id in self.meta["foot_geom_ids"]:
-            self.model.geom_friction[geom_id, 0] = float(friction)
-
-    @property
-    def pelvis_position_world(self) -> np.ndarray:
-        return self.data.qpos[0:3].copy()
-
-    @property
-    def rope_travel_meters(self) -> float:
-        """The ascender's own coordinate: metres up the line from the grip point."""
-        return float(self.data.qpos[self.slide_qpos_address])
-
-    @property
-    def height_gained_meters(self) -> float:
-        return float(self.pelvis_position_world[2] - self.spawn_position_world[2])
-
-    @property
-    def rope_force_newtons(self) -> float:
-        """Magnitude of the `connect` equality's constraint force, newtons.
-
-        The grip is a 3-row equality; MuJoCo puts its rows in efc_* tagged with
-        efc_type == mjCNSTR_EQUALITY and efc_id == the equality's id.
-        """
-        if self.data.nefc == 0:
-            return 0.0
-        rows = np.where(
-            (np.asarray(self.data.efc_type[:self.data.nefc])
-             == int(mujoco.mjtConstraint.mjCNSTR_EQUALITY))
-            & (np.asarray(self.data.efc_id[:self.data.nefc]) == self.grip_equality_id)
-        )[0]
-        if rows.size == 0:
-            return 0.0
-        return float(np.linalg.norm(np.asarray(self.data.efc_force)[rows]))
-
-    def hand_height_on_line_meters(self) -> float:
-        return ratchet_module.hand_height_on_line_meters(
-            self.data, self.palm_site_id, self.meta["line_point_world"],
-            self.meta["slope_axis_world"])
-
-    def hand_line_error_meters(self) -> float:
-        return ratchet_module.hand_line_error_meters(
-            self.data, self.palm_site_id, self.meta["line_point_world"],
-            self.meta["slope_axis_world"])
-
-    # ------------------------------------------------------- one control tick
-    def apply_wind(self, wind_velocity_world) -> None:
-        """Quadratic drag on the torso -- wind_env.py:92-103, verbatim law.
-
-        F_xy = 0.5*rho*Cd*A * |v_wind - v_torso| * (v_wind - v_torso), written
-        into xfrc_applied once per control step; mj_step does not clear it, so
-        it acts across all 10 substeps exactly as it does on their side.
-        """
-        self.wind_velocity_world[:] = wind_velocity_world
-        torso_velocity = np.zeros(2)
-        if self.global_linvel_torso_slice is not None:
-            torso_velocity = np.asarray(
-                self.data.sensordata[self.global_linvel_torso_slice][:2])
-        relative = self.wind_velocity_world - torso_velocity
-        force_xy = self.wind_drag_coefficient * np.linalg.norm(relative) * relative
-        self.wind_force_world_newtons[:2] = force_xy
-        self.wind_force_world_newtons[2] = 0.0
-        self.data.xfrc_applied[self.torso_body_id, :3] = self.wind_force_world_newtons
-        self.data.xfrc_applied[self.torso_body_id, 3:] = 0.0
-
-    def step(self, command, wind_velocity_world) -> dict:
-        observation = self.observation_builder.build(
-            self.data, command, self.last_action, self.gait_phase)
-        action = self.policy.act(observation)
-        self.data.ctrl[:] = self.default_pose + self.action_scale * action
-        self.apply_wind(wind_velocity_world)
-
-        readings = ratchet_module.step_with_ratchet(
-            mujoco, self.model, self.data, self.ratchet, self.substeps,
-            self.physics_step_hooks)
-        if readings:
-            self.latest_bms = readings[-1]
-
-        self.gait_phase.advance()
-        self.last_action = action
-        self.tick += 1
-        time_seconds = self.tick / self.control_hz
-
-        rope_force = self.rope_force_newtons
-        self.maximum_rope_force_newtons = max(self.maximum_rope_force_newtons, rope_force)
-        reasons = self.termination.reasons(self.data)
-        if self.fell_at_seconds is None and (
-                reasons["tipped_over"] or reasons["self_collision"]
-                or reasons["not_finite"]):
-            self.fell_at_seconds = time_seconds
-            self.fall_reason = ("not_finite" if reasons["not_finite"]
-                                else "tipped_over" if reasons["tipped_over"]
-                                else "self_collision")
-            print(f"[runtime] FELL at t={time_seconds:.2f}s reason={self.fall_reason}"
-                  f" torso_upvector_z={reasons['torso_upvector_z']:+.3f}", flush=True)
-
-        return {
-            "time_seconds": time_seconds,
-            "root_position_world": self.pelvis_position_world,
-            "root_quaternion_world_wxyz": self.data.qpos[3:7].copy(),
-            "root_velocity_world": self.data.qvel[0:3].copy(),
-            "joint_positions_radians": self.data.qpos[7:self.slide_qpos_address].copy(),
-            "joint_velocities_radians_per_second":
-                self.data.qvel[6:self.meta["slide_dof_address"]].copy(),
-            "action": action,
-            "target_positions_radians": self.data.ctrl.copy(),
-            "command": np.asarray(command, dtype=np.float64),
-            "observation": observation,
-            "wind_velocity_world_meters_per_second": self.wind_velocity_world.copy(),
-            "wind_force_world_newtons": self.wind_force_world_newtons.copy(),
-            "projected_gravity_body": observation[6:9],
-            "rope_travel_meters": self.rope_travel_meters,
-            # Alias kept for the HUD's existing contract: on this env the climb
-            # IS the ascender's travel up the line.
-            "climb_meters": self.rope_travel_meters,
-            "hand_height_on_line_meters": self.hand_height_on_line_meters(),
-            "hand_line_error_meters": self.hand_line_error_meters(),
-            "height_gained_meters": self.height_gained_meters,
-            "rope_force_newtons": rope_force,
-            "torso_upvector_z": reasons["torso_upvector_z"],
-            "fell": 1.0 if self.fell_at_seconds is not None else 0.0,
-        }
-
-
 class ChaseCamera:
     """Third-person orbit around the pelvis. Azimuth/elevation from the browser."""
 
@@ -470,7 +235,7 @@ def encode_jpeg(pixels: np.ndarray) -> bytes:
 
 def make_header(episode, meta, arguments) -> dict:
     fingerprint_summary = {
-        "kind": meta.get("kind", "legacy_climb_env"),
+        "kind": meta.get("kind", "climb_scene"),
         "nq": int(episode.model.nq), "nv": int(episode.model.nv),
         "nu": int(episode.model.nu),
         "timestep_seconds": float(episode.model.opt.timestep),
@@ -488,7 +253,7 @@ def make_header(episode, meta, arguments) -> dict:
             "adapt_report": meta["adapt_report"],
         })
     return {
-        "backend": "mujoco-c (plain), model from rl.environment.climb_env.G1ClimbAscender",
+        "backend": "mujoco-c (plain), merged ClimbScene (rl.environment.climb_scene)",
         "world": episode.world_name,
         "world_label": episode.definition["label"],
         "world_description": episode.definition["description"],
@@ -544,7 +309,6 @@ def run(arguments) -> str:
     policy = MelsPolicy(arguments.policy or default_policy_path(_REPOSITORY_ROOT))
     print(policy.describe(), flush=True)
     wind_drag = wind_drag_coefficient()
-    library = worlds_module.WorldLibrary()
     climb_library = climb_worlds_module.ClimbSceneLibrary()
 
     server = None
@@ -555,7 +319,7 @@ def run(arguments) -> str:
     def announce_build(name):
         """Tell the page why the picture is about to freeze.
 
-        A world's first selection costs a full G1ClimbAscender.__init__, and the
+        A world's first selection costs a full ClimbScene build, and the
         sim loop is what does it, so no frames go out while it runs. Measured
         warm that is ~1.6 s for the first world and ~0.2 s for the second
         distinct model -- brief, but a frozen picture with no explanation is
@@ -575,57 +339,32 @@ def run(arguments) -> str:
     latest_state = [None]
 
     def open_world(name):
-        """Either kind of world, behind one interface.
+        """Open a ClimbScene world and return (episode, model, meta).
 
-        `climb_scene` worlds are PR #8's merged model -- real terrain, a rope
-        draped over it, the jacketed robot, his physics step and his walking
-        policy. `legacy_climb_env` worlds are the older flat tilted plane and
-        slide joint, kept because the trainer still uses them. Both return an
-        episode with the same interface, so everything below this function is
-        shared.
+        All worlds are the merged model — real terrain, a rope draped over
+        it, the jacketed robot, the team's physics step and walking policy.
         """
-        kind = worlds_module.WORLD_DEFINITIONS[name]["kind"]
-        if kind == "climb_scene":
-            scene, meta, definition = climb_library.load(
-                name, on_build_start=lambda: announce_build(name))
-            episode = climb_worlds_module.ClimbSceneEpisode(
-                scene, meta, definition, name, seed=arguments.seed)
-            model = scene.model
-            print(f"[runtime] world={name} ({definition['label']})"
-                  f"  patch={definition['patch']} robot={definition['robot']}"
-                  f"  slope={episode.slope_degrees:.1f} deg"
-                  f" ({definition['slope_provenance']})"
-                  f"  rope={'ON' if episode.rope_enabled else 'OFF'}"
-                  f"  control {episode.control_hz:.0f} Hz  physics"
-                  f" {1.0 / meta['physics_dt_seconds']:.0f} Hz"
-                  f"  substeps/tick={episode.substeps}", flush=True)
-            print(f"[runtime] spawn pelvis"
-                  f" {episode.spawn_position_world.round(4).tolist()}"
-                  f"  hand-rope distance {episode.hand_line_error_meters():.2e} m"
-                  f"  arc length {episode.arclength_meters:.3f} m of"
-                  f" {meta['rope_length_meters']:.3f}"
-                  f"  lean {meta['lean_degrees']:.1f} deg"
-                  f"  ankle {meta['ankle_degrees']:.1f} deg"
-                  f"  upright {episode.torso_upright:+.3f}", flush=True)
-            return episode, model, meta
-
-        model, meta, definition = library.load(
+        scene, meta, definition = climb_library.load(
             name, on_build_start=lambda: announce_build(name))
-        episode = Episode(model, meta, policy, wind_drag, definition, name,
-                          seed=arguments.seed,
-                          randomise_reset_velocity=arguments.randomise_reset_velocity)
+        episode = climb_worlds_module.ClimbSceneEpisode(
+            scene, meta, definition, name, seed=arguments.seed)
+        model = scene.model
         print(f"[runtime] world={name} ({definition['label']})"
-              f"  slope={episode.slope_degrees} deg"
+              f"  patch={definition['patch']} robot={definition['robot']}"
+              f"  slope={episode.slope_degrees:.1f} deg"
+              f" ({definition['slope_provenance']})"
               f"  rope={'ON' if episode.rope_enabled else 'OFF'}"
               f"  control {episode.control_hz:.0f} Hz  physics"
               f" {1.0 / meta['physics_dt_seconds']:.0f} Hz"
               f"  substeps/tick={episode.substeps}", flush=True)
-        print(f"[runtime] spawn pelvis {episode.spawn_position_world.round(4).tolist()}"
-              f"  palm-on-line error {episode.hand_line_error_meters():.2e} m"
-              f"  rope travel {episode.rope_travel_meters:.4f} m"
-              f"  grip eq_active"
-              f" {int(episode.data.eq_active[episode.grip_equality_id])}",
-              flush=True)
+        print(f"[runtime] spawn pelvis"
+              f" {episode.spawn_position_world.round(4).tolist()}"
+              f"  hand-rope distance {episode.hand_line_error_meters():.2e} m"
+              f"  arc length {episode.arclength_meters:.3f} m of"
+              f" {meta['rope_length_meters']:.3f}"
+              f"  lean {meta['lean_degrees']:.1f} deg"
+              f"  ankle {meta['ankle_degrees']:.1f} deg"
+              f"  upright {episode.torso_upright:+.3f}", flush=True)
         return episode, model, meta
 
     def attach_battery_monitor(episode, meta):
@@ -858,7 +597,7 @@ def run(arguments) -> str:
                 "climb_meters": row["climb_meters"],
                 "arclength_meters": row.get("arclength_meters"),
                 "rope_length_meters": meta.get("rope_length_meters"),
-                "world_kind": meta.get("kind", "legacy_climb_env"),
+                "world_kind": meta.get("kind", "climb_scene"),
                 "terrain_in_training": meta.get("terrain_in_training", False),
                 "hand_height_on_line_meters": row["hand_height_on_line_meters"],
                 "hand_line_error_meters": row["hand_line_error_meters"],

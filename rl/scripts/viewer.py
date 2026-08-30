@@ -148,12 +148,15 @@ def main():
   parser.add_argument("--wind_speed", type=float, default=0.0)
   parser.add_argument("--wind_heading", type=float, default=0.0, help="deg")
   parser.add_argument("--slope_deg", type=float, default=30.0,
-                      help="slope angle for G1ClimbAscender")
+                      help="slope angle for G1ClimbTerrain")
   parser.add_argument("--impl", default="jax", choices=["jax", "warp"])
   args = parser.parse_args()
 
   overrides = {"impl": args.impl}
-  if "Climb" in args.env_name:
+  if "ClimbTerrain" in args.env_name:
+    # The terrain climb env takes a patch name, not a slope override.
+    pass
+  elif "Climb" in args.env_name:
     overrides["climb_config.slope_deg"] = args.slope_deg
   elif "WalkDR" in args.env_name:
     # Domain-randomized slope+wind env: wind is sampled per episode from
