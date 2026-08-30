@@ -89,33 +89,78 @@ def test_route_projection_round_trips():
 
 def test_ratchet_never_gives_ground_back():
     r = A.drape_route(T.make_terrain(38, 0.12, 3))
-    asc = A.MocapAscender(r, s0=0.0)
-    asc.update(r.point_at(5.0))
-    asc.update(r.point_at(1.0))          # a slip
+    asc = A.RopeCarrier(r, s0=0.0)
+    asc.advance(r.point_at(5.0))
+    asc.advance(r.point_at(1.0))          # a slip
     assert asc.s == pytest.approx(5.0)
-    asc.update(r.point_at(6.0))
+    asc.advance(r.point_at(6.0))
     assert asc.s == pytest.approx(6.0)
 
 
 def test_ratchet_can_be_disabled_for_ablation():
     r = A.drape_route(T.make_terrain(38, 0.12, 3))
-    asc = A.MocapAscender(r, s0=0.0, ratchet=False)
-    asc.update(r.point_at(5.0))
-    asc.update(r.point_at(1.0))
+    asc = A.RopeCarrier(r, s0=0.0, ratchet=False)
+    asc.advance(r.point_at(5.0))
+    asc.advance(r.point_at(1.0))
     assert asc.s == pytest.approx(1.0)
 
 
 # -- merged scene ----------------------------------------------------------
 
-def test_mocap_carrier_adds_no_degrees_of_freedom():
-    """The whole point of a mocap carrier over a slide joint.
+def test_carrier_dofs_come_after_the_robots():
+    """The carrier has three slide joints; they must not shift the robot's.
 
-    A slide joint appends a 30th coordinate that every qpos[7:] slice upstream
-    picks up as a phantom joint; nq must stay at the robot's own 36.
+    Everything reading the robot's joints slices qpos[7:7+29] / qvel[6:6+29].
+    The carrier's coordinates are appended after those, so the slices still
+    address the robot alone -- but only if they are bounded, never open-ended.
     """
     sc = CS.build_scene(T.load_patch("B"))
-    assert (sc.model.nq, sc.model.nv, sc.model.nu) == (36, 35, 29)
-    assert sc.model.nmocap == 1
+    m = sc.model
+    assert (m.nq, m.nv, m.nu) == (39, 38, 29)
+    joints = [mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, i) for i in range(m.njnt)]
+    assert joints[-3:] == ["carrier_x", "carrier_y", "carrier_z"]
+    adr = m.jnt_qposadr[m.joint("carrier_x").id]
+    assert adr == 36   # straight after the freejoint's 7 and the robot's 29
+
+
+def test_hand_can_slide_up_the_rope():
+    """The carrier must be draggable along the line -- it is an ascender.
+
+    A zero-DOF mocap carrier written to the palm's projection cannot do this and
+    fails silently: `connect` pins the hand to the carrier, so the projection
+    never changes and the hand ends up welded to one point. That version
+    advanced 0.000 m under a 1.2 rad shoulder sweep.
+    """
+    sc = CS.build_scene(T.load_patch("B"), robot_scene=R.resolve("himalaya").xml)
+    m, d = sc.model, sc.data
+    sc.reset()
+    ctrl = m.key(sc.key_id).ctrl.copy()
+    pelvis = m.body("pelvis").id
+    tangent = sc.route.tangent_at(sc.ascender.s)
+    s0 = sc.ascender.s
+    for _ in range(1000):
+        d.ctrl[:] = ctrl
+        d.xfrc_applied[pelvis, :3] = 600.0 * tangent   # haul it up the fall line
+        sc.step()
+    assert sc.ascender.s - s0 > 1.0
+    assert sc.ascender.progress > 1.0
+
+
+def test_grip_stays_tight_enough_to_look_attached():
+    """The hand must stay inside the rope radius while the policy runs."""
+    from rl.environment import walk_policy as WP
+
+    sc = CS.build_scene(T.load_patch("B"), robot_scene=R.resolve("himalaya").xml)
+    m, d = sc.model, sc.data
+    sc.reset()
+    ctl = WP.WalkController(m)
+    carrier = m.body("rope_carrier").id
+    worst = 0.0
+    for _ in range(int(8.0 / m.opt.timestep)):
+        ctl.substep(d)
+        sc.step()
+        worst = max(worst, float(np.linalg.norm(d.site_xpos[sc.palm_site_id] - d.xpos[carrier])))
+    assert worst < 0.025   # the rope's radius
 
 
 def test_hand_starts_exactly_on_the_rope():
@@ -133,9 +178,8 @@ def test_reset_is_idempotent_and_uses_fresh_kinematics():
     for _ in range(3):
         sc.reset()
         assert sc.hand_rope_distance() < 1e-6
-        assert np.linalg.norm(
-            sc.data.mocap_pos[sc.carrier_mocap_id] - sc.palm_xyz
-        ) < 1e-9
+        carrier = sc.data.xpos[sc.model.body("rope_carrier").id]
+        assert np.linalg.norm(carrier - sc.palm_xyz) < 1e-9
 
 
 def test_foot_contact_pairs_track_the_ice_setting():
@@ -194,7 +238,7 @@ def test_rope_arrests_a_fall_that_would_otherwise_be_terminal():
 
     roped, sc = sag(True)
     unroped, _ = sag(False)
-    assert sc.hand_rope_distance() < 1e-3      # still gripping
+    assert sc.hand_rope_distance() < 0.025    # still on the rope (its radius)
     assert abs(roped) < 0.6 * abs(unroped)     # and materially higher up
 
 
@@ -203,7 +247,7 @@ def test_export_round_trips_to_a_standalone_model(tmp_path):
     path = sc.export(str(tmp_path / "scene.xml"))
     m = mujoco.MjModel.from_xml_path(path)
     assert (m.nq, m.nv, m.nu) == (sc.model.nq, sc.model.nv, sc.model.nu)
-    assert m.nhfield == 1 and m.neq == 1 and m.nmocap == 1
+    assert m.nhfield == 1 and m.neq == 1
     assert np.allclose(m.hfield_data, sc.model.hfield_data)
 
 
@@ -315,8 +359,8 @@ from rl.environment import robot as R  # noqa: E402
 def test_scene_builds_on_either_robot(name):
     sc = CS.build_scene(T.load_patch("B"), robot_scene=R.resolve(name).xml)
     m = sc.model
-    assert (m.nq, m.nv, m.nu) == (36, 35, 29)
-    assert m.nmocap == 1 and m.neq == 1 and m.nhfield == 1
+    assert (m.nq, m.nv, m.nu) == (39, 38, 29)
+    assert m.neq == 1 and m.nhfield == 1
     assert sc.hand_rope_distance() < 1e-6
 
 
@@ -360,7 +404,7 @@ def test_observation_is_identical_across_robots():
         sc = CS.build_scene(flat, robot_scene=R.resolve(n).xml)
         m, d = sc.model, sc.data
         mujoco.mj_resetDataKeyframe(m, d, m.key("knees_bent").id)
-        d.qvel[:] = qvel
+        d.qvel[: len(qvel)] = qvel          # robot dofs; carrier slides follow
         mujoco.mj_forward(m, d)
         obs.append(WP.WalkController(m).observe(d))
     assert np.allclose(obs[0], obs[1], atol=1e-12)

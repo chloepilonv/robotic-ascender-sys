@@ -104,20 +104,32 @@ and the list of silent bugs this surfaced.
 ## The ascender
 
 A real ascender slides up a fixed rope and jams under load. Modelled as a
-**mocap carrier**: each substep the palm is projected onto the rope polyline to
-get its arc length `s`, `s` is clamped non-decreasing, and the carrier is written
-to `polyline(s)`. A `connect` equality between `right_palm` and the carrier does
-the physics — perpendicular to the rope it holds the hand on the line, along the
-rope the carrier follows the hand, and after a slip the high-water mark hauls the
-hand back up.
+**bead on a wire**: the carrier is a body with three slide joints, and after each
+substep its perpendicular offset from the rope polyline is removed and its
+perpendicular velocity cancelled, while the along-rope component is left to the
+dynamics. A `connect` equality ties `right_palm` to the carrier, so the hand
+drags the carrier up the line. The ratchet clamps arc length non-decreasing:
+slides up, jams under load.
 
-A mocap body has no degrees of freedom, so `nq` stays 36 and the observation
-stays natively 103-dimensional — which is what lets the mels checkpoint load
-unmodified. `sc.ascender.progress` is arc length climbed since reset: the
-natural progress reward.
+The obvious construction — a zero-DOF mocap carrier written to the palm's
+projection each substep — does **not** work, and fails silently. `connect` is an
+isotropic 3-DOF point constraint, so the palm cannot move relative to the carrier
+at all; its projection therefore never changes, so the carrier never moves, and
+the hand ends up welded to a fixed point. Measured: a 1.2 rad shoulder sweep
+advanced it 0.000 m.
 
-Verified: roped, the robot sags 0.8 m and holds with the hand on the line;
-unroped it falls off the face. Ratchet backsliding over 2000 steps is exactly 0.
+The carrier's three joints are appended after the robot's, so `qpos[7:7+29]` and
+`qvel[6:6+29]` still address the robot alone and the observation stays 103-dim —
+but only with **bounded** slices. An open-ended `qpos[7:]` picks the carrier up
+as three phantom joints.
+
+`sc.ascender.progress` is arc length climbed since reset: the natural progress
+reward.
+
+Verified: hauling the robot up the fall line advances the ascender 15 m and it
+clamps at the rope's end; roped it sags 0.8 m and holds; unroped it falls off the
+face. Ratchet backsliding over 2000 steps is exactly 0, and the hand stays within
+9 mm of the carrier (rope radius 25 mm) while the policy runs.
 
 ## Training, from here
 

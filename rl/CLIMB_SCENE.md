@@ -42,18 +42,32 @@ The old mechanism was a slide joint along a straight cylinder. A slide joint has
 one axis, so it cannot follow a rope that drapes over terrain — which is why
 `climb_env.py` refuses anything but a flat plane it can tilt.
 
-The replacement is a **mocap carrier**: each substep the palm is projected onto
-the polyline to get its arc length `s`, `s` is clamped non-decreasing, and the
-carrier is written to `polyline(s)`. A `connect` equality between `right_palm`
-and the carrier does the physics — perpendicular to the rope it holds the hand
-on the line, along the rope the carrier tracks the hand, and after a slip the
-high-water mark hauls the hand back up. That is an ascender.
+The replacement is a **bead on a wire**: the carrier is a body with three slide
+joints, and after each substep its perpendicular offset from the polyline is
+removed and its perpendicular velocity cancelled, leaving the along-rope
+component to the dynamics. A `connect` equality ties `right_palm` to the carrier,
+so the hand drags it up the line, and the ratchet clamps arc length
+non-decreasing.
 
-Because a mocap body has no degrees of freedom, **`nq` stays 36**. The slide
-joint made it 37, which is why `climb_env.py` carries trimmed `qpos[7:...]`
-slices and eight `_cost_*` overrides to hide the phantom coordinate. None of
-that is needed here, and the observation stays natively 103-dimensional, so the
-`mels` baseline policy still loads.
+**A zero-DOF mocap carrier does not work.** That was the first attempt: write the
+carrier to the palm's projection every substep. `connect` is an isotropic 3-DOF
+point constraint, so the palm cannot move relative to the carrier; its projection
+therefore never changes; so the carrier never moves. The hand is welded to a
+point, and nothing about the model looks wrong. Measured: a 1.2 rad shoulder
+sweep advanced the ascender 0.000 m over 8 s.
+
+The three carrier joints are appended after the robot's, so `qpos[7:7+29]` and
+`qvel[6:6+29]` still address the robot alone — **bounded slices only**. An
+open-ended `qpos[7:]`, which is what upstream playground uses, picks them up as
+three phantom joints; that is the same trap `climb_env.py` documents for its
+slide joint.
+
+`carrier_mass` is a lumped grip inertia, not the tool's catalogue mass (the real
+0.1 kg is already in the wrist inertial). Holding the carrier on the rope by
+projection fights the grip equality, and a light carrier gets yanked off the
+line: worst palm-to-carrier error over 8 s is 59 mm at 0.1 kg, 14 mm at 0.5,
+9 mm at 1.0, 3.5 mm at 2.0. The default 1.0 kg keeps the hand inside the 25 mm
+rope radius while still sliding freely.
 
 ## The robot
 

@@ -144,11 +144,28 @@ def drape_route(
     return RopeRoute(np.stack([x, y, z], axis=1))
 
 
-class MocapAscender:
-    """Drives the carrier mocap body along a rope, with the one-way ratchet.
+class RopeCarrier:
+    """A bead on a wire: free to slide along the rope, held onto it, one-way.
 
-    Owns only the arc-length state `s`, so it is cheap to reset and trivial to
-    port: the MJX version carries `s` in the env's info dict instead.
+    WHY THE CARRIER NEEDS REAL DEGREES OF FREEDOM
+    The obvious construction -- a zero-DOF mocap carrier written to the palm's
+    projection each substep -- does not work, and fails silently. `connect` is an
+    isotropic 3-DOF point constraint, so the palm cannot move relative to the
+    carrier at all; its projection therefore never changes; so the carrier never
+    moves. The hand ends up welded to a fixed point. Measured: driving the
+    shoulder through 1.2 rad advanced the ascender 0.000 m.
+
+    So the carrier is a real body with three slide joints. Each substep its
+    PERPENDICULAR offset from the rope is removed and the perpendicular velocity
+    cancelled, while the along-rope component is left to the dynamics -- the hand
+    pulls the carrier up the line, exactly as a hand pulls an ascender.
+
+    The ratchet then clamps the arc length non-decreasing, which is what makes it
+    an ascender rather than a free bead: it slides up and jams under load.
+
+    The carrier's joints are appended after the robot's, so `qpos[7:7+29]` and
+    `qvel[6:6+29]` still address the robot alone -- slice with explicit bounds,
+    never open-ended, or the carrier reads as three phantom joints.
     """
 
     def __init__(self, route: RopeRoute, s0: float = 0.0, ratchet: bool = True):
@@ -156,21 +173,59 @@ class MocapAscender:
         self.s = float(s0)
         self.s0 = float(s0)
         self.ratchet = ratchet
+        self._slide_adr = None   # qpos address of the carrier's 3 slide joints
+        self._dof_adr = None
+        self._origin = None      # carrier body frame origin (slides are offsets)
+
+    def bind(self, model, mujoco) -> None:
+        """Locate the carrier's coordinates in a compiled model."""
+        jid = model.joint("carrier_x").id
+        self._slide_adr = int(model.jnt_qposadr[jid])
+        self._dof_adr = int(model.jnt_dofadr[jid])
+        self._origin = np.asarray(
+            model.body_pos[model.body("rope_carrier").id], dtype=float
+        ).copy()
 
     def reset(self, s0: float | None = None) -> None:
         self.s = self.s0 if s0 is None else float(s0)
 
-    def update(self, palm_xyz) -> tuple[np.ndarray, float]:
-        """Advance the ratchet from the palm position; return (carrier_xyz, s).
-
-        The clamp is what makes it an ascender rather than a bead on a wire.
-        """
-        s_raw, _ = self.route.project_arclen(palm_xyz)
+    def advance(self, pos) -> float:
+        """Ratcheted arc length for a carrier at `pos`. Pure; no model needed."""
+        s_raw, _ = self.route.project_arclen(pos)
         self.s = max(self.s, s_raw) if self.ratchet else s_raw
         self.s = float(np.clip(self.s, 0.0, self.route.length))
-        return self.route.point_at(self.s), self.s
+        return self.s
+
+    def place(self, data) -> None:
+        """Put the carrier at the current arc length and stop it dead."""
+        a, v = self._slide_adr, self._dof_adr
+        data.qpos[a : a + 3] = self.route.point_at(self.s) - self._origin
+        data.qvel[v : v + 3] = 0.0
+
+    def constrain(self, data) -> float:
+        """Project the carrier back onto the rope and apply the ratchet.
+
+        Position: the perpendicular offset is removed outright. Velocity: the
+        perpendicular component is cancelled and, when ratcheting, the along-rope
+        component is clamped non-negative -- so the hand can drag the carrier up
+        but a slip cannot drag it back down.
+        """
+        a, v = self._slide_adr, self._dof_adr
+        self.advance(data.qpos[a : a + 3] + self._origin)
+        data.qpos[a : a + 3] = self.route.point_at(self.s) - self._origin
+        tangent = self.route.tangent_at(self.s)
+        vel = data.qvel[v : v + 3]
+        along = float(vel @ tangent)
+        if self.ratchet:
+            along = max(along, 0.0)
+        data.qvel[v : v + 3] = along * tangent
+        return self.s
 
     @property
     def progress(self) -> float:
         """Arc length climbed since reset -- the natural RL progress reward."""
         return self.s - self.s0
+
+
+# The previous name. It was a mocap body, and it could not slide.
+MocapAscender = RopeCarrier

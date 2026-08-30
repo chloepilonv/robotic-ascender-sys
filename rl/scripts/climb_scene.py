@@ -25,6 +25,8 @@ from rl.environment import terrain as T
 from rl.environment import robot as R
 from rl.environment import walk_policy as WP
 
+ROPE_RADIUS = CS.RopeParams().radius
+
 
 
 
@@ -170,7 +172,7 @@ def check(a) -> int:
         ok &= good
         print(f"   {label:<22} max err {e.max()*1000:7.2f} mm   {'OK' if good else 'FAIL'}")
 
-    print("2. grip integrity at reset (hand must start exactly on the line)")
+    print(f"2. grip integrity at reset (hand must start exactly on the line)")
     sc = build(a)
     good = sc.hand_rope_distance() < 1e-6
     ok &= good
@@ -183,10 +185,13 @@ def check(a) -> int:
     # particular ratio: the himalaya robot has full-body collision and catches
     # on the terrain, so it falls less far unroped than the feet-only
     # playground model does. Asserting a fixed multiple tested the wrong thing.
+    # "Still on the rope" means inside its radius, not inside a millimetre: the
+    # carrier is a real sliding body now, so the grip has a few mm of compliance
+    # where the welded mocap version had none.
     good = (
         roped["finite"]
-        and roped["gap"] < 1e-3           # still gripping
-        and unroped["gap"] > 0.25         # came off the line
+        and roped["gap"] < ROPE_RADIUS    # still on the line
+        and unroped["gap"] > 0.25         # came off it
         and abs(roped["dz"]) < 0.6 * abs(unroped["dz"])
     )
     ok &= good
@@ -349,8 +354,6 @@ def view(sc: CS.ClimbScene, wind: CS.WindParams, ctl=None, passive: bool = False
 
     def control_cb(model, data):
         apply_control(sc, ctl, ctrl)
-        pos, _ = sc.ascender.update(data.site_xpos[sc.palm_site_id])
-        data.mocap_pos[sc.carrier_mocap_id] = pos
         if wind.speed:
             rel = wind.velocity - data.cvel[sc.torso_body_id, 3:5]
             data.xfrc_applied[sc.torso_body_id, :] = 0.0
@@ -358,11 +361,20 @@ def view(sc: CS.ClimbScene, wind: CS.WindParams, ctl=None, passive: bool = False
                 wind.drag_coeff * np.linalg.norm(rel) * rel
             )
 
+    # The carrier is held on the rope by a projection applied AFTER each
+    # mj_step. mjcb_control runs *inside* the step, too early for that, so the
+    # projection goes in a passive callback which MuJoCo invokes at the end of
+    # the pipeline.
+    def passive_cb(model, data):
+        sc.ascender.constrain(data)
+
     mujoco.set_mjcb_control(control_cb)
+    mujoco.set_mjcb_passive(passive_cb)
     try:
         mj_viewer.launch(m, d)
     finally:
         mujoco.set_mjcb_control(None)
+        mujoco.set_mjcb_passive(None)
     return 0
 
 

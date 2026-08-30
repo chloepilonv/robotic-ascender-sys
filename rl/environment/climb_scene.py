@@ -160,19 +160,18 @@ class ClimbScene:
     ankle_rad: float
     spawn: np.ndarray
     palm_site_id: int
-    carrier_mocap_id: int
     torso_body_id: int
     key_id: int
 
     def reset(self) -> None:
         mujoco.mj_resetDataKeyframe(self.model, self.data, self.key_id)
         # mj_resetDataKeyframe writes qpos but leaves site_xpos stale, and the
-        # carrier is placed from the palm's *cartesian* position. Without this
-        # forward pass the ascender grabs the previous pose's palm, opening a
-        # multi-metre equality error that detonates the solver on step one.
+        # carrier is placed relative to the palm. Without this forward pass the
+        # ascender grabs the previous pose's palm, opening a multi-metre
+        # equality error that detonates the solver on step one.
         mujoco.mj_forward(self.model, self.data)
         self.ascender.reset()
-        self.sync_carrier()
+        self.ascender.place(self.data)
         mujoco.mj_forward(self.model, self.data)
 
     @property
@@ -180,10 +179,8 @@ class ClimbScene:
         return self.data.site_xpos[self.palm_site_id].copy()
 
     def sync_carrier(self) -> float:
-        """Advance the ratchet from the current palm pose and move the carrier."""
-        pos, s = self.ascender.update(self.palm_xyz)
-        self.data.mocap_pos[self.carrier_mocap_id] = pos
-        return s
+        """Hold the carrier on the rope and apply the ratchet."""
+        return self.ascender.constrain(self.data)
 
     def apply_wind(self, wind: WindParams) -> None:
         """Quadratic drag on the torso, written into xfrc_applied.
@@ -200,17 +197,16 @@ class ClimbScene:
         self.data.xfrc_applied[self.torso_body_id, :2] = f
 
     def step(self, wind: WindParams | None = None) -> float:
-        """One physics substep with the ascender ratchet held closed.
+        """One physics substep, with the carrier held on the rope afterwards.
 
-        The carrier is moved *before* stepping so the grip equality solves
-        against the updated target, matching where the MJX version writes it
-        inside its `lax.scan`.
+        The projection runs AFTER mj_step: the hand pulls the carrier during the
+        step, and the perpendicular part of that motion is then removed. Doing it
+        beforehand would discard the very displacement the hand just produced.
         """
-        s = self.sync_carrier()
         if wind is not None:
             self.apply_wind(wind)
         mujoco.mj_step(self.model, self.data)
-        return s
+        return self.sync_carrier()
 
     def hand_rope_distance(self) -> float:
         """Perpendicular slack between the palm and the rope. 0 = gripping."""
@@ -460,6 +456,8 @@ def build_scene(
     gear: bool = False,
     policy_compat: bool = True,
     lean_frac: float | None = None,
+    carrier_mass: float = 1.0,
+    carrier_damping: float = 1.0,
 ) -> ClimbScene:
     """Compile G1 + terrain + rope + ascender into one MuJoCo model.
 
@@ -571,9 +569,28 @@ def build_scene(
         )
         seg.fromto = list(route.points[i]) + list(route.points[i + 1])
 
-    carrier = wb.add_body(
-        name="rope_carrier", pos=list(route.point_at(s_start)), mocap=True
-    )
+    # `carrier_mass` is a lumped grip inertia, not the tool's catalogue mass --
+    # the ascender's real 0.1 kg is already folded into the wrist inertial by
+    # assets/robots/mujoco. Holding the carrier on the rope by projection fights
+    # the grip equality, and a light carrier gets yanked off the line: worst
+    # palm-to-carrier error over 8 s is 59 mm at 0.1 kg, 14 mm at 0.5, 9 mm at
+    # 1.0, 3.5 mm at 2.0. 1.0 kg keeps the hand inside the 25 mm rope radius
+    # while still sliding freely.
+    # A real body with three slide joints, not a mocap body: see RopeCarrier.
+    # A zero-DOF carrier cannot slide, because `connect` pins the hand to it and
+    # the hand's projection is then what decides where it goes -- a deadlock that
+    # welds the hand to one point. Its joints are appended after the robot's, so
+    # qpos[7:7+29] still addresses the robot alone.
+    carrier = wb.add_body(name="rope_carrier", pos=list(route.point_at(s_start)))
+    for axis_name, axis in (("carrier_x", [1, 0, 0]),
+                            ("carrier_y", [0, 1, 0]),
+                            ("carrier_z", [0, 0, 1])):
+        carrier.add_joint(
+            name=axis_name,
+            type=mujoco.mjtJoint.mjJNT_SLIDE,
+            axis=axis,
+            damping=float(carrier_damping),
+        )
     carrier.add_site(name="carrier_site", size=[0.02, 0, 0])
     carrier.add_geom(
         name="carrier_geom",
@@ -582,7 +599,7 @@ def build_scene(
         rgba=[0.95, 0.55, 0.05, 0.6],
         contype=0,
         conaffinity=0,
-        mass=0.0,
+        mass=float(carrier_mass),
         group=GROUP_ROPE,
     )
     eq = spec.add_equality(
@@ -602,8 +619,7 @@ def build_scene(
             c = np.asarray(k.ctrl, dtype=float).copy()
             c[ANKLE_PITCH_IDX] = q[7 + ANKLE_PITCH_IDX]
             k.ctrl = c
-            k.mpos = list(route.point_at(s_start))
-            k.mquat = [1.0, 0.0, 0.0, 0.0]
+
 
     model = spec.compile()
     model.vis.global_.offwidth, model.vis.global_.offheight = 1920, 1080
@@ -614,7 +630,7 @@ def build_scene(
         data=data,
         terrain=terrain,
         route=route,
-        ascender=asc_mod.MocapAscender(route, s0=s_start, ratchet=ratchet),
+        ascender=asc_mod.RopeCarrier(route, s0=s_start, ratchet=ratchet),
         spec=spec,
         friction=friction,
         adapt_report=adapt_report,
@@ -622,10 +638,10 @@ def build_scene(
         ankle_rad=ankle,
         spawn=spawn,
         palm_site_id=model.site("right_palm").id,
-        carrier_mocap_id=int(model.body("rope_carrier").mocapid[0]),
         torso_body_id=model.body("torso_link").id,
         key_id=model.key(keyframe).id,
     )
+    scene.ascender.bind(model, mujoco)
     scene.reset()
     return scene
 
