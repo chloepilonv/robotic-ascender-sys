@@ -255,7 +255,12 @@ VOSK_GRAMMAR = '["stop", "clear", "[unk]"]'
 # threshold the test prints and the runtime uses; re-run the test if the ear
 # model, the corpus or the wind law changes, and move this line to whatever the
 # table says.
-STOP_CONFIDENCE_THRESHOLD = 0.90
+# LOWERED 0.90 -> 0.60 (user, 2026-08-30: real-mic stops were hard to land).
+# Cheap by the corpus's own measurement: false stops on ordinary calls sit at
+# 0.0% at ANY threshold, and the near-miss words (top/shop/drop) score 1.00
+# when they fool the model at all -- so the strict bar was only rejecting
+# genuine stops whose posterior sagged (accent, wind, distance).
+STOP_CONFIDENCE_THRESHOLD = 0.60
 # LOWER THAN STOP'S, from measurement (2026-08-30): five synthesized voices
 # say `clear` at 1.00 clean, but with the first 60 ms clipped -- which is what
 # a late VAD onset does to the word's soft /k/ -- they land at 0.85/0.89/0.90
