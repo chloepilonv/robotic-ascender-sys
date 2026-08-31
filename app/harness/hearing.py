@@ -256,7 +256,14 @@ VOSK_GRAMMAR = '["stop", "clear", "[unk]"]'
 # model, the corpus or the wind law changes, and move this line to whatever the
 # table says.
 STOP_CONFIDENCE_THRESHOLD = 0.90
-CLEAR_CONFIDENCE_THRESHOLD = 0.90
+# LOWER THAN STOP'S, from measurement (2026-08-30): five synthesized voices
+# say `clear` at 1.00 clean, but with the first 60 ms clipped -- which is what
+# a late VAD onset does to the word's soft /k/ -- they land at 0.85/0.89/0.90
+# with one at 0.64, so a 0.90 bar sat exactly on the failure cluster and the
+# latch was hard to release. The asymmetry is deliberate: a false `clear` only
+# wakes a robot whose human is right there talking to it; a missed `stop` is
+# the expensive mistake, so stop keeps the strict bar.
+CLEAR_CONFIDENCE_THRESHOLD = 0.60
 
 # ------------------------------------------------------------- the behaviour
 HEARING_MODES = ("IDLE", "LISTENING", "COMING_BY_EYES", "COMING_BY_EARS",
