@@ -189,6 +189,24 @@ CHLOE_POLICY_VERSIONS = {
                 " <= 0.11 cm -- the first checkpoint that climbs 35 and 40.",
         "slopes": (20, 25, 30, 35, 40),
     },
+    "m3": {
+        "relative_path": os.path.join(
+            "rl", "policies",
+            "g1_ascender_slope20_dr_probe_2026-08-30_21-01-04.onnx"),
+        "trained_slope_degrees": 20.0,
+        "display": "Mrinal 3",
+        "note": "Mrinal's dr_probe checkpoint (branch feat/render-video, iter"
+                " 4399; same 96-d obs / 512-256-128 ELU actor). The .onnx the"
+                " branch shipped did NOT match its own .pt (worst diff 0.67),"
+                " so the ONNX here is re-derived from the .pt with plain torch"
+                " (normaliser baked in), verified vs torch to 5.7e-06."
+                " MEASURED 2026-08-30 (15 s, calm, tilted_plane): uphill"
+                " +3.01 m at 30 deg; at 35 and 40 it STANDS and HOLDS the"
+                " rope (gap <= 0.04 cm) but does not gain (-0.24 / -0.41 m)."
+                " Weaker than m2 -- an early probe (m2 was iter 12997); the"
+                " failing rungs are kept visible on purpose.",
+        "slopes": (30, 35, 40),
+    },
     "v2": {
         "relative_path": os.path.join(
             "rl", "policies",
