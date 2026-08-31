@@ -201,11 +201,12 @@ CHLOE_POLICY_VERSIONS = {
                 " so the ONNX here is re-derived from the .pt with plain torch"
                 " (normaliser baked in), verified vs torch to 5.7e-06."
                 " MEASURED 2026-08-30 (15 s, calm, tilted_plane): uphill"
-                " +3.01 m at 30 deg; at 35 and 40 it STANDS and HOLDS the"
-                " rope (gap <= 0.04 cm) but does not gain (-0.24 / -0.41 m)."
+                " +5.60 m at 20 deg, +3.01 m at 30; at 35 and 40 it STANDS"
+                " and HOLDS the rope (gap <= 0.04 cm) but does not gain"
+                " (-0.24 / -0.41 m)."
                 " Weaker than m2 -- an early probe (m2 was iter 12997); the"
                 " failing rungs are kept visible on purpose.",
-        "slopes": (30, 35, 40),
+        "slopes": (20, 30, 35, 40),
     },
     "v2": {
         "relative_path": os.path.join(
