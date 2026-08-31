@@ -5,3 +5,4 @@ Dark and Tough"). `stop_1.mp3` is the one word the robot listens for;
 `pemba_*.mp3` are variations of the guide shouting "Pemba" -- any human
 voice that is not "stop" means "come". Played at the hiker's mouth by the
 runtime's ear model in MANUAL mode (sidebar buttons), in place of a live mic.
+- clear_1.mp3 — macOS `say` stand-in for the release word ("Clear!"); replace with an ElevenLabs take when one exists.

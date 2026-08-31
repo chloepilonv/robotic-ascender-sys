@@ -243,24 +243,27 @@ BEARING_FLOOR_SPAN_MULTIPLIER = 12
 # clean one. Both read off the measured sharpnesses in `test_hearing` table 3b.
 BEARING_SHARPNESS_FLOOR = 2.0
 BEARING_SHARPNESS_SPAN = 8.0
-# The vosk grammar. Exactly one word plus the escape hatch, which is what makes
-# a 40 MB model usable at all: with the grammar the decoder can only ever emit
-# `stop` or `[unk]`, so a shout of "come here" cannot be scored as a partial
-# match to anything.
+# The vosk grammar. Two command words plus the escape hatch, which is what
+# makes a 40 MB model usable at all: with the grammar the decoder can only ever
+# emit `stop`, `clear` or `[unk]`, so a shout of "come here" cannot be scored
+# as a partial match to anything.
 STOP_WORD = "stop"
-VOSK_GRAMMAR = '["stop", "[unk]"]'
+CLEAR_WORD = "clear"     # the release word (user ruling 2026-08-30): a robot
+                         # stopped by voice stays stopped until it hears this
+VOSK_GRAMMAR = '["stop", "clear", "[unk]"]'
 # CHOSEN FROM `test_hearing` TABLE 1, not guessed. The number below is the
 # threshold the test prints and the runtime uses; re-run the test if the ear
 # model, the corpus or the wind law changes, and move this line to whatever the
 # table says.
 STOP_CONFIDENCE_THRESHOLD = 0.90
+CLEAR_CONFIDENCE_THRESHOLD = 0.90
 
 # ------------------------------------------------------------- the behaviour
 HEARING_MODES = ("IDLE", "LISTENING", "COMING_BY_EYES", "COMING_BY_EARS",
                  "STOPPED", "WAIT")
 HEARING_MODE_CODES = {name: float(index)
                       for index, name in enumerate(HEARING_MODES)}
-HEARD_CODES = {"none": 0.0, "voice": 1.0, "stop": 2.0}
+HEARD_CODES = {"none": 0.0, "voice": 1.0, "stop": 2.0, "clear": 3.0}
 # The walk toward a voice. Same forward speed the vision follower uses, so the
 # hand-over from ears to eyes is not also a change of pace.
 EAR_WALK_SPEED_METERS_PER_SECOND = 0.5
@@ -828,6 +831,9 @@ class StopWord:
         self.available = False
         self.model = None
         self.milliseconds = 0.0
+        # Set by every `confidence` call: the best `clear` posterior from the
+        # SAME decode -- the grammar is three-way, one decode answers both.
+        self.clear_confidence = 0.0
         try:
             import vosk
             vosk.SetLogLevel(-1)
@@ -849,7 +855,12 @@ class StopWord:
                   " ~/.cache/vosk/", flush=True)
 
     def confidence(self, segment) -> float:
-        """The best `stop` confidence in one utterance. -> 0.0 if not heard."""
+        """The best `stop` confidence in one utterance. -> 0.0 if not heard.
+
+        Side output: `self.clear_confidence`, the best `clear` in the same
+        decode.
+        """
+        self.clear_confidence = 0.0
         if not self.available:
             return 0.0
         import json
@@ -887,6 +898,9 @@ class StopWord:
         for word in result.get("result", []):
             if word.get("word") == STOP_WORD:
                 best = max(best, float(word.get("conf", 0.0)))
+            elif word.get("word") == CLEAR_WORD:
+                self.clear_confidence = max(self.clear_confidence,
+                                            float(word.get("conf", 0.0)))
         return best
 
 
@@ -1040,6 +1054,7 @@ class Ears:
         self.level_db = -80.0
         self.heard = "none"
         self.stop_confidence = 0.0
+        self.clear_confidence = 0.0
         self.bearing_radians = None
         self.bearing_confidence = 0.0
         self.segments_heard = 0
@@ -1090,6 +1105,7 @@ class Ears:
         self.level_db = -80.0
         self.heard = "none"
         self.stop_confidence = 0.0
+        self.clear_confidence = 0.0
         self.bearing_radians = None
         self.bearing_confidence = 0.0
         self.new_segment = False
@@ -1200,7 +1216,10 @@ class Ears:
         self.segments_heard += 1
         self.new_segment = True
         self.stop_confidence = self.stop_word.confidence(monitor)
+        self.clear_confidence = float(self.stop_word.clear_confidence)
         self.heard = ("stop" if self.stop_confidence >= STOP_CONFIDENCE_THRESHOLD
+                      else "clear" if self.clear_confidence
+                      >= CLEAR_CONFIDENCE_THRESHOLD
                       else "voice")
         window, window_start = self._loudest_window(channels)
         # The centre of the window the bearing came from, counted back from the
@@ -1358,6 +1377,14 @@ class HearingBehaviour:
             if ears.heard == "stop":
                 self.stopped = True
                 self.called = False
+            elif self.stopped:
+                # STOPPED IS A LATCH (user ruling 2026-08-30): only the word
+                # `clear` at >= CLEAR_CONFIDENCE_THRESHOLD releases it. Any
+                # other voice while stopped is IGNORED -- a robot stood down
+                # by voice must not lurch because somebody kept talking.
+                if ears.heard == "clear":
+                    self.stopped = False
+                    self.called = False
             else:
                 self.called = True
                 self.stopped = False
@@ -1693,6 +1720,7 @@ class HearingSystem:
             # The verdict on the LAST utterance: "none" until one is heard.
             "heard": ears.heard,
             "stop_confidence": round(float(ears.stop_confidence), 3),
+            "clear_confidence": round(float(ears.clear_confidence), 3),
             "bearing_degrees": (None if bearing is None
                                 else round(math.degrees(bearing), 1)),
             "bearing_confidence": round(float(ears.bearing_confidence), 3),

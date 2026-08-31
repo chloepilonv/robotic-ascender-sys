@@ -46,7 +46,7 @@ FSM (mirrors app/harness/hearing.HearingBehaviour, single-mic edition):
     COMING     vector_command toward the detection; inside WAIT range -> WAIT
     SEARCH     rotate in place until seen (-> COMING) or timeout (-> LISTENING)
     WAIT       stand within arm's reach; she leaves range -> COMING
-    STOPPED    the word `stop` at >= 0.90 confidence; ANY later voice resumes
+    STOPPED    the word `stop` at >= 0.90 confidence; ONLY `clear` resumes
 """
 from __future__ import annotations
 
@@ -67,6 +67,7 @@ from app.harness.guide import (
     vector_command,
 )
 from app.harness.hearing import (
+    CLEAR_CONFIDENCE_THRESHOLD,
     MICROPHONE_NOISE_GATE_RMS,
     SAMPLE_RATE_HZ,
     SEGMENT_END_SILENCE_SECONDS,
@@ -234,7 +235,9 @@ class GuideWalkBrain:
         if utterance == "stop":
             self.mode = "STOPPED"
         elif self.mode == "STOPPED":
-            if utterance == "voice":
+            # A LATCH: only the word `clear` releases a voice-stop (user
+            # ruling 2026-08-30); other voices are ignored while stopped.
+            if utterance == "clear":
                 self.mode = "LISTENING"
         elif utterance == "voice":
             self.mode = "COMING" if remembered else "SEARCH"
@@ -301,8 +304,11 @@ class UtteranceMachine:
         if utterance.size / SAMPLE_RATE_HZ < SEGMENT_MINIMUM_SECONDS:
             return None
         confidence = self.words.confidence(utterance)
-        return ("stop" if confidence >= STOP_CONFIDENCE_THRESHOLD
-                else "voice")
+        if confidence >= STOP_CONFIDENCE_THRESHOLD:
+            return "stop"
+        if self.words.clear_confidence >= CLEAR_CONFIDENCE_THRESHOLD:
+            return "clear"
+        return "voice"
 
 
 # ------------------------------------------------------------------- wiring
@@ -404,8 +410,10 @@ def _dry_run(brain, ears, dt) -> None:
     print("[dry] a confident 'stop' -> STOPPED, even mid-approach:")
     frame(True, 2.5, 0.0, heard="stop")
     frame(True, 2.2, 0.0)
-    print("[dry] any voice resumes -> LISTENING, then a call -> COMING:")
+    print("[dry] a plain voice does NOT release the latch -> still STOPPED:")
     frame(True, 2.2, 0.0, heard="voice")
+    print("[dry] only the word 'clear' releases it, then a call -> COMING:")
+    frame(True, 2.2, 0.0, heard="clear")
     frame(True, 2.2, 0.0, heard="voice")
 
 

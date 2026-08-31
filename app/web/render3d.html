@@ -410,6 +410,7 @@
       <div class="shoutrow" id="shoutRow">
         <button id="shoutPemba">PEMBA <span class="keycap">P</span></button>
         <button id="shoutStop">STOP <span class="keycap">X</span></button>
+        <button id="shoutClear">CLEAR <span class="keycap">C</span></button>
       </div>
       <div id="shoutNow"></div>
     </div>
@@ -823,6 +824,7 @@ const VOICE_CLIP_DIRECTORY = '/app/web/sounds/voice/';
 // in LISTENING). The quiet takes stay in the corpus and the tests.
 const PEMBA_CLIPS = ['pemba_2.mp3', 'pemba_4.mp3'];
 const STOP_CLIP = 'stop_1.mp3';
+const CLEAR_CLIP = 'clear_1.mp3';  // say-generated stand-in; swap for an ElevenLabs take
 const hearingState = { on: false, mode: 'manual', micLive: false, context: null,
                        stream: null, node: null, source: null,
                        monitorOn: false, monitorContext: null, monitorTime: 0,
@@ -1033,12 +1035,14 @@ function paintShoutButtons() {
   // Never disabled: stacking is the feature.
   $('shoutPemba').disabled = false;
   $('shoutStop').disabled = false;
+  $('shoutClear').disabled = false;
   $('shoutNow').textContent = activeShouts.length
     ? '▸ ' + activeShouts.map(shout => shout.name).join(' + ') : '';
 }
 $('shoutPemba').addEventListener('click', () => playShout(
   PEMBA_CLIPS[Math.floor(Math.random() * PEMBA_CLIPS.length)]));
 $('shoutStop').addEventListener('click', () => playShout(STOP_CLIP));
+$('shoutClear').addEventListener('click', () => playShout(CLEAR_CLIP));
 paintSourceMode();
 paintShoutButtons();
 $('earMonitorToggle').addEventListener('click', () => {
@@ -1082,10 +1086,15 @@ function paintHearingCard(frame) {
   const pill = $('hearingMode');
   pill.textContent = mode ? mode.replace(/_/g, ' ') : '—';
   pill.className = 'pill ' + (HEARING_MODE_CLASSES[mode] || '');
+  // The latch says what it wants (user ruling 2026-08-30): stopped by
+  // voice, released only by the word `clear`.
+  if (mode === 'STOPPED') pill.textContent = 'STOPPED BY VOICE · say “clear”';
   const heard = hearing.heard;
   const confidence = Number(hearing.stop_confidence);
+  const clearConfidence = Number(hearing.clear_confidence);
   $('hearingHeard').textContent =
     heard === 'stop' ? 'STOP ' + (Number.isFinite(confidence) ? confidence.toFixed(2) : '')
+    : heard === 'clear' ? 'CLEAR ' + (Number.isFinite(clearConfidence) ? clearConfidence.toFixed(2) : '')
     : heard === 'voice' ? 'voice' : '—';
   // `Number(null)` is 0, not NaN, so a bearing that has never been measured
   // would print a confident "0°" -- straight ahead -- which is the one wrong
@@ -1232,7 +1241,8 @@ const soundIndicator = {
 };
 // Called from paintHearingCard on every state frame; acts only on the EDGE.
 function noteHeardSound(heard, bearingDegrees, bearingConfidence) {
-  const heardNow = (heard === 'voice' || heard === 'stop') ? heard : null;
+  const heardNow = heard === 'clear' ? 'voice'  // release draws as a call
+    : (heard === 'voice' || heard === 'stop') ? heard : null;
   if (!heardNow) {
     if (soundIndicator.holding) {
       soundIndicator.holding = false;
@@ -1649,6 +1659,8 @@ document.addEventListener('keydown', event => {
     triggerShout('shoutPemba');
   } else if (key === 'x' && !event.repeat) {
     triggerShout('shoutStop');
+  } else if (key === 'c' && !event.repeat) {
+    triggerShout('shoutClear');
   }
 });
 // The hotkeys go THROUGH the buttons so they obey the same rules: manual
